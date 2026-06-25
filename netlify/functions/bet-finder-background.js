@@ -255,7 +255,11 @@ function sizeParlay(legs, { bankroll, floor, maxStake }) {
 // ---------- orchestration ----------
 export const handler = async (event) => {
   let jobId;
-  const store = getStore('bet-jobs');
+  const store = getStore({
+    name: 'bet-jobs',
+    siteID: process.env.NETLIFY_SITE_ID,
+    token: process.env.NETLIFY_BLOBS_TOKEN,
+  });
   try {
     const body = JSON.parse(event.body || '{}');
     jobId = body.jobId;

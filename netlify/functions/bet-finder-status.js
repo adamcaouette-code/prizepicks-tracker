@@ -16,7 +16,11 @@ export const handler = async (event) => {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing jobId' }) };
   }
   try {
-    const store = getStore('bet-jobs');
+    const store = getStore({
+      name: 'bet-jobs',
+      siteID: process.env.NETLIFY_SITE_ID,
+      token: process.env.NETLIFY_BLOBS_TOKEN,
+    });
     const data = await store.get(jobId, { type: 'json' });
     // Not written yet → the job just started; tell the browser to keep waiting.
     if (!data) return { statusCode: 200, headers, body: JSON.stringify({ status: 'running', step: 'starting' }) };
