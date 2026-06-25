@@ -1,13 +1,12 @@
 export const handler = async (event) => {
   const params = event.queryStringParameters || {};
+  const wantLeagues = params.list === 'leagues';
   const leagueId = params.league_id || '';
 
-  // Pull one league at a time. Fetching ALL leagues returns ~6MB+ and blows
-  // past Netlify's function response cap. Default to World Cup (82) if none given.
-  const league = leagueId || '82';
-
-  const url = `https://partner-api.prizepicks.com/projections`
-            + `?per_page=250&single_stat=true&league_id=${league}`;
+  const base = 'https://partner-api.prizepicks.com/projections?per_page=250&single_stat=true';
+  // list mode: fetch unscoped so we can see every league in the feed.
+  // normal mode: scope to one league (default World Cup guess 82) to stay small.
+  const url = wantLeagues ? base : `${base}&league_id=${leagueId || '82'}`;
 
   try {
     const response = await fetch(url, {
@@ -27,11 +26,32 @@ export const handler = async (event) => {
     }
 
     const full = await response.json();
-
-    // Trim to just what the app uses. The raw payload carries large "included"
-    // arrays (teams, leagues, stat types, etc.); we keep projections + the
-    // new_player entries needed to resolve names, and drop the rest.
     const included = Array.isArray(full.included) ? full.included : [];
+    const data = Array.isArray(full.data) ? full.data : [];
+
+    // ---- DISCOVERY MODE: just list the leagues + how many props each has ----
+    if (wantLeagues) {
+      const counts = {};
+      data.forEach((d) => {
+        const lid = d.relationships?.league?.data?.id;
+        if (lid) counts[lid] = (counts[lid] || 0) + 1;
+      });
+      const leagues = included
+        .filter((i) => i.type === 'league')
+        .map((i) => ({
+          id: i.id,
+          name: i.attributes?.name,
+          props_in_sample: counts[i.id] || 0,
+        }))
+        .sort((a, b) => b.props_in_sample - a.props_in_sample);
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        body: JSON.stringify({ leagues }),
+      };
+    }
+
+    // ---- NORMAL MODE: trimmed projections for one league ----
     const slimIncluded = included
       .filter((i) => i.type === 'new_player' || i.type === 'league' || i.type === 'stat_type')
       .map((i) => ({
@@ -48,8 +68,6 @@ export const handler = async (event) => {
           : undefined,
       }));
 
-    const slim = { data: full.data || [], included: slimIncluded };
-
     return {
       statusCode: 200,
       headers: {
@@ -57,7 +75,7 @@ export const handler = async (event) => {
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'no-cache',
       },
-      body: JSON.stringify(slim),
+      body: JSON.stringify({ data, included: slimIncluded }),
     };
   } catch (err) {
     return {
