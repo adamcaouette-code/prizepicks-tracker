@@ -4,9 +4,7 @@ export const handler = async (event) => {
   const leagueId = params.league_id || '';
 
   const base = 'https://partner-api.prizepicks.com/projections?per_page=250&single_stat=true';
-  // list mode: fetch unscoped so we can see every league in the feed.
-  // normal mode: scope to one league (default World Cup guess 82) to stay small.
-  const url = wantLeagues ? base : `${base}&league_id=${leagueId || '82'}`;
+  const url = wantLeagues ? base : `${base}&league_id=${leagueId || '241'}`;
 
   try {
     const response = await fetch(url, {
@@ -29,7 +27,7 @@ export const handler = async (event) => {
     const included = Array.isArray(full.included) ? full.included : [];
     const data = Array.isArray(full.data) ? full.data : [];
 
-    // ---- DISCOVERY MODE: just list the leagues + how many props each has ----
+    // ---- DISCOVERY MODE: list leagues + prop counts ----
     if (wantLeagues) {
       const counts = {};
       data.forEach((d) => {
@@ -38,11 +36,7 @@ export const handler = async (event) => {
       });
       const leagues = included
         .filter((i) => i.type === 'league')
-        .map((i) => ({
-          id: i.id,
-          name: i.attributes?.name,
-          props_in_sample: counts[i.id] || 0,
-        }))
+        .map((i) => ({ id: i.id, name: i.attributes?.name, props_in_sample: counts[i.id] || 0 }))
         .sort((a, b) => b.props_in_sample - a.props_in_sample);
       return {
         statusCode: 200,
@@ -51,21 +45,35 @@ export const handler = async (event) => {
       };
     }
 
-    // ---- NORMAL MODE: trimmed projections for one league ----
+    // ---- NORMAL MODE: trim EACH projection to just what the engine uses ----
+    const slimData = data.map((d) => {
+      const a = d.attributes || {};
+      return {
+        id: d.id,
+        type: d.type,
+        line_score: a.line_score,
+        stat_type: a.stat_type,
+        stat_display_name: a.stat_display_name,
+        description: a.description,        // usually the matchup/opponent
+        start_time: a.start_time,
+        odds_type: a.odds_type,            // standard | demon | goblin
+        player_id: d.relationships?.new_player?.data?.id,
+        league_id: d.relationships?.league?.data?.id,
+      };
+    });
+
+    // players: just id -> name/team/position
     const slimIncluded = included
-      .filter((i) => i.type === 'new_player' || i.type === 'league' || i.type === 'stat_type')
+      .filter((i) => i.type === 'new_player')
       .map((i) => ({
         id: i.id,
         type: i.type,
-        attributes: i.attributes
-          ? {
-              name: i.attributes.name,
-              display_name: i.attributes.display_name,
-              market: i.attributes.market,
-              team: i.attributes.team,
-              position: i.attributes.position,
-            }
-          : undefined,
+        attributes: {
+          name: i.attributes?.name,
+          display_name: i.attributes?.display_name,
+          team: i.attributes?.team,
+          position: i.attributes?.position,
+        },
       }));
 
     return {
@@ -75,7 +83,7 @@ export const handler = async (event) => {
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'no-cache',
       },
-      body: JSON.stringify({ data, included: slimIncluded }),
+      body: JSON.stringify({ data: slimData, included: slimIncluded }),
     };
   } catch (err) {
     return {
