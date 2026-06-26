@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bet Finder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#0c0d12; --panel:#15171f; --panel-2:#1c1f2a; --line:#262a38;
+    --ink:#e8eaf2; --dim:#8b91a6; --faint:#5a6072;
+    --gold:#f3b24a; --gold-dim:rgba(243,178,74,.12);
+    --teal:#37d6a8; --teal-dim:rgba(55,214,168,.12);
+    --red:#ff5d73;
+    --mono:'JetBrains Mono',monospace; --disp:'Space Grotesk',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--disp);
+    line-height:1.5;-webkit-font-smoothing:antialiased;padding:28px 18px 80px}
+  .wrap{max-width:760px;margin:0 auto}
+  header{display:flex;align-items:baseline;gap:12px;margin-bottom:22px;
+    border-bottom:1px solid var(--line);padding-bottom:18px}
+  header h1{font-size:24px;font-weight:700;letter-spacing:-.02em}
+  header .tag{font-family:var(--mono);font-size:11px;color:var(--gold);
+    text-transform:uppercase;letter-spacing:.18em}
+
+  /* controls */
+  .panel{background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:18px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  label{display:block;font-size:12px;color:var(--dim);margin-bottom:6px;
+    text-transform:uppercase;letter-spacing:.06em}
+  input,select{width:100%;background:var(--panel-2);border:1px solid var(--line);
+    color:var(--ink);font-family:var(--mono);font-size:15px;border-radius:9px;
+    padding:11px 12px;outline:none}
+  input:focus,select:focus{border-color:var(--gold)}
+  .row-toggle{display:flex;align-items:center;gap:9px;margin-top:14px;color:var(--dim);font-size:14px}
+  .row-toggle input{width:auto}
+  button.go{margin-top:16px;width:100%;background:var(--gold);color:#1a1206;
+    border:none;border-radius:10px;padding:14px;font-family:var(--disp);
+    font-weight:700;font-size:16px;cursor:pointer;letter-spacing:.01em}
+  button.go:disabled{opacity:.5;cursor:not-allowed}
+
+  /* status */
+  #status{margin-top:18px;font-family:var(--mono);font-size:13px;color:var(--dim);
+    display:none;align-items:center;gap:10px}
+  #status.show{display:flex}
+  .spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--gold);
+    border-radius:50%;animation:s .8s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+
+  /* results */
+  #out{margin-top:22px;display:none}
+  #out.show{display:block}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);
+    margin:24px 0 10px;font-weight:600}
+  .game{font-family:var(--mono);font-size:12px;color:var(--gold);margin:14px 0 6px}
+  .leg{display:flex;align-items:baseline;gap:10px;padding:7px 0;
+    border-bottom:1px solid var(--line);font-size:14px}
+  .leg .v{font-family:var(--mono);font-size:11px;font-weight:700;width:42px}
+  .leg .v.play{color:var(--teal)} .leg .v.lean{color:var(--gold)}
+  .leg .pct{font-family:var(--mono);width:42px;color:var(--ink)}
+  .leg .who{flex:1}
+  .leg .who b{font-weight:600} .leg .who span{color:var(--dim)}
+  .leg .risk{color:var(--faint);font-size:12px;font-style:italic}
+  .leg.star{background:var(--gold-dim);border-radius:7px;padding-left:8px;margin-left:-8px}
+  .leg.star .who b::before{content:"★ ";color:var(--gold)}
+
+  /* slip */
+  .slip{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px;margin-top:8px}
+  .entries{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}
+  .entry{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .entry.rec{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal-dim)}
+  .entry .name{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
+  .entry .stake{font-family:var(--mono);font-size:26px;font-weight:700;margin:4px 0}
+  .entry .ev{font-family:var(--mono);font-size:12px;color:var(--dim)}
+  .entry .pays{margin-top:8px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+  .entry .pays div{display:flex;justify-content:space-between}
+  .rec-tag{display:inline-block;font-family:var(--mono);font-size:10px;color:var(--teal);
+    border:1px solid var(--teal);border-radius:5px;padding:1px 6px;margin-top:8px;letter-spacing:.08em}
+  .note{font-family:var(--mono);font-size:13px;color:var(--red);padding:8px 0}
+
+  details{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}
+  summary{cursor:pointer;font-size:13px;color:var(--dim)}
+  .reason{margin:10px 0;font-size:13px}
+  .reason .h{font-family:var(--mono);font-size:12px;color:var(--ink)}
+  .reason .b{color:var(--dim);margin-top:2px}
+  .disclaim{margin-top:26px;font-size:12px;color:var(--faint);text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Bet Finder</h1>
+    <span class="tag">screen · judge · size</span>
+  </header>
+
+  <div class="panel">
+    <div class="grid">
+      <div>
+        <label>League</label>
+        <select id="league">
+          <option value="world_cup">World Cup</option>
+          <option value="mlb">MLB</option>
+          <option value="wnba">WNBA</option>
+          <option value="nba">NBA</option>
+          <option value="nfl">NFL</option>
+        </select>
+      </div>
+      <div>
+        <label>Parlay legs</label>
+        <input id="legs" type="number" min="2" max="6" value="3" />
+      </div>
+      <div>
+        <label>Bankroll ($)</label>
+        <input id="bankroll" type="number" min="0" value="400" />
+      </div>
+      <div>
+        <label>Locked floor ($)</label>
+        <input id="floor" type="number" min="0" value="100" />
+      </div>
+    </div>
+    <div class="row-toggle">
+      <input id="today" type="checkbox" checked />
+      <label for="today" style="margin:0;text-transform:none;letter-spacing:0">Today's games only</label>
+    </div>
+    <button class="go" id="go">Find Bets</button>
+    <div id="status"><span class="spin"></span><span id="step">Working…</span></div>
+  </div>
+
+  <div id="out"></div>
+
+  <p class="disclaim">Research tool. Review every pick and place bets yourself.</p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const out = $('out'), statusEl = $('status'), stepEl = $('step'), goBtn = $('go');
+let polling = null;
+
+goBtn.addEventListener('click', start);
+
+async function start(){
+  clearInterval(polling);
+  out.classList.remove('show'); out.innerHTML = '';
+  statusEl.classList.add('show'); stepEl.textContent = 'Starting…';
+  goBtn.disabled = true;
+
+  const jobId = (crypto.randomUUID && crypto.randomUUID()) ||
+                (Date.now() + '-' + Math.random().toString(36).slice(2));
+  const body = {
+    jobId,
+    league: $('league').value,
+    bankroll: Number($('bankroll').value),
+    floor: Number($('floor').value),
+    legs: Number($('legs').value),
+    today: $('today').checked,
+  };
+
+  try{
+    await fetch('/api/bet-finder-background', {
+      method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)
+    });
+  }catch(e){ return fail('Could not start the job. ' + e.message); }
+
+  const started = Date.now();
+  polling = setInterval(async () => {
+    if (Date.now() - started > 240000) { clearInterval(polling); return fail('Timed out after 4 minutes.'); }
+    try{
+      const r = await fetch('/api/bet-finder-status?jobId=' + jobId + '&_=' + Date.now());
+      const data = await r.json();
+      if (data.status === 'running') stepEl.textContent = (data.step || 'working') + '…';
+      else if (data.status === 'done') { clearInterval(polling); render(data.result); }
+      else if (data.status === 'error') { clearInterval(polling); fail(data.message); }
+    }catch(e){ /* keep polling through transient blips */ }
+  }, 3000);
+}
+
+function fail(msg){
+  statusEl.classList.remove('show'); goBtn.disabled = false;
+  out.classList.add('show');
+  out.innerHTML = '<div class="slip"><div class="note">'+ escapeHtml(msg) +'</div></div>';
+}
+
+function render(result){
+  statusEl.classList.remove('show'); goBtn.disabled = false;
+  out.classList.add('show');
+  const { board = [], parlay = {}, allPicks = [], params = {} } = result || {};
+  let html = '';
+
+  // board grouped by game
+  html += '<h2>Board — ★ = in your parlay</h2>';
+  const games = {};
+  board.forEach(p => (games[p.game] = games[p.game] || []).push(p));
+  const ord = { play:0, lean:1 };
+  Object.keys(games).forEach(g => {
+    html += '<div class="game">'+ escapeHtml(g) +'</div>';
+    games[g].sort((a,b)=>(ord[a.verdict]??9)-(ord[b.verdict]??9)).forEach(p => {
+      const risk = (p.key_risk && p.key_risk.toLowerCase() !== 'none') ? '<span class="risk">'+escapeHtml(p.key_risk)+'</span>' : '';
+      html += '<div class="leg'+(p.inParlay?' star':'')+'">'
+        + '<span class="v '+p.verdict+'">'+p.verdict.toUpperCase()+'</span>'
+        + '<span class="pct">'+Math.round((p.prob||0)*100)+'%</span>'
+        + '<span class="who"><b>'+escapeHtml(p.player)+'</b> <span>'+escapeHtml(p.stat)+' o'+p.line+'</span></span>'
+        + risk +'</div>';
+    });
+  });
+
+  // slip
+  html += '<h2>Your parlay</h2><div class="slip">';
+  if (parlay.error){
+    html += '<div class="note">'+ escapeHtml(parlay.error) +'</div>';
+  } else {
+    const e = parlay.entries || {};
+    html += '<div class="entries">';
+    ['power','flex'].forEach(k => {
+      const x = e[k]; if(!x) return;
+      const rec = parlay.recommended === x.label;
+      html += '<div class="entry'+(rec?' rec':'')+'">';
+      html += '<div class="name">'+x.label+'</div>';
+      if (x.stake > 0){
+        html += '<div class="stake">$'+x.stake.toFixed(2)+'</div>';
+        html += '<div class="ev">EV/$ '+(x.evPerDollar>=0?'+':'')+x.evPerDollar.toFixed(3)+'</div>';
+        html += '<div class="pays">'+ (x.payouts||[]).map(p=>'<div><span>'+p.hits+' of '+parlay.legs.length+'</span><span>$'+p.pays.toFixed(2)+'</span></div>').join('') +'</div>';
+        if (rec) html += '<div class="rec-tag">RECOMMENDED</div>';
+      } else {
+        html += '<div class="ev" style="margin-top:8px">'+escapeHtml(x.note||'No bet')+'</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // full reasoning (incl passes)
+  if (allPicks.length){
+    html += '<details><summary>Full reasoning (including passes)</summary>';
+    allPicks.forEach(p => {
+      html += '<div class="reason"><div class="h">['+(p.verdict||'?').toUpperCase()+'] '
+        + Math.round((p.prob||0)*100)+'% — '+escapeHtml(p.player)+' '+escapeHtml(p.stat)+' o'+p.line+'</div>'
+        + '<div class="b">'+escapeHtml(p.reasoning||p.key_risk||'')+'</div></div>';
+    });
+    html += '</details>';
+  }
+
+  out.innerHTML = html;
+}
+
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => (
+  {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+</script>
+</body>
+</html>
