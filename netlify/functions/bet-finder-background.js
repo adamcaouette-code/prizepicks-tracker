@@ -22,25 +22,39 @@ const FLEX = {
   6: { 6: 25.0, 5: 2.0, 4: 0.4 },
 };
 
-// ---------- data: pull + trim PrizePicks props ----------
+// ---------- data: pull + trim PrizePicks props (all pages) ----------
 async function fetchProps(leagueTag) {
   const lid = PP_LEAGUE_IDS[leagueTag];
   if (!lid) throw new Error(`Unknown league '${leagueTag}'`);
-  const url = `https://partner-api.prizepicks.com/projections?per_page=250&single_stat=true&league_id=${lid}`;
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      Accept: 'application/json',
-      Referer: 'https://app.prizepicks.com/',
-    },
-  });
-  if (!res.ok) throw new Error(`PrizePicks returned ${res.status}`);
-  const full = await res.json();
+
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    Accept: 'application/json',
+    Referer: 'https://app.prizepicks.com/',
+  };
+
+  // Page through the whole slate. One page (250) is often just the next game or
+  // two; we want every game today, so we follow pagination to the end.
   const players = {};
-  for (const i of full.included || []) {
-    if (i.type === 'new_player') players[i.id] = i.attributes || {};
+  const allData = [];
+  const MAX_PAGES = 12; // safety cap (~3000 props)
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const url = `https://partner-api.prizepicks.com/projections?per_page=250&single_stat=true&league_id=${lid}&page=${page}`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      if (page === 1) throw new Error(`PrizePicks returned ${res.status}`);
+      break; // a later page failing just ends pagination
+    }
+    const full = await res.json();
+    for (const i of full.included || []) {
+      if (i.type === 'new_player') players[i.id] = i.attributes || {};
+    }
+    const data = full.data || [];
+    allData.push(...data);
+    if (data.length < 250) break; // last page reached
   }
-  return (full.data || []).map((d) => {
+
+  return allData.map((d) => {
     const a = d.attributes || {};
     const pa = players[d.relationships?.new_player?.data?.id] || {};
     const team = pa.team || '';
@@ -49,7 +63,11 @@ async function fetchProps(leagueTag) {
       player: pa.display_name || pa.name || 'Unknown',
       stat: a.stat_type || a.stat_display_name || '',
       line: a.line_score,
+      position: pa.position || '',
+      image: pa.image_url || '',
       oddsType: (a.odds_type || 'standard').toLowerCase(),
+      team: team || '(unknown)',
+      matchup: team && opp ? [team, opp].sort().join(' vs ') : opp || team || '(unknown game)',
       game: team && opp ? `${team} vs ${opp}` : opp || team || '(unknown game)',
       start: a.start_time || '',
       league: leagueTag,
@@ -63,29 +81,88 @@ function filterToday(rows, todayOnly) {
   return rows.filter((r) => String(r.start).startsWith(td));
 }
 
-// ---------- screen: keep only the odds tiers the user asked for ----------
-function findCandidates(rows, tiers, topN = 16) {
+// ---------- hard position gate: kill physically-wrong props pre-Claude ----------
+function roleOf(pos) {
+  const p = (pos || '').toUpperCase();
+  if (!p.replace(/[^A-Z]/g, '')) return 'UNK';
+  if (p.includes('GOAL') || p.includes('KEEPER') || /\bGK?\b/.test(p)) return 'GK';
+  if (p.includes('DEF') || /\b(CB|LB|RB|FB|WB|RWB|LWB|D)\b/.test(p)) return 'DEF';
+  if (p.includes('MID') || /\b(CM|CDM|CAM|DM|AM|LM|RM|MF|M)\b/.test(p)) return 'MID';
+  if (p.includes('FORWARD') || p.includes('STRIK') || p.includes('WING') ||
+      /\b(ST|CF|LW|RW|FW|SS|W|F)\b/.test(p)) return 'FWD';
+  return 'UNK';
+}
+
+function statKind(stat) {
+  const s = (stat || '').toLowerCase();
+  if (s.includes('save') || s.includes('goalie') || s.includes('goals allowed') ||
+      s.includes('goals against')) return 'GK';
+  if (s.includes('clearance') || s.includes('block') || s.includes('tackle') ||
+      s.includes('interception')) return 'DEF';
+  if (s.includes('shot') || s.includes('goal') || s.includes('assist') ||
+      s.includes('cross') || s.includes('dribble') || s.includes('offside')) return 'ATK';
+  return 'NEUTRAL';
+}
+
+// Conservative: only block UNAMBIGUOUS impossibilities. Unknown position or
+// neutral stat (passes, fouls, fantasy score) always passes through.
+function positionAllows(pos, stat) {
+  const role = roleOf(pos), kind = statKind(stat);
+  if (role === 'UNK' || kind === 'NEUTRAL') return true;
+  if (kind === 'GK') return role === 'GK';            // only keepers get saves
+  if (role === 'GK' && kind === 'ATK') return false;  // keepers don't shoot/cross
+  if (role === 'GK' && kind === 'DEF') return false;  // keeper clearance line = trap
+  if (kind === 'DEF' && role === 'FWD') return false; // the attacker-clearances trap
+  return true;
+}
+
+// ---------- screen: keep selected tiers, spread across ALL games ----------
+function findCandidates(rows, tiers, perGame = 4, maxTotal = 44) {
   const allow = new Set(tiers && tiers.length ? tiers : ['goblin', 'standard']);
-  const out = [];
+  const byMatchup = {};
   for (const r of rows) {
-    if (!allow.has(r.oddsType)) continue;          // tier picker controls the pool
-    out.push({ ...r, fairProb: ODDS_PRIOR[r.oddsType] ?? 0.55 });
+    if (!allow.has(r.oddsType)) continue;
+    if (!positionAllows(r.position, r.stat)) continue;  // hard trap gate
+    (byMatchup[r.matchup] ||= []).push({ ...r, fairProb: ODDS_PRIOR[r.oddsType] ?? 0.55 });
   }
-  return out.sort((a, b) => b.fairProb - a.fairProb).slice(0, topN);
+  const out = [];
+  for (const m in byMatchup) {
+    const top = byMatchup[m].sort((a, b) => b.fairProb - a.fairProb).slice(0, perGame);
+    out.push(...top);                              // every matchup gets represented
+  }
+  return out.sort((a, b) => b.fairProb - a.fairProb).slice(0, maxTotal);
 }
 
 function groupByGame(items) {
   const g = {};
-  for (const it of items) (g[it.game] ||= []).push(it);
+  for (const it of items) (g[it.matchup || it.game] ||= []).push(it);
   return g;
 }
 
 // ---------- judgment: Claude with web search ----------
 const SYSTEM = `You are a sports-betting research assistant. You receive a SHORTLIST of
-player props GROUPED BY GAME that already cleared a statistical filter. Work game by
-game: for EACH game run ONE web search for that matchup's confirmed lineup and team
-news, then apply it to every player in that game. Do NOT search per player. Weight
-rotation/minutes risk heaviest (dead rubbers, already-qualified teams resting starters).
+player props GROUPED BY GAME that already cleared a statistical filter. Each prop
+includes the player's POSITION. Work game by game: for EACH game run ONE web search
+for that matchup's confirmed lineup and team news, then apply it to every player in
+that game. Do NOT search per player.
+
+Judge every prop against the player's ROLE. A stat must fit the position, or the line
+is a trap no matter how low it looks:
+- Clearances, blocks, interceptions, tackles = DEFENDER / defensive-mid stats. An
+  attacker or winger will rarely clear the threshold. Mark these PASS for attackers.
+- Shots, shots on target, goals, goal+assist = forwards and attacking mids.
+- Crosses, assists = wide players and creators.
+- If a stat does not match the player's role, that alone is reason to PASS.
+
+Also weight rotation/minutes risk heavily (dead rubbers, already-qualified teams
+resting starters, blowout substitutions).
+
+Be strict with verdicts — "play" must mean you are GENUINELY CONFIDENT:
+- play  = 62%+ and the stat clearly fits the player's role and matchup
+- lean  = 54-61%, fits the role but with some real doubt
+- pass  = below 54%, OR the stat does not fit the player's position, OR real
+          rotation/minutes risk. When unsure, PASS. Do not inflate probabilities.
+
 Give each prop a CALIBRATED probability (0-1) of going over. Respond with ONLY valid
 JSON, no prose, no fences. key_risk = short flag (8 words max) or "none". reasoning =
 1-2 sentences.
@@ -136,7 +213,7 @@ async function judge(candidates) {
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 8000,
+      max_tokens: 16000,
       system: SYSTEM,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: 'Shortlist grouped by game:\n' + JSON.stringify(payload, null, 2) }],
@@ -153,12 +230,43 @@ async function judge(candidates) {
     const src = lookup[`${p.player}|${p.stat}`] || {};
     p.game ??= src.game || '(unknown game)';
     p.oddsType ??= src.oddsType || 'standard';     // so the board can show the tier
+    p.team ??= src.team || '';                      // for team dropdowns
+    p.matchup ??= src.matchup || src.game || '(unknown game)';
+    p.position ??= src.position || '';
+    p.image ??= src.image || '';                    // player headshot
   }
   return picks;
 }
 
 // ---------- selection + sizing ----------
 const clamp = (p) => Math.min(0.99, Math.max(0.01, Number(p)));
+
+// Nest props under each player so the UI can show one player with a prop dropdown
+function groupByPlayer(board) {
+  const map = new Map();
+  for (const p of board) {
+    const key = `${p.matchup}|${p.team}|${p.player}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        player: p.player, team: p.team, matchup: p.matchup,
+        image: p.image || '', position: p.position || '',
+        inParlay: false, bestProb: 0, props: [],
+      });
+    }
+    const g = map.get(key);
+    g.props.push({
+      stat: p.stat, line: p.line, verdict: p.verdict, prob: p.prob,
+      oddsType: p.oddsType, key_risk: p.key_risk, reasoning: p.reasoning,
+      inParlay: !!p.inParlay,
+    });
+    if (p.inParlay) g.inParlay = true;
+    if ((p.prob || 0) > g.bestProb) g.bestProb = p.prob || 0;
+  }
+  const arr = [...map.values()];
+  for (const g of arr) g.props.sort((a, b) => (b.prob || 0) - (a.prob || 0));
+  arr.sort((a, b) => (b.inParlay - a.inParlay) || (b.bestProb - a.bestProb));
+  return arr;
+}
 
 function selectLegs(picks, n) {
   const ord = { play: 0, lean: 1 };
@@ -269,8 +377,8 @@ export const handler = async (event) => {
 
     const params = {
       league: body.league || 'world_cup',
-      bankroll: Number(body.bankroll) || 400,
-      floor: Number(body.floor) || 100,
+      bankroll: Number(body.bankroll) || 0,
+      floor: Number(body.floor) || 0,
       legs: Number(body.legs) || 3,
       today: body.today !== false,
       maxStake: body.maxStake ? Number(body.maxStake) : null,
@@ -281,6 +389,10 @@ export const handler = async (event) => {
     let rows = await fetchProps(params.league);
     rows = filterToday(rows, params.today);
     const candidates = findCandidates(rows, params.tiers);
+    const traps = rows
+      .filter((r) => !positionAllows(r.position, r.stat))
+      .slice(0, 15)
+      .map((r) => ({ player: r.player, stat: r.stat, line: r.line, position: r.position, matchup: r.matchup }));
     if (!candidates.length) {
       await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: 'No candidates — props not posted yet.' }, params } });
       return { statusCode: 202 };
@@ -291,12 +403,17 @@ export const handler = async (event) => {
     if (!picks.length) throw new Error('Claude returned no parseable picks.');
 
     const chosen = selectLegs(picks, params.legs);
-    const parlay = sizeParlay(chosen, params);
+    const parlay = sizeParlay(chosen, params);     // bankroll defaults 0 -> $0 stakes
+    const parlayLegs = chosen.map((p) => ({
+      player: p.player, stat: p.stat, line: p.line, prob: p.prob,
+      oddsType: p.oddsType, team: p.team, matchup: p.matchup,
+    }));
     const board = picks.filter((p) => p.verdict === 'play' || p.verdict === 'lean');
     const chosenKeys = new Set(chosen.map((p) => `${p.player}|${p.stat}|${p.line}`));
     for (const p of board) p.inParlay = chosenKeys.has(`${p.player}|${p.stat}|${p.line}`);
+    const players = groupByPlayer(board);
 
-    await store.setJSON(jobId, { status: 'done', result: { board, parlay, allPicks: picks, params } });
+    await store.setJSON(jobId, { status: 'done', result: { board, players, parlay, parlayLegs, traps, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });
