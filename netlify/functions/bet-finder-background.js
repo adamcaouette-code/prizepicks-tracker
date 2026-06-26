@@ -63,11 +63,12 @@ function filterToday(rows, todayOnly) {
   return rows.filter((r) => String(r.start).startsWith(td));
 }
 
-// ---------- screen: odds_type tier (soccer has no book lines) ----------
-function findCandidates(rows, topN = 12) {
+// ---------- screen: keep only the odds tiers the user asked for ----------
+function findCandidates(rows, tiers, topN = 16) {
+  const allow = new Set(tiers && tiers.length ? tiers : ['goblin', 'standard']);
   const out = [];
   for (const r of rows) {
-    if (r.oddsType === 'demon') continue;          // raised line, skip overs
+    if (!allow.has(r.oddsType)) continue;          // tier picker controls the pool
     out.push({ ...r, fairProb: ODDS_PRIOR[r.oddsType] ?? 0.55 });
   }
   return out.sort((a, b) => b.fairProb - a.fairProb).slice(0, topN);
@@ -151,6 +152,7 @@ async function judge(candidates) {
   for (const p of picks) {
     const src = lookup[`${p.player}|${p.stat}`] || {};
     p.game ??= src.game || '(unknown game)';
+    p.oddsType ??= src.oddsType || 'standard';     // so the board can show the tier
   }
   return picks;
 }
@@ -272,12 +274,13 @@ export const handler = async (event) => {
       legs: Number(body.legs) || 3,
       today: body.today !== false,
       maxStake: body.maxStake ? Number(body.maxStake) : null,
+      tiers: Array.isArray(body.tiers) && body.tiers.length ? body.tiers : ['goblin', 'standard'],
     };
     await store.setJSON(jobId, { status: 'running', step: 'pulling props' });
 
     let rows = await fetchProps(params.league);
     rows = filterToday(rows, params.today);
-    const candidates = findCandidates(rows);
+    const candidates = findCandidates(rows, params.tiers);
     if (!candidates.length) {
       await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: 'No candidates — props not posted yet.' }, params } });
       return { statusCode: 202 };
