@@ -4,6 +4,6 @@
   functions = "netlify/functions"
 
 [[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/:splat"
+  from = "/"
+  to = "/bet-finder.html"
   status = 200
