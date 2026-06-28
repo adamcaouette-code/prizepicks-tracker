@@ -60,6 +60,7 @@ async function fetchProps(leagueTag) {
     const team = pa.team || '';
     const opp = a.description || '';
     return {
+      id: d.id,
       player: pa.display_name || pa.name || 'Unknown',
       stat: a.stat_type || a.stat_display_name || '',
       line: a.line_score,
@@ -80,6 +81,43 @@ function filterToday(rows, todayOnly) {
   if (!todayOnly) return rows;
   const td = new Date().toISOString().slice(0, 10);
   return rows.filter((r) => String(r.start).startsWith(td));
+}
+
+// ---------- PrizePicks last-5 history (their own data, perfect name match) ----------
+// One call per candidate: /projections/{id}/history -> last 5 stat_values for THAT prop.
+async function fetchHistory(projectionId) {
+  const url = `https://api.prizepicks.com/projections/${projectionId}/history`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        Accept: 'application/json',
+        Referer: 'https://app.prizepicks.com/',
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const games = (data.games || []).map((g) => ({
+      v: g.stat_value, opp: g.opponent_abbreviation, away: g.is_away,
+    }));
+    if (!games.length) return null;
+    const values = games.map((g) => Number(g.v)).filter((v) => isFinite(v));
+    if (!values.length) return null;
+    const avg = values.reduce((s, v) => s + v, 0) / values.length;
+    return { last5: values, avg: Math.round(avg * 100) / 100, games };
+  } catch {
+    return null; // history is a bonus; never break the run
+  }
+}
+
+// Attach history to each candidate, fetched in parallel batches to stay quick.
+async function attachHistory(candidates, batchSize = 8) {
+  for (let i = 0; i < candidates.length; i += batchSize) {
+    const batch = candidates.slice(i, i + batchSize);
+    const results = await Promise.all(batch.map((c) => (c.id ? fetchHistory(c.id) : null)));
+    results.forEach((h, j) => { if (h) { batch[j].last5 = h.last5; batch[j].avg = h.avg; batch[j].histGames = h.games; } });
+  }
+  return candidates;
 }
 
 // ---------- ESPN team records (free, no key). Stored now, not yet judged. ----------
@@ -332,6 +370,14 @@ per-game web search, assess how strong each side is, then adjust:
 - The same line can be a play or a pass depending purely on the opponent. State the
   opponent's strength in your reasoning when it drives the verdict.
 
+When a prop includes "recent5" (the player's last 5 results for THIS exact stat) and
+"recentAvg", anchor your probability on it — it's real production, not a guess. Compare
+the line to the recent values: a line well below the player's typical output is more
+likely to hit; a line above what they usually produce is a pass unless the matchup
+strongly favors it. Note how many of the last 5 cleared the line. Recent form is your
+strongest signal — weight it heavily, then adjust for opponent and rotation. If recent5
+is absent, fall back to your own knowledge and search.
+
 Be strict with verdicts — "play" must mean you are GENUINELY CONFIDENT:
 - play  = 62%+ and the stat clearly fits the player's role and matchup
 - lean  = 54-61%, fits the role but with some real doubt
@@ -383,10 +429,12 @@ async function judge(candidates) {
   const slim = {};
   for (const c of candidates) {
     const key = c.matchup || c.game;
-    (slim[key] ||= []).push({
+    const entry = {
       player: c.player, stat: c.stat, line: c.line,
       position: c.position, team: c.team, opponent: c.opp,
-    });
+    };
+    if (c.last5) { entry.recent5 = c.last5; entry.recentAvg = c.avg; }  // their last 5 for THIS stat
+    (slim[key] ||= []).push(entry);
   }
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -583,6 +631,9 @@ export const handler = async (event) => {
       await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: 'No candidates — props not posted yet.' }, params } });
       return { statusCode: 202 };
     }
+
+    await store.setJSON(jobId, { status: 'running', step: 'pulling recent form' });
+    await attachHistory(candidates);
 
     await store.setJSON(jobId, { status: 'running', step: 'Claude researching lineups' });
     const picks = await judge(candidates);
