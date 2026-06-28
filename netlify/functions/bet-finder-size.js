@@ -7,14 +7,65 @@
 // POST body: { legs: [{prob,...}], bankroll, floor, maxStake }
 // Returns:   { entries:{power,flex}, recommended, hitDistribution, legs }
 
-const POWER = { 2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 25.0 };
-const FLEX = {
-  3: { 3: 2.25, 2: 1.25 },
-  4: { 4: 5.0, 3: 1.5 },
-  5: { 5: 10.0, 4: 2.0, 3: 0.4 },
-  6: { 6: 25.0, 5: 2.0, 4: 0.4 },
+// Real PrizePicks payouts, captured per tier (goblin/standard/demon).
+// POWER_PURE[tier][legs] = all-hit multiplier for a slip entirely of that tier.
+const POWER_PURE = {
+  goblin:   { 3: 2.0,  4: 2.3,  5: 2.6,  6: 3.25 },
+  standard: { 3: 4.75, 4: 7.0,  5: 10.0, 6: 16.0 },
+  demon:    { 3: 12.0, 4: 23.0, 5: 45.0, 6: 97.0 },
 };
+// FLEX_PURE[tier][legs] = { hitsCorrect: multiplier, ... }
+const FLEX_PURE = {
+  goblin: {
+    3: { 3: 1.7,  2: 0.5 },
+    4: { 4: 1.9,  3: 0.5 },
+    5: { 5: 2.0,  4: 0.5,  3: 0.25 },
+    6: { 6: 2.5,  5: 0.5,  4: 0.25 },
+  },
+  standard: {
+    3: { 3: 2.5,  2: 1.0 },
+    4: { 4: 4.0,  3: 1.0 },
+    5: { 5: 6.0,  4: 1.5,  3: 0.4 },
+    6: { 6: 8.0,  5: 2.0,  4: 0.4 },
+  },
+  demon: {
+    3: { 3: 10.0, 2: 1.0 },
+    4: { 4: 16.0, 3: 1.75 },
+    5: { 5: 32.0, 4: 2.25, 3: 0.4 },
+    6: { 6: 51.0, 5: 5.5,  4: 1.25 },
+  },
+};
+// Per-leg Power factor (cube root of the 3-leg pure power) — used to price MIXED
+// slips by multiplying each leg's factor. Verified within rounding vs real mixed slips.
+const LEG_FACTOR = { goblin: Math.pow(2.0, 1 / 3), standard: Math.pow(4.75, 1 / 3), demon: Math.pow(12.0, 1 / 3) };
+
 const clamp = (p) => Math.min(0.99, Math.max(0.01, Number(p)));
+
+// Tier of a slip: 'pure' (all one tier) returns that tier; else 'mixed'.
+function slipTiers(legs) {
+  const tiers = legs.map((l) => (l.oddsType || 'standard').toLowerCase());
+  const uniq = [...new Set(tiers)];
+  return { tiers, pure: uniq.length === 1 ? uniq[0] : null };
+}
+
+// Build the POWER + FLEX multiplier tables for THIS specific slip.
+function tablesForSlip(legs) {
+  const n = legs.length;
+  const { tiers, pure } = slipTiers(legs);
+  if (pure && POWER_PURE[pure]?.[n]) {
+    return { power: { [n]: POWER_PURE[pure][n] }, flex: FLEX_PURE[pure][n], mixed: false };
+  }
+  // MIXED: all-hit power = product of each leg's factor. Flex scales off the
+  // standard-tier shape (closest neutral) by the same top-line ratio.
+  const allHit = tiers.reduce((m, t) => m * (LEG_FACTOR[t] || LEG_FACTOR.standard), 1);
+  const power = { [n]: Math.round(allHit * 100) / 100 };
+  const baseFlex = FLEX_PURE.standard[n] || {};
+  const baseTop = baseFlex[n] || allHit;
+  const scale = allHit / baseTop;
+  const flex = {};
+  for (const k in baseFlex) flex[k] = Math.round(baseFlex[k] * scale * 100) / 100;
+  return { power, flex, mixed: true };
+}
 
 function hitDistribution(probs) {
   let dist = [1.0];
@@ -68,15 +119,18 @@ function sizeParlay(legs, { bankroll, floor, maxStake }) {
   const n = probs.length;
   if (n < 2) return { error: `Only ${n} playable leg(s) — need 2+.` };
   if (n > 6) return { error: `${n} legs exceeds PrizePicks max of 6.` };
-  const out = { legs, hitDistribution: hitDistribution(probs), entries: {} };
+
+  const { power: POWER, flex: FLEX, mixed } = tablesForSlip(legs);
+  const out = { legs, hitDistribution: hitDistribution(probs), entries: {}, mixed };
   let best = null, bestG = -Infinity;
   for (const entry of ['power', 'flex']) {
-    if (entry === 'flex' && n < 3) continue;
-    const table = entry === 'power' ? { [n]: POWER[n] } : FLEX[n];
+    if (entry === 'flex' && (n < 3 || !FLEX)) continue;
+    const table = entry === 'power' ? POWER : FLEX;
     const rec = priceEntry(probs, table, bankroll, floor, maxStake, entry.toUpperCase());
     rec.payouts = Object.entries(table)
       .map(([hits, m]) => ({ hits: Number(hits), pays: Math.round(rec.stake * m * 100) / 100 }))
       .sort((a, b) => b.hits - a.hits);
+    if (mixed) rec.note = (rec.note ? rec.note + ' ' : '') + '(mixed-tier estimate)';
     out.entries[entry] = rec;
     if (rec.stake > 0) {
       const g = expectedLogGrowth(probs, table, rec.stake / bankroll);

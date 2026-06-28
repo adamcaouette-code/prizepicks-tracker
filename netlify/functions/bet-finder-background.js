@@ -668,6 +668,30 @@ export const handler = async (event) => {
     for (const p of board) p.inParlay = chosenKeys.has(`${p.player}|${p.stat}|${p.line}`);
     const players = groupByPlayer(board);
 
+    // Log every pick for later auto-grading + calibration. Keyed by date so each
+    // day is one record. Stores what we need to grade: projection id, line, the
+    // probability Claude gave, verdict, tier — plus graded:null to fill in later.
+    try {
+      const logStore = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+      const day = new Date().toISOString().slice(0, 10);
+      const stamp = new Date().toISOString();
+      const idByKey = {};
+      for (const c of candidates) idByKey[`${c.player}|${c.stat}`] = c.id;
+      const logged = picks.map((p) => ({
+        date: day, loggedAt: stamp, league: params.league,
+        projectionId: idByKey[`${p.player}|${p.stat}`] || null,
+        player: p.player, stat: p.stat, line: p.line,
+        prob: p.prob, verdict: p.verdict, oddsType: p.oddsType,
+        recentAvg: p.recentAvg ?? null,
+        result: null, hit: null, gradedAt: null,   // filled by the grader later
+      }));
+      let existing = [];
+      try { existing = (await logStore.get(day, { type: 'json' })) || []; } catch {}
+      await logStore.setJSON(day, existing.concat(logged));
+    } catch {
+      // logging is best-effort — never let it break a run
+    }
+
     await store.setJSON(jobId, { status: 'done', result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
