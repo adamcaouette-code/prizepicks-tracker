@@ -40,9 +40,18 @@ async function fetchProps(leagueTag) {
   const MAX_PAGES = 12; // safety cap (~3000 props)
   for (let page = 1; page <= MAX_PAGES; page++) {
     const url = `https://partner-api.prizepicks.com/projections?per_page=250&single_stat=true&league_id=${lid}&page=${page}`;
-    const res = await fetch(url, { headers });
+    let res, tries = 0;
+    while (true) {
+      res = await fetch(url, { headers });
+      if (res.status === 429 && tries < 4) {        // throttled — wait and retry
+        tries++;
+        await new Promise((r) => setTimeout(r, 1000 * tries));
+        continue;
+      }
+      break;
+    }
     if (!res.ok) {
-      if (page === 1) throw new Error(`PrizePicks returned ${res.status}`);
+      if (page === 1) throw new Error(`PrizePicks returned ${res.status}${res.status === 429 ? ' (rate limited — try again in a minute)' : ''}`);
       break; // a later page failing just ends pagination
     }
     const full = await res.json();
@@ -85,7 +94,9 @@ function filterToday(rows, todayOnly) {
 
 // ---------- PrizePicks last-5 history (their own data, perfect name match) ----------
 // One call per candidate: /projections/{id}/history -> last 5 stat_values for THAT prop.
-async function fetchHistory(projectionId) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchHistory(projectionId, attempt = 0) {
   const url = `https://api.prizepicks.com/projections/${projectionId}/history`;
   try {
     const res = await fetch(url, {
@@ -95,6 +106,11 @@ async function fetchHistory(projectionId) {
         Referer: 'https://app.prizepicks.com/',
       },
     });
+    if (res.status === 429) {                       // throttled — back off and retry
+      if (attempt >= 3) return null;
+      await sleep(800 * (attempt + 1));
+      return fetchHistory(projectionId, attempt + 1);
+    }
     if (!res.ok) return null;
     const data = await res.json();
     const games = (data.games || []).map((g) => ({
@@ -110,12 +126,14 @@ async function fetchHistory(projectionId) {
   }
 }
 
-// Attach history to each candidate, fetched in parallel batches to stay quick.
-async function attachHistory(candidates, batchSize = 8) {
+// Attach history gently: small batches with a pause between, so we don't trip
+// PrizePicks' rate limit (which can sink the whole run).
+async function attachHistory(candidates, batchSize = 4, pauseMs = 400) {
   for (let i = 0; i < candidates.length; i += batchSize) {
     const batch = candidates.slice(i, i + batchSize);
     const results = await Promise.all(batch.map((c) => (c.id ? fetchHistory(c.id) : null)));
     results.forEach((h, j) => { if (h) { batch[j].last5 = h.last5; batch[j].avg = h.avg; batch[j].histGames = h.games; } });
+    if (i + batchSize < candidates.length) await sleep(pauseMs);
   }
   return candidates;
 }
