@@ -1,0 +1,222 @@
+{
+  "status": "done",
+  "result": {
+    "players": [
+      {
+        "player": "Ismaïla Sarr",
+        "team": "Senegal",
+        "matchup": "Iraq vs Senegal",
+        "image": "https://a.espncdn.com/i/headshots/soccer/players/full/186708.png",
+        "position": "RW",
+        "inParlay": true,
+        "bestProb": 0.68,
+        "props": [
+          {
+            "stat": "Crosses",
+            "line": 1.5,
+            "verdict": "play",
+            "prob": 0.68,
+            "oddsType": "goblin",
+            "key_risk": "none",
+            "reasoning": "Wide outlet, high cross volume vs deep Iraqi block.",
+            "inParlay": true
+          }
+        ]
+      },
+      {
+        "player": "Lamine Camara",
+        "team": "Senegal",
+        "matchup": "Iraq vs Senegal",
+        "image": "https://a.espncdn.com/i/headshots/soccer/players/full/302311.png",
+        "position": "CM",
+        "inParlay": false,
+        "bestProb": 0.65,
+        "props": [
+          {
+            "stat": "Shots Assisted",
+            "line": 0.5,
+            "verdict": "play",
+            "prob": 0.65,
+            "oddsType": "goblin",
+            "key_risk": "none",
+            "reasoning": "Gets into the final third often as a progressive #8.",
+            "inParlay": false
+          },
+          {
+            "stat": "Attempted Dribbles",
+            "line": 1.5,
+            "verdict": "lean",
+            "prob": 0.58,
+            "oddsType": "goblin",
+            "key_risk": "linker not a dribbler",
+            "reasoning": "More of a passing midfielder than a 1v1 dribbler.",
+            "inParlay": false
+          }
+        ]
+      },
+      {
+        "player": "Aymen Hussein",
+        "team": "Iraq",
+        "matchup": "Iraq vs Senegal",
+        "image": "",
+        "position": "ST",
+        "inParlay": false,
+        "bestProb": 0.55,
+        "props": [
+          {
+            "stat": "Shots",
+            "line": 1.5,
+            "verdict": "lean",
+            "prob": 0.55,
+            "oddsType": "standard",
+            "key_risk": "Iraq pinned back",
+            "reasoning": "Lone striker, limited service if Iraq defends deep.",
+            "inParlay": false
+          }
+        ]
+      },
+      {
+        "player": "Kylian Mbappé",
+        "team": "France",
+        "matchup": "France vs Norway",
+        "image": "https://a.espncdn.com/i/headshots/soccer/players/full/231533.png",
+        "position": "FW",
+        "inParlay": true,
+        "bestProb": 0.66,
+        "props": [
+          {
+            "stat": "Goal + Assist",
+            "line": 0.5,
+            "verdict": "play",
+            "prob": 0.66,
+            "oddsType": "demon",
+            "key_risk": "Deschamps may rotate",
+            "reasoning": "Elite ceiling but rotation risk if France rest starters.",
+            "inParlay": true
+          }
+        ]
+      },
+      {
+        "player": "Erling Haaland",
+        "team": "Norway",
+        "matchup": "France vs Norway",
+        "image": "https://a.espncdn.com/i/headshots/soccer/players/full/239085.png",
+        "position": "ST",
+        "inParlay": true,
+        "bestProb": 0.62,
+        "props": [
+          {
+            "stat": "Shots On Target",
+            "line": 0.5,
+            "verdict": "play",
+            "prob": 0.62,
+            "oddsType": "goblin",
+            "key_risk": "none",
+            "reasoning": "Norway's focal point; reliably tests the keeper.",
+            "inParlay": true
+          }
+        ]
+      }
+    ],
+    "parlayLegs": [
+      {
+        "player": "Ismaïla Sarr",
+        "stat": "Crosses",
+        "line": 1.5,
+        "prob": 0.68,
+        "oddsType": "goblin",
+        "team": "Senegal",
+        "matchup": "Iraq vs Senegal"
+      },
+      {
+        "player": "Kylian Mbappé",
+        "stat": "Goal + Assist",
+        "line": 0.5,
+        "prob": 0.66,
+        "oddsType": "demon",
+        "team": "France",
+        "matchup": "France vs Norway"
+      },
+      {
+        "player": "Erling Haaland",
+        "stat": "Shots On Target",
+        "line": 0.5,
+        "prob": 0.62,
+        "oddsType": "goblin",
+        "team": "Norway",
+        "matchup": "France vs Norway"
+      }
+    ],
+    "parlay": {
+      "entries": {
+        "power": {
+          "label": "POWER",
+          "evPerDollar": 0.371,
+          "fraction": 0.025,
+          "stake": 0,
+          "payouts": [
+            {
+              "hits": 3,
+              "pays": 0
+            }
+          ]
+        },
+        "flex": {
+          "label": "FLEX",
+          "evPerDollar": 0.188,
+          "fraction": 0.07,
+          "stake": 0,
+          "payouts": [
+            {
+              "hits": 3,
+              "pays": 0
+            },
+            {
+              "hits": 2,
+              "pays": 0
+            }
+          ]
+        }
+      },
+      "recommended": "FLEX",
+      "hitDistribution": [
+        0.041,
+        0.232,
+        0.44,
+        0.279
+      ]
+    },
+    "traps": [
+      {
+        "player": "Mohammed Ali",
+        "stat": "Clearances",
+        "line": 1.5,
+        "position": "ST",
+        "matchup": "Iraq vs Senegal"
+      },
+      {
+        "player": "Sadio Mané",
+        "stat": "Goalie Saves",
+        "line": 2.5,
+        "position": "LW",
+        "matchup": "Iraq vs Senegal"
+      }
+    ],
+    "teamRecords": {
+      "Senegal": "2-0-1",
+      "Iraq": "0-2-1",
+      "France": "3-0-0",
+      "Norway": "1-1-1"
+    },
+    "params": {
+      "league": "world_cup",
+      "legs": 3,
+      "today": true,
+      "tiers": [
+        "goblin",
+        "standard",
+        "demon"
+      ]
+    }
+  }
+}

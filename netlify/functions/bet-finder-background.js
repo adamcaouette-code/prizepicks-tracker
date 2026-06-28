@@ -67,6 +67,7 @@ async function fetchProps(leagueTag) {
       image: pa.image_url || '',
       oddsType: (a.odds_type || 'standard').toLowerCase(),
       team: team || '(unknown)',
+      opp: opp || '',
       matchup: team && opp ? [team, opp].sort().join(' vs ') : opp || team || '(unknown game)',
       game: team && opp ? `${team} vs ${opp}` : opp || team || '(unknown game)',
       start: a.start_time || '',
@@ -79,6 +80,168 @@ function filterToday(rows, todayOnly) {
   if (!todayOnly) return rows;
   const td = new Date().toISOString().slice(0, 10);
   return rows.filter((r) => String(r.start).startsWith(td));
+}
+
+// ---------- ESPN team records (free, no key). Stored now, not yet judged. ----------
+const ESPN_SLUGS = {
+  world_cup: { sport: 'soccer', league: 'fifa.world' },
+  mlb: { sport: 'baseball', league: 'mlb' },
+  nba: { sport: 'basketball', league: 'nba' },
+  wnba: { sport: 'basketball', league: 'wnba' },
+  nfl: { sport: 'football', league: 'nfl' },
+};
+
+function recordFromStats(stats, team) {
+  let summary = null, w = null, l = null, d = null;
+  for (const s of stats || []) {
+    const nm = (s.name || s.type || '').toLowerCase();
+    if ((s.type === 'total' || nm === 'overall' || nm === 'record') && s.summary) summary = s.summary;
+    if (nm === 'wins') w = s.value;
+    if (nm === 'losses') l = s.value;
+    if (nm === 'ties' || nm === 'draws' || nm === 'draw') d = s.value;
+  }
+  if (summary) return summary;
+  if (w != null && l != null) {
+    const base = `${Math.round(w)}-${Math.round(l)}`;
+    return d != null ? `${base}-${Math.round(d)}` : base;
+  }
+  if (team?.record?.items?.[0]?.summary) return team.record.items[0].summary;
+  return null;
+}
+
+function parseStandings(data) {
+  const map = {};
+  const add = (names, rec) => { for (const n of names) if (n) map[String(n).toLowerCase()] = rec; };
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    if (node.team && node.stats) {
+      const t = node.team;
+      const rec = recordFromStats(node.stats, t);
+      if (rec) add([t.displayName, t.shortDisplayName, t.name, t.location, t.abbreviation, t.nickname], rec);
+    }
+    for (const k in node) visit(node[k]);
+  };
+  visit(data);
+  return map;
+}
+
+async function fetchTeamRecords(leagueTag) {
+  const slug = ESPN_SLUGS[leagueTag];
+  if (!slug) return {};
+  const url = `https://site.api.espn.com/apis/v2/sports/${slug.sport}/${slug.league}/standings`;
+  try {
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return {};
+    return parseStandings(await res.json());
+  } catch {
+    return {}; // records are a nice-to-have; never break the run
+  }
+}
+
+// Map ESPN records onto the exact team strings PrizePicks uses.
+function resolveRecords(rows, espnMap) {
+  const out = {};
+  const teams = [...new Set(rows.map((r) => r.team).filter((t) => t && t !== '(unknown)'))];
+  for (const team of teams) {
+    const key = team.toLowerCase();
+    let rec = espnMap[key];
+    if (!rec) {
+      const hit = Object.keys(espnMap).find((k) => k.includes(key) || key.includes(k));
+      if (hit) rec = espnMap[hit];
+    }
+    if (rec) out[team] = rec;
+  }
+  return out;
+}
+
+// ---------- win% via The Odds API. Degrades gracefully; reports WHY it failed. ----------
+const ODDS_SPORT_KEYS = {
+  world_cup: 'soccer_fifa_world_cup',
+  mlb: 'baseball_mlb',
+  nba: 'basketball_nba',
+  wnba: 'basketball_wnba',
+  nfl: 'americanfootball_nfl',
+};
+
+function americanToProb(price) {
+  const n = Number(price);
+  if (!isFinite(n) || n === 0) return 0;
+  return n > 0 ? 100 / (n + 100) : (-n) / ((-n) + 100);
+}
+
+// Returns { status, message, remaining, used, teamWinProbs }.
+// status is one of: ok | capped | error | skipped. NEVER throws — the run goes on.
+async function fetchWinProbs(leagueTag, rows) {
+  const sport = ODDS_SPORT_KEYS[leagueTag];
+  if (!sport) return { status: 'skipped', message: `No odds mapping for ${leagueTag}.`, teamWinProbs: {} };
+  const key = process.env.ODDS_API_KEY;
+  if (!key) return { status: 'error', message: 'ODDS_API_KEY is not set in Netlify — that\'s a config error, not the cap.', teamWinProbs: {} };
+
+  const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds?regions=us&markets=h2h&oddsFormat=american&apiKey=${key}`;
+  let res;
+  try {
+    res = await fetch(url, { headers: { Accept: 'application/json' } });
+  } catch (e) {
+    return { status: 'error', message: `Couldn't reach the Odds API (network or code issue): ${e.message}`, teamWinProbs: {} };
+  }
+
+  const remaining = res.headers.get('x-requests-remaining');
+  const used = res.headers.get('x-requests-used');
+
+  // 429 = rate limit, 401 = bad key OR out of monthly credits — distinguish by body text
+  if (res.status === 429) {
+    return { status: 'capped', message: 'Odds API rate limit hit — wait a moment and try again.', remaining, used, teamWinProbs: {} };
+  }
+  if (res.status === 401) {
+    let body = '';
+    try { body = await res.text(); } catch {}
+    const capLike = /quota|usage|credit|limit|exceed/i.test(body);
+    return capLike
+      ? { status: 'capped', message: 'Odds API monthly cap reached — win% is paused until your quota resets. (Not a bug.)', remaining, used, teamWinProbs: {} }
+      : { status: 'error', message: 'Odds API rejected the key — check ODDS_API_KEY. (Config error, not the cap.)', remaining, used, teamWinProbs: {} };
+  }
+  if (!res.ok) {
+    return { status: 'error', message: `Odds API returned an unexpected error (HTTP ${res.status}).`, remaining, used, teamWinProbs: {} };
+  }
+
+  let games;
+  try { games = await res.json(); } catch {
+    return { status: 'error', message: 'Odds API returned data we couldn\'t read.', remaining, used, teamWinProbs: {} };
+  }
+
+  // de-vig each game's moneyline into win probabilities, keyed by odds team name
+  const oddsMap = {};
+  for (const g of games || []) {
+    const book = (g.bookmakers || [])[0];
+    const h2h = book && (book.markets || []).find((m) => m.key === 'h2h');
+    if (!h2h) continue;
+    const implied = (h2h.outcomes || []).map((o) => ({ name: o.name, p: americanToProb(o.price) }));
+    const sum = implied.reduce((s, o) => s + o.p, 0) || 1;
+    for (const o of implied) {
+      if (o.name && o.name.toLowerCase() !== 'draw') oddsMap[o.name.toLowerCase()] = o.p / sum;
+    }
+  }
+
+  // resolve to the exact PP team strings
+  const teamWinProbs = {};
+  const teams = [...new Set((rows || []).map((r) => r.team).filter((t) => t && t !== '(unknown)'))];
+  for (const team of teams) {
+    const k = team.toLowerCase();
+    let p = oddsMap[k];
+    if (p == null) {
+      const hit = Object.keys(oddsMap).find((n) => n.includes(k) || k.includes(n));
+      if (hit) p = oddsMap[hit];
+    }
+    if (p != null) teamWinProbs[team] = Math.round(p * 100) / 100;
+  }
+
+  const found = Object.keys(teamWinProbs).length;
+  return {
+    status: 'ok',
+    message: `Win% loaded for ${found} team(s).${remaining != null ? ` ${remaining} Odds API requests left this month.` : ''}`,
+    remaining, used, teamWinProbs,
+  };
 }
 
 // ---------- hard position gate: kill physically-wrong props pre-Claude ----------
@@ -157,6 +320,18 @@ is a trap no matter how low it looks:
 Also weight rotation/minutes risk heavily (dead rubbers, already-qualified teams
 resting starters, blowout substitutions).
 
+Judge every prop in the context of the OPPONENT, not the player alone. In your
+per-game web search, assess how strong each side is, then adjust:
+- A defender/defensive-mid facing a STRONG attacking team will be under heavy
+  pressure all game, so defensive stats (clearances, blocks, tackles, interceptions)
+  trend UP. A clearances line for a weak team's defender vs an elite side is often
+  LIVE for this reason.
+- An attacker facing a STRONG defense gets smothered, so shots/goals/assists trend
+  DOWN. Be skeptical of attacking props against elite defenses.
+- An attacker facing a WEAK defense gets more chances, so attacking stats trend UP.
+- The same line can be a play or a pass depending purely on the opponent. State the
+  opponent's strength in your reasoning when it drives the verdict.
+
 Be strict with verdicts — "play" must mean you are GENUINELY CONFIDENT:
 - play  = 62%+ and the stat clearly fits the player's role and matchup
 - lean  = 54-61%, fits the role but with some real doubt
@@ -203,7 +378,16 @@ function parsePicks(text) {
 }
 
 async function judge(candidates) {
-  const payload = groupByGame(candidates);
+  // Only send what Claude reasons with — not image, timestamps, league tags, ids.
+  // Saves input tokens on every run; the full objects stay in our code.
+  const slim = {};
+  for (const c of candidates) {
+    const key = c.matchup || c.game;
+    (slim[key] ||= []).push({
+      player: c.player, stat: c.stat, line: c.line,
+      position: c.position, team: c.team, opponent: c.opp,
+    });
+  }
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -216,7 +400,7 @@ async function judge(candidates) {
       max_tokens: 16000,
       system: SYSTEM,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [{ role: 'user', content: 'Shortlist grouped by game:\n' + JSON.stringify(payload, null, 2) }],
+      messages: [{ role: 'user', content: 'Shortlist grouped by game:\n' + JSON.stringify(slim, null, 2) }],
     }),
   });
   const data = await res.json();
@@ -388,6 +572,8 @@ export const handler = async (event) => {
 
     let rows = await fetchProps(params.league);
     rows = filterToday(rows, params.today);
+    const teamRecords = resolveRecords(rows, await fetchTeamRecords(params.league));
+    const odds = await fetchWinProbs(params.league, rows);
     const candidates = findCandidates(rows, params.tiers);
     const traps = rows
       .filter((r) => !positionAllows(r.position, r.stat))
@@ -413,7 +599,7 @@ export const handler = async (event) => {
     for (const p of board) p.inParlay = chosenKeys.has(`${p.player}|${p.stat}|${p.line}`);
     const players = groupByPlayer(board);
 
-    await store.setJSON(jobId, { status: 'done', result: { board, players, parlay, parlayLegs, traps, allPicks: picks, params } });
+    await store.setJSON(jobId, { status: 'done', result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });
