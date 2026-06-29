@@ -396,6 +396,15 @@ strongly favors it. Note how many of the last 5 cleared the line. Recent form is
 strongest signal — weight it heavily, then adjust for opponent and rotation. If recent5
 is absent, fall back to your own knowledge and search.
 
+When a prop includes "teamWinPct" (the player's team's win probability) and/or
+"teamRecord", use them to gauge the matchup:
+- High teamWinPct (favored, e.g. 65%+) → that team likely controls the game. Their
+  attackers get more chances (attacking stats up); the opponent's attackers get
+  fewer (attacking stats down), while the underdog's defenders rack up defensive stats.
+- Low teamWinPct (underdog) → flip it: their attackers are smothered, their defenders
+  are under siege (clearances/blocks up).
+- Treat these as confirmation/adjustment on top of recent form, not as overriding it.
+
 Be strict with verdicts — "play" must mean you are GENUINELY CONFIDENT:
 - play  = 62%+ and the stat clearly fits the player's role and matchup
 - lean  = 54-61%, fits the role but with some real doubt
@@ -441,7 +450,7 @@ function parsePicks(text) {
   return [];
 }
 
-async function judge(candidates) {
+async function judge(candidates, teamRecords = {}, winProbs = {}) {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
   const slim = {};
@@ -452,6 +461,8 @@ async function judge(candidates) {
       position: c.position, team: c.team, opponent: c.opp,
     };
     if (c.last5) { entry.recent5 = c.last5; entry.recentAvg = c.avg; }  // their last 5 for THIS stat
+    if (teamRecords[c.team]) entry.teamRecord = teamRecords[c.team];     // e.g. "55-30"
+    if (winProbs[c.team] != null) entry.teamWinPct = Math.round(winProbs[c.team] * 100); // favored?
     (slim[key] ||= []).push(entry);
   }
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -654,7 +665,7 @@ export const handler = async (event) => {
     await attachHistory(candidates);
 
     await store.setJSON(jobId, { status: 'running', step: 'Claude researching lineups' });
-    const picks = await judge(candidates);
+    const picks = await judge(candidates, teamRecords, odds.teamWinProbs);
     if (!picks.length) throw new Error('Claude returned no parseable picks.');
 
     const chosen = selectLegs(picks, params.legs);
