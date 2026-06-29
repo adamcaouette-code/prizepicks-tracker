@@ -495,6 +495,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}) {
     p.matchup ??= src.matchup || src.game || '(unknown game)';
     p.position ??= src.position || '';
     p.image ??= src.image || '';                    // player headshot
+    if (src.last5) { p.recent5 ??= src.last5; p.recentAvg ??= src.avg; } // last-5 for the UI
   }
   return picks;
 }
@@ -518,6 +519,7 @@ function groupByPlayer(board) {
     g.props.push({
       stat: p.stat, line: p.line, verdict: p.verdict, prob: p.prob,
       oddsType: p.oddsType, key_risk: p.key_risk, reasoning: p.reasoning,
+      recent5: p.recent5 || null, recentAvg: p.recentAvg ?? null,
       inParlay: !!p.inParlay,
     });
     if (p.inParlay) g.inParlay = true;
