@@ -1,23 +1,23 @@
 // netlify/functions/grade-picks.js
 //
-// Grades logged picks: for each ungraded pick, look up the actual result via the
-// PrizePicks history endpoint and fill in hit/miss. Run it a day or two AFTER the
-// games (results need to have posted).
+// Grades logged picks: for each ungraded SINGLE pick, look up the actual result via
+// the PrizePicks history endpoint and fill in hit/miss. Run a day or two AFTER games.
+//
+// Combos ("A + B", "... (Combo)") have no single-projection history (they 404), so
+// they're marked ungradeable and skipped — they never belonged in the grade queue.
 //
 // Usage: /api/grade-picks?date=2026-06-28   (defaults to yesterday)
 //        /api/grade-picks?date=2026-06-28&dry=1   (preview, don't save)
-//
-// Time-budgeted so it returns before Netlify's ~10s sync limit. Large slates may
-// take a few passes — just refresh the URL; it picks up where it left off. Picks
-// that can't be matched after 3 tries are tombstoned so they stop eating the budget.
 
 import { getStore } from '@netlify/blobs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const BUDGET_MS = 8000;   // stop before Netlify's ~10s kill
-const CONCURRENCY = 3;    // a few lookups at once; retry covers the odd 429
-const MAX_ATTEMPTS = 3;   // give up on a pick after this many failed lookups
+const BUDGET_MS = 8000;
+const CONCURRENCY = 3;
+const MAX_ATTEMPTS = 3;
+
+const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
 
 async function fetchHistory(projectionId, attempt = 0) {
   const url = `https://api.prizepicks.com/projections/${projectionId}/history`;
@@ -41,32 +41,32 @@ async function fetchHistory(projectionId, attempt = 0) {
   }
 }
 
-// Choose the game that this pick was logged against. PrizePicks stamps game times
-// in UTC, so a Pacific-evening game on date D shows up as D+1 in UTC. We accept the
-// game dated D or D+1 (UTC) and, when both exist, pick the one closest to loggedAt.
+// PrizePicks stamps game times in UTC; a Pacific-evening game on date D shows up as
+// D+1 in UTC. Accept the game dated D or D+1 and, when both exist, take the one
+// closest to loggedAt.
 function pickGame(pick, games) {
   if (!Array.isArray(games)) return null;
   const D = pick.date;
   const Dplus = new Date(Date.parse(`${D}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
   const cands = games.filter((g) => {
-    const d = String(g.game_start_time || '').slice(0, 10);
+    const d = String(g.game_start_time || g.start_time || '').slice(0, 10);
     return d === D || d === Dplus;
   });
   if (!cands.length) return null;
   if (cands.length === 1) return cands[0];
   const ref = pick.loggedAt ? Date.parse(pick.loggedAt) : Date.parse(`${D}T18:00:00Z`);
   return cands.slice().sort((a, b) =>
-    Math.abs(Date.parse(a.game_start_time) - ref) - Math.abs(Date.parse(b.game_start_time) - ref))[0];
+    Math.abs(Date.parse(a.game_start_time || a.start_time) - ref) - Math.abs(Date.parse(b.game_start_time || b.start_time) - ref))[0];
 }
 
 function gradeOne(pick, history) {
   if (!history) return null;
-  const game = pickGame(pick, history.games);
-  if (!game) return null;                       // result not posted / no matching game
-  const actual = Number(game.stat_value);
+  const game = pickGame(pick, history.games || history.data);
+  if (!game) return null;
+  const actual = Number(game.stat_value ?? game.value ?? game.score);
   if (!isFinite(actual)) return null;
-  const hit = actual > Number(pick.line);       // PP lines are .5, so over = actual > line
-  return { result: actual, hit, opponent: game.opponent_abbreviation, away: game.is_away };
+  const hit = actual > Number(pick.line);
+  return { result: actual, hit };
 }
 
 export const handler = async (event) => {
@@ -84,10 +84,15 @@ export const handler = async (event) => {
     }
 
     const ungraded = (p) => p.hit === null || p.hit === undefined;
-    const alreadyGraded = picks.filter((p) => !ungraded(p)).length;
-    const noProjectionId = picks.filter((p) => ungraded(p) && !p.projectionId).length;
-    const givenUp = picks.filter((p) => ungraded(p) && p.projectionId && (p.gradeAttempts || 0) >= MAX_ATTEMPTS).length;
-    const todo = picks.filter((p) => ungraded(p) && p.projectionId && (p.gradeAttempts || 0) < MAX_ATTEMPTS);
+
+    // Mark combos ungradeable once — they have no single-projection history.
+    let combosMarked = 0;
+    for (const p of picks) {
+      if (ungraded(p) && !p.ungradeable && isCombo(p)) { p.ungradeable = 'combo'; combosMarked++; }
+    }
+
+    const gradeable = (p) => ungraded(p) && !p.ungradeable && p.projectionId && (p.gradeAttempts || 0) < MAX_ATTEMPTS;
+    const todo = picks.filter(gradeable);
 
     const start = Date.now();
     let graded = 0, stillPending = 0, processed = 0, timedOut = false;
@@ -98,36 +103,30 @@ export const handler = async (event) => {
       const results = await Promise.all(chunk.map(async (pick) => ({ pick, g: gradeOne(pick, await fetchHistory(pick.projectionId)) })));
       for (const { pick, g } of results) {
         processed++;
-        if (g) {
-          pick.result = g.result; pick.hit = g.hit; pick.gradedAt = new Date().toISOString();
-          graded++;
-        } else {
-          pick.gradeAttempts = (pick.gradeAttempts || 0) + 1; // tombstone progress
-          stillPending++;
-        }
+        if (g) { pick.result = g.result; pick.hit = g.hit; pick.gradedAt = new Date().toISOString(); graded++; }
+        else { pick.gradeAttempts = (pick.gradeAttempts || 0) + 1; stillPending++; }
       }
       await sleep(100);
     }
 
-    const remaining = todo.length - processed; // left because the budget ran out (refresh to continue)
-    if (!dry && processed > 0) await store.setJSON(date, picks);
+    const remaining = todo.length - processed;
+    if (!dry && (processed > 0 || combosMarked > 0)) await store.setJSON(date, picks);
 
     const done = picks.filter((p) => p.hit === true || p.hit === false);
     const hits = done.filter((p) => p.hit === true).length;
-    const stillUngraded = picks.filter((p) => ungraded(p)).length;
     return {
       statusCode: 200,
       headers,
       body: JSON.stringify({
         date, dry,
         newlyGraded: graded,
-        stillPending,          // tried this pass, no result yet (will retry up to 3x)
+        stillPending,          // single picks tried this pass, no result yet (retry up to 3x)
         remaining,             // ran out of time; refresh to continue
         timedOut,
-        noProjectionId,        // logged without an ID — can't be graded this way
-        givenUp,               // tried 3x, no match — tombstoned (DNP / scratch / combo)
-        alreadyGraded,
-        stillUngraded,         // everything not yet graded for this date
+        combos: picks.filter((p) => p.ungradeable === 'combo').length,   // skipped (can't grade)
+        noProjectionId: picks.filter((p) => ungraded(p) && !p.ungradeable && !p.projectionId).length,
+        givenUp: picks.filter((p) => ungraded(p) && !p.ungradeable && p.projectionId && (p.gradeAttempts || 0) >= MAX_ATTEMPTS).length,
+        pendingSingles: picks.filter((p) => ungraded(p) && !p.ungradeable).length,  // real gradeable backlog
         totalGraded: done.length, hits, misses: done.length - hits,
         hitRate: done.length ? Math.round((hits / done.length) * 100) / 100 : null,
       }, null, 2),

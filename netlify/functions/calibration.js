@@ -12,7 +12,22 @@ import { getStore } from '@netlify/blobs';
 
 const isGraded = (p) => p.hit === true || p.hit === false;
 
-function aggregate(picks) {
+// Re-running the engine on a day appends the same picks again, so the log holds
+// duplicates. Collapse by projectionId (falling back to a content key), preferring
+// the graded copy, so each distinct pick is counted exactly once.
+function dedupe(picks) {
+  const m = new Map();
+  for (const p of picks) {
+    const key = p.projectionId || `${p.date}|${p.player}|${p.stat}|${p.line}`;
+    const prev = m.get(key);
+    if (!prev) { m.set(key, p); continue; }
+    if (isGraded(p) && !isGraded(prev)) m.set(key, p); // prefer a graded copy
+  }
+  return [...m.values()];
+}
+
+function aggregate(rawPicks) {
+  const picks = dedupe(rawPicks);
   const graded = picks.filter(isGraded);
   const out = {
     logged: picks.length,
