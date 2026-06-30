@@ -138,6 +138,119 @@ async function attachHistory(candidates, batchSize = 4, pauseMs = 400) {
   return candidates;
 }
 
+// ---------- MLB starting-pitcher context (ESPN, free, no key) ----------
+// On MLB runs we attach, per candidate: the OPPOSING starter (hand + ERA/WHIP/K) for
+// hitter props, and the pitcher's OWN season line for pitcher props, plus the home
+// park's run index. Purely additive — every fetch is wrapped, so a hiccup just yields
+// nulls and the engine runs exactly as before.
+
+async function espnJSON(url) {
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+const normKey = (s) => String(s || '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+
+// Run-scoring park index by team abbreviation (100 = neutral). Static — parks barely
+// move year to year. Unlisted teams are treated as ~neutral.
+const PARK_INDEX = {
+  COL: 112, BOS: 108, CIN: 106, KC: 104, PHI: 104, ARI: 103, BAL: 103, NYY: 103,
+  TEX: 102, LAA: 101, CHC: 101, TOR: 101, ATL: 100, MIN: 100, HOU: 100, WSH: 100,
+  CLE: 98, LAD: 98, STL: 99, MIL: 99, PIT: 99, CWS: 99, CHW: 99, NYM: 97, TB: 97,
+  SD: 96, MIA: 96, DET: 96, ATH: 96, OAK: 96, SF: 92, SEA: 92,
+};
+
+// Pull every probable-starter entry (athlete + statistics) out of a summary payload.
+function collectProbables(node, out = [], seen = new Set()) {
+  if (!node || typeof node !== 'object' || seen.has(node)) return out;
+  seen.add(node);
+  if (Array.isArray(node)) { node.forEach((n) => collectProbables(n, out, seen)); return out; }
+  if (node.athlete && node.athlete.id && (node.statistics || node.athlete.throws)) out.push(node);
+  for (const v of Object.values(node)) collectProbables(v, out, seen);
+  return out;
+}
+
+// Find ERA / WHIP / strikeouts anywhere inside a statistics node.
+function pluckPitcherStats(node, found = {}, seen = new Set()) {
+  if (!node || typeof node !== 'object' || seen.has(node)) return found;
+  seen.add(node);
+  const label = String(node.abbreviation || node.name || '').toLowerCase();
+  const val = node.displayValue ?? node.value;
+  if (label && val !== undefined && val !== null) {
+    if (label === 'era' && found.era === undefined) found.era = val;
+    if (label === 'whip' && found.whip === undefined) found.whip = val;
+    if ((label === 'k' || label === 'so' || label.includes('strikeout')) && found.k === undefined) found.k = val;
+  }
+  for (const v of Object.values(node)) pluckPitcherStats(v, found, seen);
+  return found;
+}
+
+// Build team -> { ownStarter, oppTeam, oppStarter, park } from today's MLB slate.
+async function fetchMlbStarters() {
+  const sb = await espnJSON('https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard');
+  const events = sb?.events || [];
+  if (!events.length) return { teamMap: {}, status: { games: 0, starters: 0, message: 'no ESPN games' } };
+
+  // 1) enrich by athlete id via one summary call per game: throws + ERA/WHIP/K
+  const byId = {};
+  for (const e of events) {
+    const sum = await espnJSON(`https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/summary?event=${e.id}`);
+    for (const entry of collectProbables(sum)) {
+      const a = entry.athlete || {};
+      if (!a.id || byId[a.id]) continue;
+      byId[a.id] = { throws: a.throws?.abbreviation || null, ...pluckPitcherStats(entry.statistics || {}) };
+    }
+    await sleep(120);
+  }
+
+  // 2) team -> game info, keyed by every name form so PP's nickname matches
+  const teamMap = {};
+  let starterCount = 0;
+  for (const e of events) {
+    const cs = e.competitions?.[0]?.competitors || [];
+    if (cs.length < 2) continue;
+    const home = cs.find((c) => c.homeAway === 'home') || cs[0];
+    const park = PARK_INDEX[(home.team?.abbreviation || '').toUpperCase()] ?? 100;
+    const sides = cs.map((c) => {
+      const t = c.team || {};
+      const sp = c.probables?.[0]?.athlete || null;
+      const id = sp?.id;
+      const starter = sp
+        ? { name: sp.displayName, throws: byId[id]?.throws || null, era: byId[id]?.era ?? null, whip: byId[id]?.whip ?? null, k: byId[id]?.k ?? null }
+        : null;
+      if (starter) starterCount++;
+      return { keys: [t.name, t.nickname, t.displayName, t.shortDisplayName, t.location, t.abbreviation], teamName: t.displayName || t.name, starter };
+    });
+    for (let s = 0; s < sides.length; s++) {
+      const me = sides[s], opp = sides[1 - s] || {};
+      const info = { ownStarter: me.starter, oppTeam: opp.teamName || null, oppStarter: opp.starter || null, park };
+      for (const k of me.keys) { const nk = normKey(k); if (nk) teamMap[nk] = info; }
+    }
+  }
+  return { teamMap, status: { games: events.length, starters: starterCount, enriched: Object.keys(byId).length } };
+}
+
+// Attach SP context to MLB candidates (mutates). Null-safe; unmatched teams just skip.
+function attachStarters(candidates, teamMap) {
+  let hit = 0;
+  for (const c of candidates) {
+    const info = teamMap[normKey(c.team)];
+    if (!info) continue;
+    hit++;
+    if (info.oppTeam) c.oppTeam = info.oppTeam;
+    if (info.park != null) c.park = info.park;
+    const pitcherProp = mlbRole(c.position) === 'PIT' || mlbStatKind(c.stat) === 'PIT';
+    if (pitcherProp) { if (info.ownStarter) c.selfSP = info.ownStarter; }
+    else { if (info.oppStarter) c.oppSP = info.oppStarter; }
+  }
+  return hit;
+}
+
 // ---------- ESPN team records (free, no key). Stored now, not yet judged. ----------
 const ESPN_SLUGS = {
   world_cup: { sport: 'soccer', league: 'fifa.world' },
@@ -411,12 +524,14 @@ function groupByGame(items) {
 }
 
 // ---------- judgment: Claude with web search ----------
-const SYSTEM = `You are a sports-betting research assistant. You receive a SHORTLIST of
+const SYSTEM_HEAD = `You are a sports-betting research assistant. You receive a SHORTLIST of
 player props GROUPED BY GAME that already cleared a statistical filter. Each prop
 includes the player's POSITION. Work game by game: for EACH game run ONE web search
 for that matchup's confirmed lineup and team news, then apply it to every player in
 that game. Do NOT search per player.
+`;
 
+const SOCCER_ROLES = `
 Judge every prop against the player's ROLE. A stat must fit the position, or the line
 is a trap no matter how low it looks:
 - Clearances, blocks, interceptions, tackles = DEFENDER / defensive-mid stats. An
@@ -439,13 +554,38 @@ per-game web search, assess how strong each side is, then adjust:
 - An attacker facing a WEAK defense gets more chances, so attacking stats trend UP.
 - The same line can be a play or a pass depending purely on the opponent. State the
   opponent's strength in your reasoning when it drives the verdict.
+`;
 
+const MLB_ROLES = `
+This is BASEBALL. The single biggest driver of any HITTER prop is the OPPOSING STARTING
+PITCHER, which is provided.
+- HITTER props include "oppSP" — the opposing starter's name, throwing hand (throws),
+  and season quality (era, whip, k). A hitter facing an ace (low ERA/WHIP, high K) is
+  marked DOWN; facing a weak or back-end starter, marked UP. Apply the handedness
+  platoon (RHB generally do better vs LHP and vice versa), but the starter's overall
+  quality matters more than hand alone.
+- PITCHER props (e.g. Pitcher Strikeouts, Pitches Thrown) include "selfSP" — that
+  pitcher's own season line (era, whip, k). Combine their season strikeout level with
+  recent form, and weigh the opposing lineup's quality and strikeout tendency.
+- "parkIndex" (100 = neutral, higher = hitter-friendly) adjusts hitting/power props: a
+  high park (e.g. Coors ~112) lifts total bases and home runs; a low park (~92)
+  suppresses them.
+- Confirm the player is in today's lineup, and for pitchers that they are the confirmed
+  starter. A hitter dropped in the order or sitting, or a scratched starter, is a PASS.
+
+IMPORTANT on recent form in baseball: 5 games is a SMALL sample (~20 plate appearances).
+Do not over-trust a hot or cold streak. Weight recent5 alongside the player's season-long
+rate and the matchup context above — never let a 5-game blip override a strong opposing
+pitcher or park signal.
+`;
+
+const SYSTEM_TAIL = `
 When a prop includes "recent5" (the player's last 5 results for THIS exact stat) and
 "recentAvg", anchor your probability on it — it's real production, not a guess. Compare
 the line to the recent values: a line well below the player's typical output is more
 likely to hit; a line above what they usually produce is a pass unless the matchup
-strongly favors it. Note how many of the last 5 cleared the line. Recent form is your
-strongest signal — weight it heavily, then adjust for opponent and rotation. If recent5
+strongly favors it. Note how many of the last 5 cleared the line. Recent form is a
+strong signal — weight it heavily, then adjust for opponent and rotation. If recent5
 is absent, fall back to your own knowledge and search.
 
 Some props are COMBO props — two players bundled into one line (names joined by "+",
@@ -463,13 +603,9 @@ stat ends in "(Combo)", flagged combo:true). Treat these with extra caution:
   uncertainties — default to PASS unless both halves are clearly strong on their own.
 
 When a prop includes "teamWinPct" (the player's team's win probability) and/or
-"teamRecord", use them to gauge the matchup:
-- High teamWinPct (favored, e.g. 65%+) → that team likely controls the game. Their
-  attackers get more chances (attacking stats up); the opponent's attackers get
-  fewer (attacking stats down), while the underdog's defenders rack up defensive stats.
-- Low teamWinPct (underdog) → flip it: their attackers are smothered, their defenders
-  are under siege (clearances/blocks up).
-- Treat these as confirmation/adjustment on top of recent form, not as overriding it.
+"teamRecord", use them to gauge the matchup. A heavy favorite tends to control the game
+(its attackers get more chances; the underdog is pinned back); flip it for an underdog.
+Treat these as confirmation/adjustment on top of recent form, not as overriding it.
 
 Be strict with verdicts — "play" must mean you are GENUINELY CONFIDENT:
 - play  = 62%+ and the stat clearly fits the player's role and matchup
@@ -481,6 +617,12 @@ Give each prop a CALIBRATED probability (0-1) of going over. Respond with ONLY v
 JSON, no prose, no fences. key_risk = short flag (8 words max) or "none". reasoning =
 1-2 sentences.
 {"picks":[{"player":"","stat":"","line":0,"verdict":"play|lean|pass","prob":0.0,"key_risk":"","reasoning":""}]}`;
+
+// Each league gets the shared head/tail plus only its own role rules.
+function promptFor(league) {
+  const roles = league === 'mlb' ? MLB_ROLES : SOCCER_ROLES;
+  return SYSTEM_HEAD + roles + SYSTEM_TAIL;
+}
 
 function extractBalanced(text) {
   let start = text.indexOf('{');
@@ -516,7 +658,7 @@ function parsePicks(text) {
   return [];
 }
 
-async function judge(candidates, teamRecords = {}, winProbs = {}) {
+async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'world_cup') {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
   const slim = {};
@@ -531,6 +673,10 @@ async function judge(candidates, teamRecords = {}, winProbs = {}) {
     if (c.last5) { entry.recent5 = c.last5; entry.recentAvg = c.avg; }  // last 5 for THIS stat
     if (teamRecords[c.team]) entry.teamRecord = teamRecords[c.team];     // e.g. "55-30"
     if (winProbs[c.team] != null) entry.teamWinPct = Math.round(winProbs[c.team] * 100); // favored?
+    if (c.oppTeam) entry.opponent = c.oppTeam;       // real opponent name when ESPN gave it
+    if (c.oppSP) entry.oppSP = c.oppSP;              // opposing starter (hitter props)
+    if (c.selfSP) entry.selfSP = c.selfSP;           // own season line (pitcher props)
+    if (c.park != null) entry.parkIndex = c.park;    // home venue run index (100 = neutral)
     (slim[key] ||= []).push(entry);
   }
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -543,7 +689,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}) {
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 16000,
-      system: SYSTEM,
+      system: promptFor(league),
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: 'Shortlist grouped by game:\n' + JSON.stringify(slim, null, 2) }],
     }),
@@ -734,8 +880,16 @@ export const handler = async (event) => {
     await store.setJSON(jobId, { status: 'running', step: 'pulling recent form' });
     await attachHistory(candidates);
 
+    let mlbStatus = null;
+    if (params.league === 'mlb') {
+      await store.setJSON(jobId, { status: 'running', step: 'pulling starting pitchers' });
+      const sp = await fetchMlbStarters();
+      const attached = attachStarters(candidates, sp.teamMap);
+      mlbStatus = { ...sp.status, attached };
+    }
+
     await store.setJSON(jobId, { status: 'running', step: 'Claude researching lineups' });
-    const picks = await judge(candidates, teamRecords, odds.teamWinProbs);
+    const picks = await judge(candidates, teamRecords, odds.teamWinProbs, params.league);
     if (!picks.length) throw new Error('Claude returned no parseable picks.');
 
     const chosen = selectLegs(picks, params.legs);
@@ -773,7 +927,7 @@ export const handler = async (event) => {
       // logging is best-effort — never let it break a run
     }
 
-    await store.setJSON(jobId, { status: 'done', result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, allPicks: picks, params } });
+    await store.setJSON(jobId, { status: 'done', result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, mlbStatus, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });
