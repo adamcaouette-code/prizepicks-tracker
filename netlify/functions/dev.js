@@ -1,22 +1,32 @@
 // netlify/functions/dev.js
 //
-// Private developer console for AtomBets. Read-only page that shows per-day log
-// counts and gives one-tap buttons to grade / drain / debug a date and test the
-// AI endpoints — all inline, results dumped on the page. Just for you.
+// Private developer console for AtomBets. Read-only page (except the action buttons
+// you tap). Shows honest, deduped per-day counts and gives one-tap grade / drain /
+// debug / clean plus endpoint tests. Just for you.
 //
 // View: https://atombets.netlify.app/api/dev
 
 import { getStore } from '@netlify/blobs';
 
+const isGraded = (p) => p.hit === true || p.hit === false;
+const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
+
+// Counts on a DEDUPED basis so re-runs don't inflate the numbers.
 function dayCounts(arr) {
-  let graded = 0, pending = 0, givenUp = 0;
-  const uniq = new Set();
+  const m = new Map();
   for (const p of arr) {
-    uniq.add(p.projectionId || `${p.player}|${p.stat}|${p.line}`);
-    if (p.hit === true || p.hit === false) graded++;
-    else { pending++; if ((p.gradeAttempts || 0) >= 3) givenUp++; }
+    const key = p.projectionId || `${p.player}|${p.stat}|${p.line}`;
+    const prev = m.get(key);
+    if (!prev || (isGraded(p) && !isGraded(prev))) m.set(key, p);
   }
-  return { total: arr.length, unique: uniq.size, graded, pending, givenUp };
+  const uniq = [...m.values()];
+  let graded = 0, pending = 0, combos = 0;
+  for (const p of uniq) {
+    if (isGraded(p)) graded++;
+    else if (p.ungradeable === 'combo' || isCombo(p)) combos++;
+    else pending++;
+  }
+  return { total: arr.length, unique: uniq.length, graded, pending, combos };
 }
 
 export const handler = async () => {
@@ -33,22 +43,23 @@ export const handler = async () => {
       let arr = [];
       try { arr = (await store.get(date, { type: 'json' })) || []; } catch { arr = []; }
       const c = dayCounts(arr);
+      const dupes = c.total - c.unique;
       rows += `<tr>
         <td>${date}</td>
-        <td>${c.total}</td><td>${c.unique}</td>
+        <td>${c.unique}${dupes ? ` <span style="color:#667">(+${dupes})</span>` : ''}</td>
         <td style="color:#34d399">${c.graded}</td>
         <td style="color:${c.pending ? '#fbbf24' : '#667'}">${c.pending}</td>
-        <td style="color:${c.givenUp ? '#f87171' : '#667'}">${c.givenUp}</td>
+        <td style="color:#889">${c.combos}</td>
         <td>
-          <button onclick="grade('${date}')">grade</button>
           <button onclick="drain('${date}')">drain</button>
           <button onclick="debug('${date}')">debug</button>
+          <button onclick="clean('${date}')">clean</button>
         </td>
       </tr>`;
     }
-    if (!rows) rows = '<tr><td colspan="7" style="color:#888">no logged days</td></tr>';
+    if (!rows) rows = '<tr><td colspan="6" style="color:#888">no logged days</td></tr>';
   } catch (e) {
-    rows = `<tr><td colspan="7" style="color:#f87171">error: ${String(e.message || e)}</td></tr>`;
+    rows = `<tr><td colspan="6" style="color:#f87171">error: ${String(e.message || e)}</td></tr>`;
   }
 
   const script = [
@@ -57,7 +68,9 @@ export const handler = async () => {
     "async function call(url,opts){try{var r=await fetch(url,opts);var t=await r.text();try{return{ok:r.ok,status:r.status,json:JSON.parse(t)};}catch(e){return{ok:r.ok,status:r.status,text:t.slice(0,160)};}}catch(e){return{ok:false,error:String(e)};}}",
     "async function grade(d){show('grading '+d+' ...','working');var res=await call('/api/grade-picks?date='+d);show('grade '+d,res.json||res);}",
     "async function debug(d){show('debug '+d+' ...','working');var res=await call('/api/grade-debug?date='+d+'&limit=6');show('debug '+d,res.json||res);}",
-    "async function drain(d){var calls=0,last=null,dead=0;while(calls<20){calls++;var res=await call('/api/grade-picks?date='+d);last=res.json||res;show('drain '+d+' — pass '+calls,last);if(!res.json){dead++;if(dead>=3)break;}else{dead=0;if(typeof last.remaining==='number'&&last.remaining===0){show('drain '+d+' DONE',last);return;}}await new Promise(function(r){setTimeout(r,400);});}show('drain '+d+' stopped',last);}",
+    "async function clean(d){show('cleaning '+d+' ...','working');var res=await call('/api/cleanup?date='+d);show('clean '+d+' (refresh page to update counts)',res.json||res);}",
+    "async function cleanAll(){show('cleaning all days ...','working');var res=await call('/api/cleanup');show('clean all (refresh page to update counts)',res.json||res);}",
+    "async function drain(d){var calls=0,last=null,dead=0;while(calls<25){calls++;var res=await call('/api/grade-picks?date='+d);last=res.json||res;show('drain '+d+' — pass '+calls,last);if(!res.json){dead++;if(dead>=3)break;}else{dead=0;if(typeof last.pendingSingles==='number'&&last.pendingSingles===0){show('drain '+d+' DONE',last);return;}if(typeof last.remaining==='number'&&last.remaining===0&&last.newlyGraded===0){show('drain '+d+' DONE',last);return;}}await new Promise(function(r){setTimeout(r,400);});}show('drain '+d+' stopped',last);}",
     "function gd(fn){var d=document.getElementById('dateInput').value;if(!d){show('pick a date first','');return;}fn(d);}",
     "async function testAsk(){show('testing /api/ask ...','working');var body={pick:{player:'Junior Caminero',stat:'Hits+Runs+RBIs',line:2.5,matchup:'KC vs TB',recent5:[6,3,5,12,1],recentAvg:5.4},question:'is he in the starting lineup tonight'};var res=await call('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});show('test /api/ask',res.json||res);}",
     "async function testStats(){var p=document.getElementById('statsPlayer').value||'Junior Caminero';show('testing /api/player-stats ('+p+') ...','working');var res=await call('/api/player-stats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({player:p,league:'mlb'})});show('test /api/player-stats',res.json||res);}",
@@ -85,10 +98,12 @@ export const handler = async () => {
     <a href="/api/calibration?format=json" target="_blank">calibration · json ↗</a>
   </div>
 
-  <h2>Pick log by day</h2>
-  <table><thead><tr><th>date</th><th>total</th><th>unique</th><th>graded</th><th>pending</th><th>givenUp</th><th>actions</th></tr></thead>
+  <h2>Pick log by day (deduped)</h2>
+  <table><thead><tr><th>date</th><th>unique</th><th>graded</th><th>pending</th><th>combos</th><th>actions</th></tr></thead>
   <tbody>${rows}</tbody></table>
-  <p style="color:#667;max-width:680px">total = every logged row (re-runs duplicate). unique = distinct picks. Grade by date with the buttons; <b>drain</b> loops until remaining is 0.</p>
+  <p style="color:#667;max-width:680px">unique = distinct picks (+N = duplicate rows from re-runs). graded/pending/combos are per distinct pick. <b>drain</b> grades until pending is 0; <b>clean</b> removes duplicate rows; combos can't be graded and are skipped.</p>
+
+  <div class="row"><button onclick="cleanAll()">clean all days</button></div>
 
   <h2>Grade / debug any date</h2>
   <div class="row">
@@ -96,12 +111,11 @@ export const handler = async () => {
     <button onclick="gd(grade)">grade</button>
     <button onclick="gd(drain)">drain</button>
     <button onclick="gd(debug)">debug</button>
+    <button onclick="gd(clean)">clean</button>
   </div>
 
   <h2>Endpoint tests</h2>
-  <div class="row">
-    <button onclick="testAsk()">test /api/ask</button>
-  </div>
+  <div class="row"><button onclick="testAsk()">test /api/ask</button></div>
   <div class="row">
     <input id="statsPlayer" placeholder="player name" value="Junior Caminero">
     <button onclick="testStats()">test /api/player-stats</button>
