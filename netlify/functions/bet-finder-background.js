@@ -934,7 +934,18 @@ export const handler = async (event) => {
       }));
       let existing = [];
       try { existing = (await logStore.get(day, { type: 'json' })) || []; } catch {}
-      await logStore.setJSON(day, existing.concat(logged));
+      // Merge by projectionId (fallback to player|stat|line) instead of appending,
+      // so re-running the same day updates picks in place rather than duplicating.
+      // An already-graded entry is preserved over a fresh (ungraded) re-log.
+      const keyOf = (p) => p.projectionId || `${p.player}|${p.stat}|${p.line}`;
+      const byKey = new Map();
+      for (const p of existing) byKey.set(keyOf(p), p);
+      for (const p of logged) {
+        const prev = byKey.get(keyOf(p));
+        if (prev && (prev.hit === true || prev.hit === false)) continue; // keep graded
+        byKey.set(keyOf(p), p);
+      }
+      await logStore.setJSON(day, [...byKey.values()]);
     } catch {
       // logging is best-effort — never let it break a run
     }

@@ -63,6 +63,7 @@ export const handler = async () => {
   }
 
   const script = [
+    `var ALL_DATES=${JSON.stringify(keys)};`,
     "var out=document.getElementById('out');",
     "function show(label,data){out.textContent='// '+label+'  ('+new Date().toLocaleTimeString()+')\\n'+(typeof data==='string'?data:JSON.stringify(data,null,2));}",
     "async function call(url,opts){try{var r=await fetch(url,opts);var t=await r.text();try{return{ok:r.ok,status:r.status,json:JSON.parse(t)};}catch(e){return{ok:r.ok,status:r.status,text:t.slice(0,160)};}}catch(e){return{ok:false,error:String(e)};}}",
@@ -72,6 +73,7 @@ export const handler = async () => {
     "async function cleanAll(){show('cleaning all days ...','working');var res=await call('/api/cleanup');show('clean all (refresh page to update counts)',res.json||res);}",
     "async function drain(d){var calls=0,last=null,dead=0;while(calls<25){calls++;var res=await call('/api/grade-picks?date='+d);last=res.json||res;show('drain '+d+' — pass '+calls,last);if(!res.json){dead++;if(dead>=3)break;}else{dead=0;if(typeof last.pendingSingles==='number'&&last.pendingSingles===0){show('drain '+d+' DONE',last);return;}if(typeof last.remaining==='number'&&last.remaining===0&&last.newlyGraded===0){show('drain '+d+' DONE',last);return;}}await new Promise(function(r){setTimeout(r,400);});}show('drain '+d+' stopped',last);}",
     "function gd(fn){var d=document.getElementById('dateInput').value;if(!d){show('pick a date first','');return;}fn(d);}",
+    "async function drainAll(){var today=new Date().toISOString().slice(0,10);var past=ALL_DATES.filter(function(d){return d<today;});if(!past.length){show('drain all','no past days to grade (today can\\'t be graded yet)');return;}for(var i=0;i<past.length;i++){await drain(past[i]);}show('DRAIN ALL DONE',{drained:past});}",
     "async function testAsk(){show('testing /api/ask ...','working');var body={pick:{player:'Junior Caminero',stat:'Hits+Runs+RBIs',line:2.5,matchup:'KC vs TB',recent5:[6,3,5,12,1],recentAvg:5.4},question:'is he in the starting lineup tonight'};var res=await call('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});show('test /api/ask',res.json||res);}",
     "async function testStats(){var p=document.getElementById('statsPlayer').value||'Junior Caminero';show('testing /api/player-stats ('+p+') ...','working');var res=await call('/api/player-stats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({player:p,league:'mlb'})});show('test /api/player-stats',res.json||res);}",
   ].join('\n');
@@ -103,7 +105,7 @@ export const handler = async () => {
   <tbody>${rows}</tbody></table>
   <p style="color:#667;max-width:680px">unique = distinct picks (+N = duplicate rows from re-runs). graded/pending/combos are per distinct pick. <b>drain</b> grades until pending is 0; <b>clean</b> removes duplicate rows; combos can't be graded and are skipped.</p>
 
-  <div class="row"><button onclick="cleanAll()">clean all days</button></div>
+  <div class="row"><button onclick="drainAll()">grade everything (all past days)</button><button onclick="cleanAll()">clean all days</button></div>
 
   <h2>Grade / debug any date</h2>
   <div class="row">
