@@ -165,12 +165,16 @@ const PARK_INDEX = {
   SD: 96, MIA: 96, DET: 96, ATH: 96, OAK: 96, SF: 92, SEA: 92,
 };
 
-// Pull every probable-starter entry (athlete + statistics) out of a summary payload.
+// Pull only the probable-starter entries out of a summary. We target the "probables"
+// arrays specifically (each entry = one starter with season statistics) rather than
+// every athlete in the boxscore — otherwise we'd grab single-game lines by mistake.
 function collectProbables(node, out = [], seen = new Set()) {
   if (!node || typeof node !== 'object' || seen.has(node)) return out;
   seen.add(node);
   if (Array.isArray(node)) { node.forEach((n) => collectProbables(n, out, seen)); return out; }
-  if (node.athlete && node.athlete.id && (node.statistics || node.athlete.throws)) out.push(node);
+  if (Array.isArray(node.probables)) {
+    for (const p of node.probables) if (p && p.athlete && p.athlete.id) out.push(p);
+  }
   for (const v of Object.values(node)) collectProbables(v, out, seen);
   return out;
 }
@@ -235,11 +239,16 @@ async function fetchMlbStarters() {
   return { teamMap, status: { games: events.length, starters: starterCount, enriched: Object.keys(byId).length } };
 }
 
+// PrizePicks and ESPN disagree on a few team abbreviations; map PP's to ESPN's so
+// those teams still match. (PP's MLB "team" field is the abbreviation.)
+const PP_TO_ESPN_ABBR = { CWS: 'CHW', AZ: 'ARI', WAS: 'WSH', SDP: 'SD', SFG: 'SF', TBR: 'TB', KCR: 'KC', WSN: 'WSH' };
+
 // Attach SP context to MLB candidates (mutates). Null-safe; unmatched teams just skip.
 function attachStarters(candidates, teamMap) {
   let hit = 0;
   for (const c of candidates) {
-    const info = teamMap[normKey(c.team)];
+    const alias = PP_TO_ESPN_ABBR[String(c.team || '').toUpperCase()];
+    const info = teamMap[normKey(c.team)] || (alias && teamMap[normKey(alias)]);
     if (!info) continue;
     hit++;
     if (info.oppTeam) c.oppTeam = info.oppTeam;
@@ -710,6 +719,9 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'worl
     p.position ??= src.position || '';
     p.image ??= src.image || '';                    // player headshot
     if (src.last5) { p.recent5 ??= src.last5; p.recentAvg ??= src.avg; } // last-5 for the UI
+    if (src.oppSP) p.oppSP ??= src.oppSP;            // opposing starter (hitter props) — for UI/validation
+    if (src.selfSP) p.selfSP ??= src.selfSP;         // own season line (pitcher props)
+    if (src.park != null) p.parkIndex ??= src.park;  // home park run index
   }
   return picks;
 }
