@@ -9,7 +9,7 @@
 
 import { getStore } from '@netlify/blobs';
 
-const MODEL = 'claude-sonnet-4-6';
+const MODEL = 'claude-sonnet-5';
 const PP_LEAGUE_IDS = { world_cup: '241', mlb: '2', wnba: '3', nba: '7', nfl: '9' };
 const ODDS_PRIOR = { goblin: 0.62, standard: 0.55, demon: 0.45 };
 
