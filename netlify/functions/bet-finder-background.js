@@ -301,6 +301,11 @@ async function fetchWinProbs(leagueTag, rows) {
 }
 
 // ---------- hard position gate: kill physically-wrong props pre-Claude ----------
+// League-aware. Each sport has its own role/stat vocabulary; a league with no gate
+// defined fails OPEN (everything passes) so we never invent traps for a sport we
+// don't understand yet.
+
+// ===== soccer =====
 function roleOf(pos) {
   const p = (pos || '').toUpperCase();
   if (!p.replace(/[^A-Z]/g, '')) return 'UNK';
@@ -325,7 +330,7 @@ function statKind(stat) {
 
 // Conservative: only block UNAMBIGUOUS impossibilities. Unknown position or
 // neutral stat (passes, fouls, fantasy score) always passes through.
-function positionAllows(pos, stat) {
+function soccerAllows(pos, stat) {
   const role = roleOf(pos), kind = statKind(stat);
   if (role === 'UNK' || kind === 'NEUTRAL') return true;
   if (kind === 'GK') return role === 'GK';            // only keepers get saves
@@ -335,13 +340,60 @@ function positionAllows(pos, stat) {
   return true;
 }
 
+// ===== baseball (MLB) =====
+// The one axis that creates impossible props is pitcher vs position-player.
+function mlbRole(pos) {
+  const p = (pos || '').toUpperCase();
+  if (!p.replace(/[^A-Z0-9]/g, '')) return 'UNK';
+  if (/\b(SP|RP|P)\b/.test(p) || p.includes('PITCH')) return 'PIT';
+  if (/\b(C|1B|2B|3B|SS|LF|CF|RF|DH|OF|IF|UT|UTIL)\b/.test(p) ||
+      p.includes('CATCH') || p.includes('INFIELD') || p.includes('OUTFIELD') ||
+      p.includes('DESIGNATED') || p.includes('BASE') || p.includes('SHORT')) return 'BAT';
+  return 'UNK';
+}
+
+function mlbStatKind(stat) {
+  const s = (stat || '').toLowerCase();
+  // explicit role-prefixed stats win (PP often labels "Hitter ..." / "Pitcher ...")
+  if (s.includes('hitter') || s.includes('batter')) return 'HIT';
+  if (s.includes('pitcher') || s.includes('pitching')) return 'PIT';
+  // unambiguous pitching stats
+  if (s.includes('earned run') || s.includes('hits allowed') || s.includes('walks allowed') ||
+      s.includes('outs recorded') || s.includes('pitching out')) return 'PIT';
+  // unambiguous hitting stats
+  if (s.includes('total bases') || s.includes('rbi') || s.includes('stolen base') ||
+      s.includes('home run') || s.includes('double') || s.includes('triple') ||
+      s.includes('single') || s.includes('at bat') || s.includes('hits+runs') ||
+      s.includes('hits + runs')) return 'HIT';
+  // deliberately AMBIGUOUS -> NEUTRAL -> pass: bare "strikeouts", "hits", "runs",
+  // "walks", "fantasy score" can belong to either side; never block on those.
+  return 'NEUTRAL';
+}
+
+// Block ONLY the unambiguous trap: a pitching stat on a position player. A hitting
+// stat on a pitcher PASSES on purpose — two-way players (Ohtani) are real, and PP
+// almost never posts a truly impossible hitting line for a pitcher.
+function mlbAllows(pos, stat) {
+  const role = mlbRole(pos), kind = mlbStatKind(stat);
+  if (role === 'UNK' || kind === 'NEUTRAL') return true;
+  if (kind === 'PIT') return role === 'PIT';          // only pitchers record pitching stats
+  return true;
+}
+
+// ===== dispatch =====
+function positionAllows(pos, stat, league) {
+  if (league === 'mlb') return mlbAllows(pos, stat);
+  if (league === 'world_cup') return soccerAllows(pos, stat);
+  return true; // no gate defined for this league yet -> fail open, never invent traps
+}
+
 // ---------- screen: keep selected tiers, spread across ALL games ----------
 function findCandidates(rows, tiers, perGame = 4, maxTotal = 44) {
   const allow = new Set(tiers && tiers.length ? tiers : ['goblin', 'standard']);
   const byMatchup = {};
   for (const r of rows) {
     if (!allow.has(r.oddsType)) continue;
-    if (!positionAllows(r.position, r.stat)) continue;  // hard trap gate
+    if (!positionAllows(r.position, r.stat, r.league)) continue;  // hard trap gate
     (byMatchup[r.matchup] ||= []).push({ ...r, fairProb: ODDS_PRIOR[r.oddsType] ?? 0.55 });
   }
   const out = [];
@@ -395,6 +447,20 @@ likely to hit; a line above what they usually produce is a pass unless the match
 strongly favors it. Note how many of the last 5 cleared the line. Recent form is your
 strongest signal — weight it heavily, then adjust for opponent and rotation. If recent5
 is absent, fall back to your own knowledge and search.
+
+Some props are COMBO props — two players bundled into one line (names joined by "+",
+stat ends in "(Combo)", flagged combo:true). Treat these with extra caution:
+- There is NO recent5 for a combo — you cannot see either player's recent form, and you
+  must NOT invent one. A combined line is inherently noisier than a single-player line.
+- The total can be carried unevenly: one player may do most of the work while the other
+  contributes little. You cannot see that split, so never assume both pull their weight.
+- Both players must be CONFIRMED starters. If either is doubtful, rested, or benched,
+  that alone is a PASS.
+- Judge combos on confirmed lineups, role fit, and opponent only, and be conservative.
+  Do not rate a combo "play" unless both are confirmed starting AND the line sits well
+  within reach; when unsure, lean or pass.
+- If the two players are in DIFFERENT games, you are stacking two independent
+  uncertainties — default to PASS unless both halves are clearly strong on their own.
 
 When a prop includes "teamWinPct" (the player's team's win probability) and/or
 "teamRecord", use them to gauge the matchup:
@@ -456,11 +522,13 @@ async function judge(candidates, teamRecords = {}, winProbs = {}) {
   const slim = {};
   for (const c of candidates) {
     const key = c.matchup || c.game;
+    const isCombo = / \+ /.test(c.player) || /combo/i.test(c.stat); // "A + B" or "... (Combo)"
     const entry = {
       player: c.player, stat: c.stat, line: c.line,
       position: c.position, team: c.team, opponent: c.opp,
     };
-    if (c.last5) { entry.recent5 = c.last5; entry.recentAvg = c.avg; }  // their last 5 for THIS stat
+    if (isCombo) entry.combo = true;                                    // no per-player form exists
+    if (c.last5) { entry.recent5 = c.last5; entry.recentAvg = c.avg; }  // last 5 for THIS stat
     if (teamRecords[c.team]) entry.teamRecord = teamRecords[c.team];     // e.g. "55-30"
     if (winProbs[c.team] != null) entry.teamWinPct = Math.round(winProbs[c.team] * 100); // favored?
     (slim[key] ||= []).push(entry);
@@ -655,7 +723,7 @@ export const handler = async (event) => {
     const odds = await fetchWinProbs(params.league, rows);
     const candidates = findCandidates(rows, params.tiers);
     const traps = rows
-      .filter((r) => !positionAllows(r.position, r.stat))
+      .filter((r) => !positionAllows(r.position, r.stat, r.league))
       .slice(0, 15)
       .map((r) => ({ player: r.player, stat: r.stat, line: r.line, position: r.position, matchup: r.matchup }));
     if (!candidates.length) {
