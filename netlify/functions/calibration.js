@@ -11,6 +11,7 @@
 import { getStore } from '@netlify/blobs';
 
 const isGraded = (p) => p.hit === true || p.hit === false;
+const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
 
 // Re-running the engine on a day appends the same picks again, so the log holds
 // duplicates. Collapse by projectionId (falling back to a content key), preferring
@@ -29,10 +30,27 @@ function dedupe(picks) {
 function aggregate(rawPicks) {
   const picks = dedupe(rawPicks);
   const graded = picks.filter(isGraded);
+
+  // Break down what is NOT graded, so a big "pending" number is honest instead of alarming.
+  const ungradedPicks = picks.filter((p) => !isGraded(p));
+  const combosN = ungradedPicks.filter((p) => p.ungradeable === 'combo' || isCombo(p)).length;
+  const givenUpN = ungradedPicks.filter((p) => !isCombo(p) && (p.gradeAttempts || 0) >= 3).length;
+  const gradeableN = ungradedPicks.length - combosN - givenUpN;
+  // pending gradeable, grouped by date (the newest date is usually today's in-progress slate)
+  const pendingByDate = {};
+  for (const p of ungradedPicks) {
+    if (p.ungradeable === 'combo' || isCombo(p) || (p.gradeAttempts || 0) >= 3) continue;
+    pendingByDate[p.date] = (pendingByDate[p.date] || 0) + 1;
+  }
+
   const out = {
     logged: picks.length,
     graded: graded.length,
     pending: picks.length - graded.length,
+    pendingGradeable: gradeableN,
+    combos: combosN,
+    givenUp: givenUpN,
+    pendingByDate,
     overall: null,
     brier: null,
     bands: [],
@@ -98,6 +116,11 @@ function renderHTML(a) {
     ? `<p class="note">No graded picks yet. The grader runs daily and fills in results a day or two after games. Once a slate has been graded, calibration shows up here.</p>`
     : `<p class="note">Calibration uses the over-probability on every logged pick (play, lean, and pass), so even passes count toward whether the numbers are honest. "Diff" is actual minus predicted — green is well-calibrated (±4pts), red is off by 10+.</p>`;
 
+  const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
+  const pendRows = pendDates.map(([d, n], i) =>
+    `<tr><td>${d}${i === 0 ? ' <span style="color:#6cf">(newest — usually today, games not final)</span>' : ''}</td><td>${n}</td></tr>`).join('')
+    || '<tr><td colspan="2" style="color:#667">none — all gradeable picks are graded</td></tr>';
+
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AtomBets · Calibration</title><style>
   :root{color-scheme:dark}
@@ -113,14 +136,18 @@ function renderHTML(a) {
 </style></head><body>
   <h1>AtomBets · Calibration</h1>
   <div class="cards">
-    <div class="card"><div class="v">${a.logged}</div><div class="l">logged</div></div>
     <div class="card"><div class="v">${a.graded}</div><div class="l">graded</div></div>
-    <div class="card"><div class="v">${a.pending}</div><div class="l">pending</div></div>
+    <div class="card"><div class="v">${a.pendingGradeable}</div><div class="l">pending (gradeable)</div></div>
+    <div class="card"><div class="v">${a.combos}</div><div class="l">combos (skip)</div></div>
+    <div class="card"><div class="v">${a.givenUp}</div><div class="l">given up</div></div>
     <div class="card"><div class="v">${pct(a.overall)}</div><div class="l">over rate</div></div>
     <div class="card"><div class="v">${a.brier == null ? '—' : a.brier.toFixed(3)}</div><div class="l">brier ↓</div></div>
     <div class="card"><div class="v">${a.playsLeans.n ? pct(a.playsLeans.hits / a.playsLeans.n) : '—'}</div><div class="l">play+lean win</div></div>
   </div>
   ${note}
+  <h2>Pending (gradeable) by day</h2>
+  <table><thead><tr><th>date</th><th>pending</th></tr></thead><tbody>${pendRows}</tbody></table>
+  <p class="note">Most "pending" is the newest day's slate (games not final yet) — the daily grader clears each day the morning after. Combos can't be graded this way; "given up" tried 3× with no result.</p>
   <h2>Calibration by predicted band</h2>
   <table><thead><tr><th>P(over) band</th><th>n</th><th>predicted</th><th>actual</th><th>diff (pts)</th></tr></thead><tbody>${bandRows}</tbody></table>
   <h2>By tier</h2>
