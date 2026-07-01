@@ -36,9 +36,18 @@ export const handler = async (event) => {
       let arr = [];
       try { arr = (await store.get(date, { type: 'json' })) || []; } catch { arr = []; }
       const before = arr.length;
+      // ?reset=1 clears gradeAttempts on ungraded picks so wrongly "given up" picks
+      // (e.g. benched while their games were still in progress) can grade again.
+      let resetN = 0;
+      if (q.reset === '1') {
+        for (const p of arr) {
+          if ((p.hit === null || p.hit === undefined) && p.gradeAttempts) { p.gradeAttempts = 0; resetN++; }
+        }
+      }
       const deduped = dedupeDay(arr);
-      if (!dry && deduped.length < before) await store.setJSON(date, deduped);
-      return { date, before, after: deduped.length, removed: before - deduped.length };
+      const changed = deduped.length < before || resetN > 0;
+      if (!dry && changed) await store.setJSON(date, deduped);
+      return { date, before, after: deduped.length, removed: before - deduped.length, resetTombstones: resetN };
     };
 
     if (q.date) {
@@ -49,9 +58,9 @@ export const handler = async (event) => {
     let keys = [];
     try { keys = (await store.list()).blobs.map((b) => b.key); } catch { keys = []; }
     const report = [];
-    let totalRemoved = 0;
-    for (const k of keys) { const r = await doDay(k); report.push(r); totalRemoved += r.removed; }
-    return { statusCode: 200, headers, body: JSON.stringify({ dry, days: report.length, totalRemoved, report }, null, 2) };
+    let totalRemoved = 0, totalReset = 0;
+    for (const k of keys) { const r = await doDay(k); report.push(r); totalRemoved += r.removed; totalReset += r.resetTombstones; }
+    return { statusCode: 200, headers, body: JSON.stringify({ dry, days: report.length, totalRemoved, totalReset, report }, null, 2) };
   } catch (err) {
     return { statusCode: 500, headers, body: JSON.stringify({ error: String(err.message || err) }) };
   }
