@@ -32,9 +32,9 @@ function dayCounts(arr) {
 export const handler = async () => {
   const headers = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' };
   let rows = '';
+  let keys = [];
   try {
     const store = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
-    let keys = [];
     try { keys = (await store.list()).blobs.map((b) => b.key); } catch { keys = []; }
     keys.sort().reverse();
     keys = keys.slice(0, 21);
