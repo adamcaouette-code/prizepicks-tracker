@@ -134,6 +134,7 @@ function renderHTML(a) {
   td{font-variant-numeric:tabular-nums} .note{color:#9aa;max-width:560px;font-size:12px}
   .ts{color:#667;font-size:11px;margin-top:24px}
 </style></head><body>
+  <a href="/api/dev" title="dev" style="position:fixed;top:10px;right:10px;width:16px;height:16px;border:1px solid #1a2128;border-radius:3px;opacity:.12;text-decoration:none;z-index:99" aria-label="dev"></a>
   <h1>AtomBets · Calibration</h1>
   <div class="cards">
     <div class="card"><div class="v">${a.graded}</div><div class="l">graded</div></div>
