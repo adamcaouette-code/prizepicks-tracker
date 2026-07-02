@@ -1,13 +1,16 @@
 // netlify/functions/grade-cron.js
 //
-// Runs the grader automatically once a day so logged picks actually get hit/miss
-// filled in. It just calls the existing /api/grade-picks endpoint for the last two
-// days (yesterday + the day before, to catch late-posting west-coast results).
+// Automatic daily grading — no manual clicks. Netlify runs this on the schedule
+// below; it fully DRAINS yesterday and the day before by calling the grader
+// repeatedly until each day stops making progress (large slates need multiple
+// passes since each grader call is time-budgeted).
 //
-// No manual action needed once deployed — Netlify runs it on the schedule below.
-// You can still hit /api/grade-picks?date=YYYY-MM-DD by hand anytime.
+// Manual grading via /api/grade-picks and the dev console still works anytime;
+// this just makes it unnecessary.
 
 export const config = { schedule: '0 14 * * *' }; // 14:00 UTC daily (~6-7am Pacific)
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const handler = async () => {
   const base = process.env.URL || process.env.DEPLOY_PRIME_URL || 'https://atombets.netlify.app';
@@ -16,14 +19,36 @@ export const handler = async () => {
 
   const ran = [];
   for (const d of targets) {
-    try {
-      const res = await fetch(`${base}/api/grade-picks?date=${d}`);
-      let info = null;
-      try { info = await res.json(); } catch { /* non-JSON is fine */ }
-      ran.push({ date: d, status: res.status, newlyGraded: info?.newlyGraded ?? null, totalGraded: info?.totalGraded ?? null });
-    } catch (e) {
-      ran.push({ date: d, error: String(e.message || e) });
+    let passes = 0, last = null, prevPending = Infinity, stalled = 0;
+    while (passes < 15) {                       // hard cap on passes per day
+      passes++;
+      try {
+        const res = await fetch(`${base}/api/grade-picks?date=${d}`);
+        last = await res.json().catch(() => null);
+      } catch (e) {
+        last = { error: String(e.message || e) };
+      }
+      const pending = last && typeof last.pendingSingles === 'number' ? last.pendingSingles : null;
+      const remaining = last && typeof last.remaining === 'number' ? last.remaining : null;
+
+      // fully drained: nothing left in the queue for this pass
+      if (pending === 0 || (remaining === 0 && (last?.newlyGraded ?? 0) === 0)) break;
+      // stop if we're not making progress (e.g. all that's left is stillPending retries)
+      if (pending !== null) {
+        if (pending >= prevPending) { stalled++; if (stalled >= 2) break; }
+        else stalled = 0;
+        prevPending = pending;
+      }
+      await sleep(500);
     }
+    ran.push({
+      date: d, passes,
+      totalGraded: last?.totalGraded ?? null,
+      pendingSingles: last?.pendingSingles ?? null,
+      givenUp: last?.givenUp ?? null,
+      combos: last?.combos ?? null,
+      error: last?.error ?? null,
+    });
   }
   return { statusCode: 200, body: JSON.stringify({ ran }) };
 };

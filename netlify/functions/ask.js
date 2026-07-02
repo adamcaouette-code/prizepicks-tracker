@@ -13,9 +13,27 @@
 //   // (or) question: 'single question string'
 // }
 
-const MODEL = 'claude-sonnet-4-6';   // fast + cheap for chat; swap to match your engine if needed
+const MODEL = 'claude-sonnet-5';   // fast + cheap for the per-pick chat
 const MAX_TOKENS = 1024;
 const SEARCH_MAX_USES = 3;           // cap searches so a question can't run away on time/cost
+
+// Spend metering (best-effort). Sonnet 5: $2/$10 per MTok intro until Aug 31 2026
+// (then $3/$15). Web search ~$0.01/search. Update if pricing changes.
+import { getStore } from '@netlify/blobs';
+async function recordCost(feature, apiResponse) {
+  try {
+    const u = apiResponse?.usage || {};
+    const inTok = u.input_tokens || 0, outTok = u.output_tokens || 0;
+    const searches = u.server_tool_use?.web_search_requests || 0;
+    const usd = (inTok / 1e6) * 2 + (outTok / 1e6) * 10 + searches * 0.01;
+    const store = getStore({ name: 'cost-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+    const day = new Date().toISOString().slice(0, 10);
+    let arr = [];
+    try { arr = (await store.get(day, { type: 'json' })) || []; } catch {}
+    arr.push({ at: new Date().toISOString(), feature, model: MODEL, inTok, outTok, searches, usd: Math.round(usd * 10000) / 10000 });
+    await store.setJSON(day, arr);
+  } catch { /* never break the chat */ }
+}
 
 function buildSystem(pick = {}) {
   const f = [];
@@ -90,6 +108,7 @@ export const handler = async (event) => {
     if (!res.ok) {
       return { statusCode: res.status, headers, body: JSON.stringify({ error: data?.error?.message || 'Anthropic API error', detail: data }) };
     }
+    recordCost('ask', data).catch(() => {});
 
     const blocks = Array.isArray(data.content) ? data.content : [];
     const answer = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();

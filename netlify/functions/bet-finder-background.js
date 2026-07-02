@@ -9,7 +9,37 @@
 
 import { getStore } from '@netlify/blobs';
 
-const MODEL = 'claude-sonnet-5';
+const MODEL = process.env.JUDGE_MODEL || 'claude-opus-4-8';
+const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap web searches so runs don't blow past the timeout
+
+// ---- Spend metering (best-effort, never blocks the run) --------------------
+// Prices in USD per million tokens, verified 2026-07: opus-4-8 $5/$25;
+// sonnet-5 $2/$10 intro until Aug 31 2026 (then $3/$15). Web search ~$0.01/search.
+// Update these if Anthropic pricing changes.
+const PRICES = {
+  'claude-opus-4-8': { in: 5, out: 25 },
+  'claude-sonnet-5': { in: 2, out: 10 },
+  'claude-sonnet-4-6': { in: 3, out: 15 },
+  'claude-haiku-4-5': { in: 1, out: 5 },
+};
+const SEARCH_PRICE = 0.01;
+async function recordCost(feature, model, apiResponse) {
+  try {
+    const u = apiResponse?.usage || {};
+    const inTok = u.input_tokens || 0;
+    const outTok = u.output_tokens || 0;
+    const searches = u.server_tool_use?.web_search_requests || 0;
+    const p = PRICES[model] || { in: 5, out: 25 };   // unknown model: assume Opus rates (conservative)
+    const usd = (inTok / 1e6) * p.in + (outTok / 1e6) * p.out + searches * SEARCH_PRICE;
+    const store = getStore({ name: 'cost-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+    const day = new Date().toISOString().slice(0, 10);
+    let arr = [];
+    try { arr = (await store.get(day, { type: 'json' })) || []; } catch {}
+    arr.push({ at: new Date().toISOString(), feature, model, inTok, outTok, searches, usd: Math.round(usd * 10000) / 10000 });
+    await store.setJSON(day, arr);
+  } catch { /* metering must never break anything */ }
+}
+// ----------------------------------------------------------------------------
 const PP_LEAGUE_IDS = { world_cup: '241', mlb: '2', wnba: '3', nba: '7', nfl: '9' };
 const ODDS_PRIOR = { goblin: 0.62, standard: 0.55, demon: 0.45 };
 
@@ -699,12 +729,13 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'worl
       model: MODEL,
       max_tokens: 16000,
       system: promptFor(league),
-      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: JUDGE_MAX_SEARCHES }],
       messages: [{ role: 'user', content: 'Shortlist grouped by game:\n' + JSON.stringify(slim, null, 2) }],
     }),
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'Claude API error');
+  recordCost('judge', MODEL, data).catch(() => {});   // best-effort spend metering
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   const picks = parsePicks(text);
   // re-attach game by player+stat
@@ -873,12 +904,51 @@ export const handler = async (event) => {
       maxStake: body.maxStake ? Number(body.maxStake) : null,
       tiers: Array.isArray(body.tiers) && body.tiers.length ? body.tiers : ['goblin', 'standard'],
     };
-    await store.setJSON(jobId, { status: 'running', step: 'pulling props' });
+
+    // ---- Run timer: timestamped phase log + typical-duration ETA ----------
+    // Each phase update carries startedAt, elapsedMs, and a log of completed
+    // phases with their durations. typicalMs is the average of the last runs
+    // for this league (from the run-stats blob), so the UI can show a real ETA.
+    const runStart = Date.now();
+    const phaseLog = [];           // [{ phase, ms }]
+    let lastPhaseAt = runStart;
+    let typicalMs = null;
+    const statsStore = getStore({ name: 'run-stats', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+    try {
+      const hist = await statsStore.get(params.league, { type: 'json' });
+      if (Array.isArray(hist) && hist.length) typicalMs = Math.round(hist.reduce((a, r) => a + r.totalMs, 0) / hist.length);
+    } catch { /* no history yet — ETA shows once a run has completed */ }
+
+    const tick = async (step) => {
+      const now = Date.now();
+      await store.setJSON(jobId, {
+        status: 'running', step,
+        startedAt: new Date(runStart).toISOString(),
+        elapsedMs: now - runStart,
+        typicalMs,                               // null until at least one run has finished
+        phases: phaseLog.slice(),                // completed phases with durations
+      });
+    };
+    const phaseDone = (phase) => {
+      const now = Date.now();
+      phaseLog.push({ phase, ms: now - lastPhaseAt });
+      lastPhaseAt = now;
+    };
+    const recordRun = async () => {
+      try {
+        const totalMs = Date.now() - runStart;
+        let hist = [];
+        try { hist = (await statsStore.get(params.league, { type: 'json' })) || []; } catch {}
+        hist.push({ at: new Date().toISOString(), totalMs, phases: phaseLog.slice(), model: MODEL });
+        await statsStore.setJSON(params.league, hist.slice(-20));   // keep last 20 runs
+      } catch { /* stats are best-effort */ }
+    };
+    // ------------------------------------------------------------------------
+
+    await tick('pulling props');
 
     let rows = await fetchProps(params.league);
     rows = filterToday(rows, params.today);
-    const teamRecords = resolveRecords(rows, await fetchTeamRecords(params.league));
-    const odds = await fetchWinProbs(params.league, rows);
     const candidates = findCandidates(rows, params.tiers);
     const traps = rows
       .filter((r) => !positionAllows(r.position, r.stat, r.league))
@@ -888,19 +958,43 @@ export const handler = async (event) => {
       await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: 'No candidates — props not posted yet.' }, params } });
       return { statusCode: 202 };
     }
+    phaseDone('pulling props');
 
-    await store.setJSON(jobId, { status: 'running', step: 'pulling recent form' });
-    await attachHistory(candidates);
+    // ---- Parallel fetch phase with a completion gate ----------------------
+    // These four are independent of each other (they only need rows/candidates),
+    // so they run concurrently. The judge MUST NOT start until every piece has
+    // settled — Promise.allSettled waits for ALL of them, success or failure,
+    // and the checklist below records which pieces arrived. A failed piece
+    // degrades gracefully (judge runs without it) instead of blocking the run.
+    await tick('gathering data (records, odds, form, starters)');
+
+    const [recordsR, oddsR, historyR, startersR] = await Promise.allSettled([
+      fetchTeamRecords(params.league),                                  // piece 1: team records
+      fetchWinProbs(params.league, rows),                               // piece 2: win probabilities
+      attachHistory(candidates),                                        // piece 3: recent form (mutates candidates)
+      params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null), // piece 4: MLB starters
+    ]);
+
+    const checklist = {
+      records: recordsR.status === 'fulfilled',
+      odds: oddsR.status === 'fulfilled',
+      history: historyR.status === 'fulfilled',
+      starters: params.league !== 'mlb' ? 'n/a' : startersR.status === 'fulfilled',
+    };
+
+    const teamRecords = resolveRecords(rows, recordsR.status === 'fulfilled' ? recordsR.value : {});
+    const odds = oddsR.status === 'fulfilled' ? oddsR.value : { status: 'error', message: 'win% fetch failed', teamWinProbs: {} };
 
     let mlbStatus = null;
     if (params.league === 'mlb') {
-      await store.setJSON(jobId, { status: 'running', step: 'pulling starting pitchers' });
-      const sp = await fetchMlbStarters();
+      const sp = startersR.status === 'fulfilled' && startersR.value ? startersR.value : { teamMap: {}, status: { games: 0, starters: 0, message: 'starters fetch failed' } };
       const attached = attachStarters(candidates, sp.teamMap);
-      mlbStatus = { ...sp.status, attached };
+      mlbStatus = { ...sp.status, attached, checklist };
     }
+    // ---- Gate passed: every piece settled. Hand the full puzzle to Claude. --
+    phaseDone('gathering data');
 
-    await store.setJSON(jobId, { status: 'running', step: 'Claude researching lineups' });
+    await tick('Claude researching lineups');
     const picks = await judge(candidates, teamRecords, odds.teamWinProbs, params.league);
     if (!picks.length) throw new Error('Claude returned no parseable picks.');
 
@@ -950,7 +1044,9 @@ export const handler = async (event) => {
       // logging is best-effort — never let it break a run
     }
 
-    await store.setJSON(jobId, { status: 'done', result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, mlbStatus, allPicks: picks, params } });
+    phaseDone('Claude researching lineups');
+    await recordRun();
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, mlbStatus, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });

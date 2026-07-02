@@ -159,6 +159,19 @@ function renderHTML(a) {
     <tr><td>play</td><td>${a.plays.n}</td><td>${a.plays.n ? pct(a.plays.hits / a.plays.n) : '—'}</td></tr>
     <tr><td>play + lean</td><td>${a.playsLeans.n}</td><td>${a.playsLeans.n ? pct(a.playsLeans.hits / a.playsLeans.n) : '—'}</td></tr>
   </tbody></table>
+  <h2>API spend (last 30 days)</h2>
+  <div class="cards">
+    <div class="card"><div class="v">$${(a.spend?.today ?? 0).toFixed(2)}</div><div class="l">today</div></div>
+    <div class="card"><div class="v">$${(a.spend?.week ?? 0).toFixed(2)}</div><div class="l">7 days</div></div>
+    <div class="card"><div class="v">$${(a.spend?.month ?? 0).toFixed(2)}</div><div class="l">30 days</div></div>
+  </div>
+  <table><thead><tr><th>feature</th><th>spend (30d)</th></tr></thead><tbody>
+    ${Object.entries(a.spend?.byFeature || {}).sort((x, y) => y[1] - x[1]).map(([f, v]) => `<tr><td>${esc(f)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" style="color:#667">no metered calls yet</td></tr>'}
+  </tbody></table>
+  <table><thead><tr><th>model</th><th>spend (30d)</th></tr></thead><tbody>
+    ${Object.entries(a.spend?.byModel || {}).sort((x, y) => y[1] - x[1]).map(([m, v]) => `<tr><td>${esc(m)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" style="color:#667">—</td></tr>'}
+  </tbody></table>
+  <p class="note">Self-metered from each Claude call's token usage at current per-model rates (Sonnet 5 intro pricing until Aug 31). This is AtomBets' own spend only — it can't see your Anthropic balance or other usage; for that, check console.anthropic.com → Billing.</p>
   <p class="ts">generated ${new Date().toISOString()}</p>
 </body></html>`;
 }
@@ -184,6 +197,32 @@ export const handler = async (event) => {
     if (q.league) picks = picks.filter((p) => p.league === q.league);
 
     const agg = aggregate(picks);
+
+    // ---- API spend (from cost-log, written by judge/ask/reevaluate) --------
+    const spend = { today: 0, week: 0, month: 0, byFeature: {}, byModel: {} };
+    try {
+      const costStore = getStore({ name: 'cost-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+      let ckeys = [];
+      try { ckeys = (await costStore.list()).blobs.map((b) => b.key); } catch { ckeys = []; }
+      const today = new Date().toISOString().slice(0, 10);
+      const d7 = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+      const d30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      for (const k of ckeys) {
+        if (k < d30) continue;
+        let entries = [];
+        try { entries = (await costStore.get(k, { type: 'json' })) || []; } catch { continue; }
+        for (const e of entries) {
+          const usd = e.usd || 0;
+          spend.month += usd;
+          if (k >= d7) spend.week += usd;
+          if (k === today) spend.today += usd;
+          spend.byFeature[e.feature] = (spend.byFeature[e.feature] || 0) + usd;
+          spend.byModel[e.model] = (spend.byModel[e.model] || 0) + usd;
+        }
+      }
+    } catch { /* spend section is best-effort */ }
+    agg.spend = spend;
+    // ------------------------------------------------------------------------
 
     if (q.format === 'json') {
       return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(agg, null, 2) };
