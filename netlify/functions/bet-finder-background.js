@@ -540,20 +540,30 @@ function positionAllows(pos, stat, league) {
 }
 
 // ---------- screen: keep selected tiers, spread across ALL games ----------
-function findCandidates(rows, tiers, perGame = 4, maxTotal = 44) {
+function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = null) {
   const allow = new Set(tiers && tiers.length ? tiers : ['goblin', 'standard']);
+  // Optional prop-type filter: e.g. "home runs". Matches the stat string loosely
+  // (case-insensitive substring), so it catches "Home Runs", "Hitter Home Runs", etc.
+  const wantStat = statFilter ? String(statFilter).trim().toLowerCase() : null;
+  const matchesStat = (r) => !wantStat || String(r.stat || '').toLowerCase().includes(wantStat);
+  // When filtering to one prop type, widen the net so the BEST available shows even
+  // if probabilities are low (you've already chosen the prop; you just want the top of it).
+  const pg = wantStat ? 8 : perGame;
+  const max = wantStat ? 60 : maxTotal;
+
   const byMatchup = {};
   for (const r of rows) {
     if (!allow.has(r.oddsType)) continue;
     if (!positionAllows(r.position, r.stat, r.league)) continue;  // hard trap gate
+    if (!matchesStat(r)) continue;                                 // prop-type filter
     (byMatchup[r.matchup] ||= []).push({ ...r, fairProb: ODDS_PRIOR[r.oddsType] ?? 0.55 });
   }
   const out = [];
   for (const m in byMatchup) {
-    const top = byMatchup[m].sort((a, b) => b.fairProb - a.fairProb).slice(0, perGame);
+    const top = byMatchup[m].sort((a, b) => b.fairProb - a.fairProb).slice(0, pg);
     out.push(...top);                              // every matchup gets represented
   }
-  return out.sort((a, b) => b.fairProb - a.fairProb).slice(0, maxTotal);
+  return out.sort((a, b) => b.fairProb - a.fairProb).slice(0, max);
 }
 
 function groupByGame(items) {
@@ -903,6 +913,8 @@ export const handler = async (event) => {
       today: body.today !== false,
       maxStake: body.maxStake ? Number(body.maxStake) : null,
       tiers: Array.isArray(body.tiers) && body.tiers.length ? body.tiers : ['goblin', 'standard'],
+      statFilter: body.statFilter ? String(body.statFilter) : null, // e.g. "home runs" — judge only this prop type
+      maxPicks: body.maxPicks ? Math.max(3, Math.min(60, Number(body.maxPicks))) : null, // cap candidates → faster/cheaper
     };
 
     // ---- Run timer: timestamped phase log + typical-duration ETA ----------
@@ -949,7 +961,7 @@ export const handler = async (event) => {
 
     let rows = await fetchProps(params.league);
     rows = filterToday(rows, params.today);
-    const candidates = findCandidates(rows, params.tiers);
+    const candidates = findCandidates(rows, params.tiers, 4, params.maxPicks || 44, params.statFilter);
     const traps = rows
       .filter((r) => !positionAllows(r.position, r.stat, r.league))
       .slice(0, 15)
@@ -1004,7 +1016,12 @@ export const handler = async (event) => {
       player: p.player, stat: p.stat, line: p.line, prob: p.prob,
       oddsType: p.oddsType, team: p.team, matchup: p.matchup,
     }));
-    const board = picks.filter((p) => p.verdict === 'play' || p.verdict === 'lean');
+    // Normally the board shows only plays/leans. But when the user filtered to a
+    // specific prop type, show ALL of them sorted by prob (best on top) — they've
+    // chosen the prop and want the strongest option even if it's a low-prob "pass".
+    const board = params.statFilter
+      ? picks.slice().sort((a, b) => (b.prob || 0) - (a.prob || 0))
+      : picks.filter((p) => p.verdict === 'play' || p.verdict === 'lean');
     const chosenKeys = new Set(chosen.map((p) => `${p.player}|${p.stat}|${p.line}`));
     for (const p of board) p.inParlay = chosenKeys.has(`${p.player}|${p.stat}|${p.line}`);
     const players = groupByPlayer(board);
@@ -1024,6 +1041,7 @@ export const handler = async (event) => {
         player: p.player, stat: p.stat, line: p.line,
         prob: p.prob, verdict: p.verdict, oddsType: p.oddsType,
         recentAvg: p.recentAvg ?? null,
+        image: p.image || null, team: p.team || null, matchup: p.matchup || null, // for the top-picks feed UI
         result: null, hit: null, gradedAt: null,   // filled by the grader later
       }));
       let existing = [];

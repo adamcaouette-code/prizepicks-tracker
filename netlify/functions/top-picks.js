@@ -46,8 +46,11 @@ function renderHTML(date, rows) {
     const outcome = p.hit === true ? '<span style="color:#34d399">✓ HIT</span>'
                   : p.hit === false ? '<span style="color:#f87171">✗ MISS</span>'
                   : `<span style="color:#8aa">live · ${ago(p.loggedAt)}</span>`;
+    const pic = p.image
+      ? `<img src="${esc(p.image)}" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:8px" onerror="this.style.display='none'">`
+      : '';
     return `<tr>
-      <td>${esc(p.player)}</td>
+      <td>${pic}${esc(p.player)}</td>
       <td>${esc(p.stat)} <span style="color:#8aa">o${esc(p.line)}</span></td>
       <td>${Math.round((p.prob || 0) * 100)}%</td>
       <td>${esc(p.verdict)}</td>
@@ -77,7 +80,7 @@ function renderHTML(date, rows) {
 export const handler = async (event) => {
   const q = event.queryStringParameters || {};
   const date = q.date || new Date().toISOString().slice(0, 10);
-  const wantVerdicts = q.verdict ? [q.verdict] : ['play', 'lean'];
+  const wantVerdicts = q.verdict ? q.verdict.split(',') : ['play']; // plays only by default; ?verdict=play,lean to include leans
 
   try {
     const store = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
