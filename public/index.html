@@ -783,8 +783,8 @@
 /* =====================================================================
    ATOMBETS — live backend wiring (same-origin, atombets.netlify.app)
    Endpoints:
-     POST /api/bet-finder-background   { league, legs, today, tiers }  -> { id }
-     GET  /api/bet-finder-status?id=…  -> job blob { status, step, elapsedMs, typicalMs, phases, result }
+     POST /api/bet-finder-background   { jobId, league, legs, today, tiers }  -> empty 202 (no body)
+     GET  /api/bet-finder-status?jobId=…  -> { status, step, elapsedMs, typicalMs, phases, result }
      GET  /api/top-picks?format=json   -> picks[]
      POST /api/ask                     { pick, messages } -> { answer }
    ===================================================================== */
@@ -897,7 +897,8 @@
   // ---------- control state ----------
   function readControls(){
     const lb=document.querySelector('#chans .chan[aria-pressed="true"]');
-    const league=lb?(lb.dataset.l||lb.textContent.trim()):'MLB';
+    const leagueRaw=lb?(lb.dataset.l||lb.textContent.trim()):'MLB';
+    const league=leagueRaw.toLowerCase().replace(/\s+/g,'_');   // "World Cup" -> "world_cup", "MLB" -> "mlb"
     const today=document.getElementById('todaySw').getAttribute('aria-pressed')==='true';
     const legs=parseInt(document.getElementById('legVal').textContent,10)||4;
     const tiers=[].slice.call(document.querySelectorAll('#tiers .tier[aria-pressed="true"]')).map(t=>
@@ -942,25 +943,27 @@
     document.getElementById('rsTimer').textContent='';
     document.getElementById('rsBar').style.width='4%';
     statusMsg('Submitting run…',false);
-    let id;
+    // 1) client-generated jobId, used in BOTH the POST body and the status query string
+    const jobId=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():('job-'+Date.now()+'-'+Math.random().toString(16).slice(2));
     try{
-      const r=await fetch('/api/bet-finder-background',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      const j=await r.json();
-      id=get(j,['id','jobId','runId','job']); if(id&&typeof id==='object') id=id.id;
-      if(!id) throw new Error('no job id returned');
+      // 2) POST to the Netlify BACKGROUND function. It returns an empty 202 (no body) — do NOT parse it.
+      const r=await fetch('/api/bet-finder-background',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({jobId},body))});
+      if(!(r.ok || r.status===202)) throw new Error('start failed (HTTP '+r.status+')');
     }catch(err){ return fail('Could not start run — '+err.message); }
     const started=Date.now(), TIMEOUT=12*60*1000;
     (async function tick(){
       if(!ACTIVE) return;
       if(Date.now()-started>TIMEOUT) return fail('Timed out after 12 min.');
       try{
-        const r=await fetch('/api/bet-finder-status?id='+encodeURIComponent(id));
+        // 3) poll the status blob by jobId
+        const r=await fetch('/api/bet-finder-status?jobId='+encodeURIComponent(jobId));
         const job=await r.json();
         renderStatus(job);
-        const s=String(get(job,['status'],'')).toLowerCase();
+        const s=String(job.status||'').toLowerCase();
         if(s==='done'){ return finish(job.result); }
-        if(s==='error'||s==='failed'){ return fail(get(job,['error','message'],'Run failed.')); }
-      }catch(err){ /* transient network / not-ready — keep polling */ }
+        if(s==='error'){ return fail((job.result&&(job.result.message||job.result.error))||job.message||job.step||'Run failed.'); }
+        // status==='running' (or blob not written yet) -> keep polling
+      }catch(err){ /* status may 404 / be empty until the job blob exists — keep polling */ }
       POLL=setTimeout(tick,3000);
     })();
   });
