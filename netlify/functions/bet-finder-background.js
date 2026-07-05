@@ -109,6 +109,7 @@ async function fetchProps(leagueTag) {
       team: team || '(unknown)',
       opp: opp || '',
       matchup: team && opp ? [team, opp].sort().join(' vs ') : opp || team || '(unknown game)',
+      matchupLabel: team && opp ? `${team} vs ${opp}` : opp || team || '(unknown game)',
       game: team && opp ? `${team} vs ${opp}` : opp || team || '(unknown game)',
       start: a.start_time || '',
       league: leagueTag,
@@ -809,6 +810,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'worl
     p.oddsType ??= src.oddsType || 'standard';     // so the board can show the tier
     p.team ??= src.team || '';                      // for team dropdowns
     p.matchup ??= src.matchup || src.game || '(unknown game)';
+    p.matchupLabel ??= src.matchupLabel || src.game || p.matchup;
     p.position ??= src.position || '';
     p.image ??= src.image || '';                    // player headshot
     if (src.last5) { p.recent5 ??= src.last5; p.recentAvg ??= src.avg; } // last-5 for the UI
@@ -829,7 +831,7 @@ function groupByPlayer(board) {
     const key = `${p.matchup}|${p.team}|${p.player}`;
     if (!map.has(key)) {
       map.set(key, {
-        player: p.player, team: p.team, matchup: p.matchup,
+        player: p.player, team: p.team, matchup: p.matchupLabel || p.matchup,
         image: p.image || '', position: p.position || '',
         inParlay: false, bestProb: 0, props: [],
       });
@@ -850,20 +852,53 @@ function groupByPlayer(board) {
   return arr;
 }
 
+// Break a leg into the individual players it actually depends on. A combo like
+// "Jackie Young + Aliyah Boston" depends on BOTH, so deduping on the raw player
+// string misses that Young is also in her own single-player leg. Split on '+'.
+function playersOf(p) {
+  return String(p.player || '')
+    .split('+')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 function selectLegs(picks, n) {
   const ord = { play: 0, lean: 1 };
   const pool = picks
     .filter((p) => p.verdict === 'play' || p.verdict === 'lean')
     .sort((a, b) => clamp(b.prob) - clamp(a.prob) || (ord[a.verdict] ?? 9) - (ord[b.verdict] ?? 9));
-  const seen = new Set();
+
+  const target = Math.max(2, Math.min(n, 6));
+  // A single player may anchor at most this many legs. Legs are multiplied as if
+  // independent, but props sharing a player are highly correlated — one cold night
+  // sinks them together. Cap keeps the slip from being a disguised single-player bet.
+  const MAX_PER_PLAYER = 2;
+
+  const playerCount = {};   // player -> legs they appear in so far
+  const gameCount = {};     // matchup -> legs from that game so far
   const chosen = [];
-  for (const p of pool) {
-    const who = (p.player || '').toLowerCase();
-    if (seen.has(who)) continue;
-    seen.add(who);
-    chosen.push(p);
-    if (chosen.length >= Math.max(2, Math.min(n, 6))) break;
-  }
+
+  // Two passes. Pass 1 also caps games so we spread the slip across matchups when
+  // the slate allows it. Pass 2 relaxes the game cap (small slates may be one game)
+  // but ALWAYS keeps the per-player correlation cap.
+  const tryFill = (maxPerGame) => {
+    for (const p of pool) {
+      if (chosen.length >= target) break;
+      if (chosen.includes(p)) continue;
+      const who = playersOf(p);
+      if (who.some((w) => (playerCount[w] || 0) >= MAX_PER_PLAYER)) continue;   // correlation cap (hard)
+      const game = p.matchup || p.game || '';
+      if (maxPerGame && game && (gameCount[game] || 0) >= maxPerGame) continue;  // game spread (soft)
+      chosen.push(p);
+      who.forEach((w) => { playerCount[w] = (playerCount[w] || 0) + 1; });
+      if (game) gameCount[game] = (gameCount[game] || 0) + 1;
+    }
+  };
+
+  // Aim for no more than half the legs from a single game on the first pass.
+  tryFill(Math.max(1, Math.ceil(target / 2)));
+  if (chosen.length < target) tryFill(0);   // relax game spread, keep player cap
+
   return chosen;
 }
 
@@ -1066,7 +1101,7 @@ export const handler = async (event) => {
     const parlay = sizeParlay(chosen, params);     // bankroll defaults 0 -> $0 stakes
     const parlayLegs = chosen.map((p) => ({
       player: p.player, stat: p.stat, line: p.line, prob: p.prob,
-      oddsType: p.oddsType, team: p.team, matchup: p.matchup,
+      oddsType: p.oddsType, team: p.team, matchup: p.matchupLabel || p.matchup,
     }));
     // Normally the board shows only plays/leans. But when the user filtered to a
     // specific prop type, show ALL of them sorted by prob (best on top) — they've
@@ -1093,7 +1128,7 @@ export const handler = async (event) => {
         player: p.player, stat: p.stat, line: p.line,
         prob: p.prob, verdict: p.verdict, oddsType: p.oddsType,
         recentAvg: p.recentAvg ?? null,
-        image: p.image || null, team: p.team || null, matchup: p.matchup || null, // for the top-picks feed UI
+        image: p.image || null, team: p.team || null, matchup: p.matchupLabel || p.matchup || null, // for the top-picks feed UI
         result: null, hit: null, gradedAt: null,   // filled by the grader later
       }));
       let existing = [];
