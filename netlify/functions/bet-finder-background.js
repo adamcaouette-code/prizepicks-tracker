@@ -158,7 +158,7 @@ async function fetchHistory(projectionId, attempt = 0) {
 
 // Attach history gently: small batches with a pause between, so we don't trip
 // PrizePicks' rate limit (which can sink the whole run).
-async function attachHistory(candidates, batchSize = 4, pauseMs = 400) {
+async function attachHistory(candidates, batchSize = 6, pauseMs = 300) {
   for (let i = 0; i < candidates.length; i += batchSize) {
     const batch = candidates.slice(i, i + batchSize);
     const results = await Promise.all(batch.map((c) => (c.id ? fetchHistory(c.id) : null)));
@@ -383,6 +383,19 @@ function americanToProb(price) {
 async function fetchWinProbs(leagueTag, rows) {
   const sport = ODDS_SPORT_KEYS[leagueTag];
   if (!sport) return { status: 'skipped', message: `No odds mapping for ${leagueTag}.`, teamWinProbs: {} };
+
+  // ---- 60-min blob cache: win% barely moves within an hour, and the Odds API ----
+  // quota is 500 req/month. Re-runs (statFilter passes, retries) hit the cache free.
+  const ODDS_CACHE_MS = 60 * 60 * 1000;
+  let cacheStore = null;
+  try {
+    cacheStore = getStore({ name: 'odds-cache', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+    const cached = await cacheStore.get(leagueTag, { type: 'json' });
+    if (cached && cached.at && Date.now() - cached.at < ODDS_CACHE_MS && cached.data?.status === 'ok') {
+      const ageMin = Math.round((Date.now() - cached.at) / 60000);
+      return { ...cached.data, message: `${cached.data.message} (cached ${ageMin}m ago — no quota used)` };
+    }
+  } catch { /* cache is best-effort; fall through to live fetch */ }
   const key = process.env.ODDS_API_KEY;
   if (!key) return { status: 'error', message: 'ODDS_API_KEY is not set in Netlify — that\'s a config error, not the cap.', teamWinProbs: {} };
 
@@ -445,11 +458,13 @@ async function fetchWinProbs(leagueTag, rows) {
   }
 
   const found = Object.keys(teamWinProbs).length;
-  return {
+  const result = {
     status: 'ok',
     message: `Win% loaded for ${found} team(s).${remaining != null ? ` ${remaining} Odds API requests left this month.` : ''}`,
     remaining, used, teamWinProbs,
   };
+  if (cacheStore) { try { await cacheStore.setJSON(leagueTag, { at: Date.now(), data: result }); } catch {} }
+  return result;
 }
 
 // ---------- hard position gate: kill physically-wrong props pre-Claude ----------
@@ -577,7 +592,7 @@ const SYSTEM_HEAD = `You are a sports-betting research assistant. You receive a 
 player props GROUPED BY GAME that already cleared a statistical filter. Each prop
 includes the player's POSITION. Work game by game: for EACH game run ONE web search
 for that matchup's confirmed lineup and team news, then apply it to every player in
-that game. Do NOT search per player.
+that game. Do NOT search per player. Keep each search to ONE short query (3-6 words).
 `;
 
 const SOCCER_ROLES = `
@@ -628,6 +643,37 @@ rate and the matchup context above — never let a 5-game blip override a strong
 pitcher or park signal.
 `;
 
+const WNBA_ROLES = `
+This is the WNBA — the women's professional basketball league. It is NOT the NBA.
+Do not use NBA knowledge, NBA player stats, or NBA scoring levels to judge these props:
+- Games are 40 minutes (four 10-minute quarters), not 48. Team totals run roughly
+  75-90 points, so stat lines are much lower than NBA lines. Judge every line against
+  WNBA production levels, never NBA intuition.
+- These are WNBA players and WNBA teams. In your per-game web search, always include
+  "WNBA" in the query (e.g. "WNBA Aces Liberty lineup today") so you don't pull NBA
+  or college basketball results for similar team or player names.
+
+The biggest drivers of any prop are MINUTES and USAGE.
+- Confirm the player is active and starting (or has a locked bench role). WNBA teams
+  run deep rotations; a questionable tag or a returning starter reshuffling minutes
+  is a PASS. Check for rest days — the schedule has back-to-backs and veterans
+  sometimes sit them.
+- Blowout risk kills overs: a heavy favorite's stars sit the 4th quarter. Use
+  teamWinPct/teamRecord — a lopsided matchup trims star minutes.
+- PACE and OPPONENT defense matter: points/rebounds/assists lines against a
+  fast-paced, weak-defense team trend UP; against elite, slow defenses trend DOWN.
+- Position fit: assists concentrate in guards; rebounds and blocks in forwards/
+  centers; 3-pointers made in perimeter players. A big line off role is suspicious.
+- Combined stat lines here (Pts+Rebs+Asts, Pts+Asts, Rebs+Asts) are SINGLE-player
+  aggregates, not two-player combos — judge them off the player's all-around
+  production, not the combo caution rules.
+
+Recent form (recent5) in basketball is MORE reliable than in baseball — minutes and
+role are sticky. If 4-5 of the last 5 cleared the line and minutes are stable, that
+is a strong signal. But check WHY an outlier happened (blowout, foul trouble,
+opponent) before trusting the average.
+`;
+
 const SYSTEM_TAIL = `
 When a prop includes "recent5" (the player's last 5 results for THIS exact stat) and
 "recentAvg", anchor your probability on it — it's real production, not a guess. Compare
@@ -669,7 +715,9 @@ JSON, no prose, no fences. key_risk = short flag (8 words max) or "none". reason
 
 // Each league gets the shared head/tail plus only its own role rules.
 function promptFor(league) {
-  const roles = league === 'mlb' ? MLB_ROLES : SOCCER_ROLES;
+  const roles = league === 'mlb' ? MLB_ROLES
+              : league === 'wnba' ? WNBA_ROLES
+              : SOCCER_ROLES;
   return SYSTEM_HEAD + roles + SYSTEM_TAIL;
 }
 
@@ -728,6 +776,10 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'worl
     if (c.park != null) entry.parkIndex = c.park;    // home venue run index (100 = neutral)
     (slim[key] ||= []).push(entry);
   }
+  // Never allot more searches than there are games — small slates (WNBA nights,
+  // late MLB) don't need the full cap, and every search result bills as Opus input.
+  const gameCount = Object.keys(slim).length;
+  const maxSearches = Math.max(1, Math.min(JUDGE_MAX_SEARCHES, gameCount));
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -739,8 +791,8 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'worl
       model: MODEL,
       max_tokens: 16000,
       system: promptFor(league),
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: JUDGE_MAX_SEARCHES }],
-      messages: [{ role: 'user', content: 'Shortlist grouped by game:\n' + JSON.stringify(slim, null, 2) }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxSearches }],
+      messages: [{ role: 'user', content: `League: ${String(league).toUpperCase()}\nShortlist grouped by game:\n` + JSON.stringify(slim, null, 2) }],
     }),
   });
   const data = await res.json();
