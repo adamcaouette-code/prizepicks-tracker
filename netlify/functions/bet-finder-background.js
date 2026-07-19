@@ -468,6 +468,33 @@ async function fetchWinProbs(leagueTag, rows) {
   return result;
 }
 
+// ---------- opponent defensive rank vs a stat (ESPN, free) --------------------
+// oppDef shape: { [teamName]: { [statKey]: rank } }  (1 = stingiest, high = softest).
+// Purely additive: any failure returns {} and the judge runs exactly as today.
+// NOTE: the fetch body is a stub until def-probe locks ESPN's exact opponent-stats
+// shape for the target league. Wired now so activation is a one-function fill.
+function normStat(stat = '') {
+  const s = String(stat).toLowerCase();
+  if (s.includes('assist')) return 'assists';
+  if (s.includes('rebound')) return 'rebounds';
+  if (s.includes('point'))  return 'points';
+  if (s.includes('3-pt') || s.includes('three') || s.includes('3pt')) return 'threes';
+  if (s.includes('steal'))  return 'steals';
+  if (s.includes('block'))  return 'blocks';
+  if (s.includes('hit'))    return 'hits';
+  return s; // fall through; refined when the parser lands
+}
+
+async function fetchOppDefense(leagueTag /*, rows */) {
+  try {
+    // TODO(fill after def-probe): hit the ESPN team-statistics endpoint for this
+    // league, read each team's OPPONENT (defense) per-game numbers, rank every
+    // team per stat (1 = allows least), return { teamName: { statKey: rank } }.
+    // Return {} on any miss so the run is never blocked.
+    return {};
+  } catch { return {}; }
+}
+
 // ---------- hard position gate: kill physically-wrong props pre-Claude ----------
 // League-aware. Each sport has its own role/stat vocabulary; a league with no gate
 // defined fails OPEN (everything passes) so we never invent traps for a sport we
@@ -556,6 +583,17 @@ function positionAllows(pos, stat, league) {
 }
 
 // ---------- screen: keep selected tiers, spread across ALL games ----------
+// Two PrizePicks rows can describe the SAME logical prop — most often a combo posted
+// under each participant — which otherwise reaches the board as two identical cards.
+// Identity = the set of players (order-independent) + stat + line + tier. Team and
+// matchup are deliberately excluded so a combo listed under either side collapses to one.
+function propIdentity(r) {
+  const players = String(r.player || '')
+    .split('+').map((s) => s.trim().toLowerCase()).filter(Boolean).sort().join('+');
+  const stat = String(r.stat || '').toLowerCase().trim();
+  return `${players}|${stat}|${r.line}|${r.oddsType}`;
+}
+
 function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = null) {
   const allow = new Set(tiers && tiers.length ? tiers : ['goblin', 'standard']);
   // Optional prop-type filter: e.g. "home runs". Matches the stat string loosely
@@ -568,10 +606,14 @@ function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = nu
   const max = wantStat ? 60 : maxTotal;
 
   const byMatchup = {};
+  const seen = new Set();
   for (const r of rows) {
     if (!allow.has(r.oddsType)) continue;
     if (!positionAllows(r.position, r.stat, r.league)) continue;  // hard trap gate
     if (!matchesStat(r)) continue;                                 // prop-type filter
+    const idk = propIdentity(r);
+    if (seen.has(idk)) continue;                                   // same prop listed twice (e.g. combo under both players)
+    seen.add(idk);
     (byMatchup[r.matchup] ||= []).push({ ...r, fairProb: ODDS_PRIOR[r.oddsType] ?? 0.55 });
   }
   const out = [];
@@ -703,6 +745,14 @@ When a prop includes "teamWinPct" (the player's team's win probability) and/or
 (its attackers get more chances; the underdog is pinned back); flip it for an underdog.
 Treat these as confirmation/adjustment on top of recent form, not as overriding it.
 
+When a prop includes "oppStatRank" (the opponent's league-wide rank at limiting THIS
+exact stat — 1 means the opponent is the stingiest defense against this stat, a high
+number like 27+ means they give it up easily), use it as matchup context: a high rank
+(weak defense) supports the OVER; a low rank (elite defense) is a reason to fade or
+downgrade. Treat it as an adjustment on top of recent form, never an override — a strong
+recent5 into a soft defense is your best setup; a weak recent5 into an elite defense is a
+clear pass.
+
 Be strict with verdicts — "play" must mean you are GENUINELY CONFIDENT:
 - play  = 62%+ and the stat clearly fits the player's role and matchup
 - lean  = 54-61%, fits the role but with some real doubt
@@ -756,7 +806,7 @@ function parsePicks(text) {
   return [];
 }
 
-async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'world_cup') {
+async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'world_cup', oppDef = {}) {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
   const slim = {};
@@ -775,6 +825,9 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'worl
     if (c.oppSP) entry.oppSP = c.oppSP;              // opposing starter (hitter props)
     if (c.selfSP) entry.selfSP = c.selfSP;           // own season line (pitcher props)
     if (c.park != null) entry.parkIndex = c.park;    // home venue run index (100 = neutral)
+    const oppName = c.oppTeam || c.opp;              // whoever they're facing
+    const dr = oppDef?.[oppName]?.[normStat(c.stat)]; // opponent's league rank vs THIS stat
+    if (dr != null) entry.oppStatRank = dr;          // 1 = stingiest defense ... high = softest
     (slim[key] ||= []).push(entry);
   }
   // Never allot more searches than there are games — small slates (WNBA nights,
@@ -1067,11 +1120,12 @@ export const handler = async (event) => {
     // degrades gracefully (judge runs without it) instead of blocking the run.
     await tick('gathering data (records, odds, form, starters)');
 
-    const [recordsR, oddsR, historyR, startersR] = await Promise.allSettled([
+    const [recordsR, oddsR, historyR, startersR, defenseR] = await Promise.allSettled([
       fetchTeamRecords(params.league),                                  // piece 1: team records
       fetchWinProbs(params.league, rows),                               // piece 2: win probabilities
       attachHistory(candidates),                                        // piece 3: recent form (mutates candidates)
       params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null), // piece 4: MLB starters
+      fetchOppDefense(params.league, rows),                             // piece 5: opponent defensive rank
     ]);
 
     const checklist = {
@@ -1083,6 +1137,7 @@ export const handler = async (event) => {
 
     const teamRecords = resolveRecords(rows, recordsR.status === 'fulfilled' ? recordsR.value : {});
     const odds = oddsR.status === 'fulfilled' ? oddsR.value : { status: 'error', message: 'win% fetch failed', teamWinProbs: {} };
+    const oppDef = defenseR.status === 'fulfilled' && defenseR.value ? defenseR.value : {};
 
     let mlbStatus = null;
     if (params.league === 'mlb') {
@@ -1094,7 +1149,7 @@ export const handler = async (event) => {
     phaseDone('gathering data');
 
     await tick('Claude researching lineups');
-    const picks = await judge(candidates, teamRecords, odds.teamWinProbs, params.league);
+    const picks = await judge(candidates, teamRecords, odds.teamWinProbs, params.league, oppDef);
     if (!picks.length) throw new Error('Claude returned no parseable picks.');
 
     const chosen = selectLegs(picks, params.legs);
@@ -1106,9 +1161,12 @@ export const handler = async (event) => {
     // Normally the board shows only plays/leans. But when the user filtered to a
     // specific prop type, show ALL of them sorted by prob (best on top) — they've
     // chosen the prop and want the strongest option even if it's a low-prob "pass".
-    const board = params.statFilter
+    // Guard: never render the same prop twice (belt-and-suspenders on the dedupe above).
+    const boardSeen = new Set();
+    const board = (params.statFilter
       ? picks.slice().sort((a, b) => (b.prob || 0) - (a.prob || 0))
-      : picks.filter((p) => p.verdict === 'play' || p.verdict === 'lean');
+      : picks.filter((p) => p.verdict === 'play' || p.verdict === 'lean')
+    ).filter((p) => { const k = propIdentity(p); if (boardSeen.has(k)) return false; boardSeen.add(k); return true; });
     const chosenKeys = new Set(chosen.map((p) => `${p.player}|${p.stat}|${p.line}`));
     for (const p of board) p.inParlay = chosenKeys.has(`${p.player}|${p.stat}|${p.line}`);
     const players = groupByPlayer(board);
