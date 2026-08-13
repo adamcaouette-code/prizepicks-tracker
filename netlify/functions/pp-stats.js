@@ -44,7 +44,10 @@ export const handler = async (event) => {
   } catch { /* cache is best-effort */ }
 
   try {
-    const rows = await fetchProps(league);
+    // Only a sample is needed: stat types repeat constantly, so 3 pages (750 props)
+    // surfaces the vocabulary. Paging MLB's full ~3000-prop slate here — on every
+    // cold page load — was heavy enough to help trigger PrizePicks' rate limiting.
+    const rows = await fetchProps(league, { maxPages: 3 });
     const counts = {};
     for (const r of rows) {
       const s = String(r.stat || '').trim();

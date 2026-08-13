@@ -108,7 +108,22 @@ const FLEX = {
 };
 
 // ---------- data: pull + trim PrizePicks props (all pages) ----------
-async function fetchProps(leagueTag) {
+// Shared PrizePicks fetch with real throttle handling. The old inline retry used a
+// fixed 1s/2s/3s/4s ladder and ignored Retry-After, which is why paging MLB's 13
+// pages could still 429 out mid-slate.
+async function ppFetch(url, headers, maxRetries = 5) {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, { headers });
+    if (res.status !== 429 || attempt >= maxRetries) return res;
+    const retryAfter = Number(res.headers?.get?.('retry-after'));
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(15000, retryAfter * 1000)
+      : Math.min(9000, 600 * 2 ** attempt) + Math.floor(Math.random() * 400); // jitter: avoid lockstep retries
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
+}
+
+async function fetchProps(leagueTag, opts = {}) {
   const lid = await resolveLeagueId(leagueTag);
   if (!lid) throw new Error(`PrizePicks isn't posting a league called '${leagueTag}' right now`);
 
@@ -120,21 +135,14 @@ async function fetchProps(leagueTag) {
 
   // Page through the whole slate. One page (250) is often just the next game or
   // two; we want every game today, so we follow pagination to the end.
+  // MLB posts ~3000 props (13 pages), so this is where throttling actually bites —
+  // callers that only need a sample (stat-name discovery) should pass maxPages.
   const players = {};
   const allData = [];
-  const MAX_PAGES = 12; // safety cap (~3000 props)
+  const MAX_PAGES = Math.max(1, opts.maxPages || 12); // safety cap (~3000 props)
   for (let page = 1; page <= MAX_PAGES; page++) {
     const url = `https://partner-api.prizepicks.com/projections?per_page=250&single_stat=true&league_id=${lid}&page=${page}`;
-    let res, tries = 0;
-    while (true) {
-      res = await fetch(url, { headers });
-      if (res.status === 429 && tries < 4) {        // throttled — wait and retry
-        tries++;
-        await new Promise((r) => setTimeout(r, 1000 * tries));
-        continue;
-      }
-      break;
-    }
+    const res = await ppFetch(url, headers);
     if (!res.ok) {
       if (page === 1) throw new Error(`PrizePicks returned ${res.status}${res.status === 429 ? ' (rate limited — try again in a minute)' : ''}`);
       break; // a later page failing just ends pagination

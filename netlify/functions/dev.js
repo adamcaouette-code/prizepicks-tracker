@@ -78,6 +78,7 @@ export const handler = async () => {
     "async function testStats(){var p=document.getElementById('statsPlayer').value||'Junior Caminero';show('testing /api/player-stats ('+p+') ...','working');var res=await call('/api/player-stats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({player:p,league:'mlb'})});show('test /api/player-stats',res.json||res);}",
     // PrizePicks probe. Paging a full slate takes a few seconds, so say so up front.
     "async function probe(withRaw){var l=document.getElementById('probeLeague').value.trim();var u='/api/pp-probe'+(l?('?league='+encodeURIComponent(l)):'')+(withRaw?((l?'&':'?')+'raw=3'):'');show('probing PrizePicks'+(l?(' · '+l):' · leagues only')+' ...','paging the live board, this can take a few seconds');var res=await call(u);show('pp-probe'+(l?(' · '+l):''),res.json||res);}",
+    "async function probeDeep(){var l=document.getElementById('probeLeague').value.trim()||'mlb';show('deep probe · '+l+' ...','walking up to 8 pages with backoff, give it a while');var res=await call('/api/pp-probe?league='+encodeURIComponent(l)+'&pages=8&raw=2');show('pp-probe deep · '+l,res.json||res);}",
     // Copy must NOT call show() — that would overwrite the very text being copied.
     "function copyMsg(m){var e=document.getElementById('copyMsg');e.textContent=m;setTimeout(function(){e.textContent='';},4000);}",
     "async function copyOut(){var t=out.textContent||'';if(!t.trim()){copyMsg('nothing to copy yet');return;}try{await navigator.clipboard.writeText(t);copyMsg('copied '+t.length.toLocaleString()+' chars');}catch(e){var r=document.createRange();r.selectNodeContents(out);var s=window.getSelection();s.removeAllRanges();s.addRange(r);copyMsg('clipboard blocked — text selected, use your browser Copy');}}",
@@ -138,6 +139,7 @@ export const handler = async () => {
     <input id="probeLeague" placeholder="league (blank = leagues only)" value="mlb" style="width:200px">
     <button onclick="probe()">look up PrizePicks</button>
     <button onclick="probe(true)">+ raw rows</button>
+    <button onclick="probeDeep()">deep (8 pages)</button>
   </div>
 
   <h2>Output</h2>
