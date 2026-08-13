@@ -1,4 +1,9 @@
-// netlify/functions/judge-slip.js
+// netlify/functions/judge-slip-background.js
+//
+// BACKGROUND FUNCTION (filename MUST end in -background.js -> up to 15 min runtime).
+// It returns 202 instantly; the browser polls judge-slip-status.js for the result.
+// This grade takes ~30-40s (research fan-out + Opus with web search), which is well
+// past Netlify's synchronous function ceiling, so it cannot run as a plain endpoint.
 //
 // Grades a slip the user ALREADY BUILT (the "Rate a Slip" upload flow). Takes the
 // normalized output of parse-slip.js, tries to match each leg to today's live
@@ -13,9 +18,11 @@
 // research attached, which the prompt is written to handle (rule 4: widen toward
 // 0.50 when data is thin).
 //
-// POST /api/judge-slip
-// body: { slip: <normalized slip object from parse-slip.js, legs optionally edited> }
-// returns: { ok:true, legs:[...judged], slip:{weakestLeg,correlationFlag,overall,overallReasoning},
+// POST /api/judge-slip-background
+// body: { jobId, slip: <normalized slip from parse-slip.js, legs optionally edited> }
+// -> 202 immediately; poll GET /api/judge-slip-status?jobId=… until status is
+//    "done" (carrying .result) or "error".
+// result: { ok:true, legs:[...judged], slip:{weakestLeg,correlationFlag,overall,overallReasoning},
 //            dataStatus:{ matchedLegs, totalLegs, oddsStatus, bookLineStatus } }
 //
 // Env: ANTHROPIC_API_KEY (required), JUDGE_MODEL (optional, defaults claude-opus-4-8),
@@ -212,26 +219,30 @@ function extractJSON(text) {
 }
 
 export const handler = async (event) => {
-  const headers = {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  // A background function's HTTP response is sent immediately, so every outcome —
+  // including failure — has to be reported through the job blob, not the response.
+  const jobs = getStore({ name: 'slip-jobs', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+  let jobId;
+  const fail = async (message) => {
+    if (jobId) { try { await jobs.setJSON(jobId, { status: 'error', message }); } catch {} }
+    return { statusCode: 202 };
   };
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
-  if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
-
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return { statusCode: 500, headers, body: JSON.stringify({ error: 'ANTHROPIC_API_KEY not set' }) };
+  const step = async (s) => { try { await jobs.setJSON(jobId, { status: 'running', step: s }); } catch {} };
 
   let payload;
-  try { payload = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid JSON body' }) }; }
+  try { payload = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400, body: 'invalid JSON body' }; }
+  jobId = payload.jobId;
+  if (!jobId) return { statusCode: 400, body: 'Missing jobId' };
+
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) return fail('ANTHROPIC_API_KEY is not set on this site — add it in Netlify → Site settings → Environment variables.');
 
   const slip = payload.slip;
   const legs = Array.isArray(slip?.legs) ? slip.legs : null;
-  if (!legs || !legs.length) return { statusCode: 400, headers, body: JSON.stringify({ error: 'provide slip with a non-empty legs array' }) };
+  if (!legs || !legs.length) return fail('provide slip with a non-empty legs array');
 
   try {
+    await step('matching legs to live projections');
     const league = (slip.league || '').toLowerCase();
     const supported = !!PP_LEAGUE_IDS[league];
 
@@ -255,6 +266,7 @@ export const handler = async (event) => {
     }
 
     // ---- gather research in parallel, same sources bet-finder-background.js uses ----
+    await step('gathering recent form, records and win%');
     const [historyR, recordsR, oddsR, startersR, defenseR] = await Promise.allSettled([
       attachHistory(working.filter((l) => l.id)),                          // mutates: last5, avg
       fetchTeamRecords(league),
@@ -272,6 +284,7 @@ export const handler = async (event) => {
     }
 
     // ---- DraftKings line comparison (best-effort; see attachBookLines for why this is separate) ----
+    await step('comparing DraftKings lines');
     let bookLineStatus = 'skipped';
     try { bookLineStatus = await attachBookLines(working, league, odds.games); }
     catch { bookLineStatus = 'error'; }
@@ -294,6 +307,7 @@ export const handler = async (event) => {
     });
 
     // ---- judge ----
+    await step('Claude grading each leg');
     const { system, userContent } = buildSlipJudge(slip, enrichedLegs);
     const gameCount = new Set(enrichedLegs.map((l) => l.matchup || l.team).filter(Boolean)).size;
     const maxSearches = Math.max(1, Math.min(MAX_SEARCHES, gameCount || 1));
@@ -311,14 +325,14 @@ export const handler = async (event) => {
     });
     const data = await res.json();
     if (!res.ok || data.error) {
-      return { statusCode: res.status || 502, headers, body: JSON.stringify({ error: data?.error?.message || 'Anthropic API error' }) };
+      return fail(data?.error?.message || `Anthropic API error (${res.status})`);
     }
     recordCost('judge-slip', MODEL, data).catch(() => {});
 
     const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
     const judged = extractJSON(text);
     if (!judged || !Array.isArray(judged.legs)) {
-      return { statusCode: 502, headers, body: JSON.stringify({ error: 'could not parse judge response', raw: text.slice(0, 500) }) };
+      return fail('could not parse the judge response: ' + text.slice(0, 200));
     }
 
     // re-attach display fields (team/matchup/image) the judge wasn't asked to echo back
@@ -396,10 +410,9 @@ export const handler = async (event) => {
       // logging is best-effort — never let it break a grade
     }
 
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({
+    await jobs.setJSON(jobId, {
+      status: 'done',
+      result: {
         ok: true,
         legs: judged.legs,
         slip: judged.slip || null,
@@ -412,9 +425,10 @@ export const handler = async (event) => {
           loggedForCalibration,
           skippedNoProjection,
         },
-      }, null, 2),
-    };
+      },
+    });
+    return { statusCode: 202 };
   } catch (err) {
-    return { statusCode: 500, headers, body: JSON.stringify({ error: String(err.message || err) }) };
+    return fail(String(err.message || err));
   }
 };
