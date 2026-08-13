@@ -188,7 +188,23 @@ function statKey(s) {
 function statsLikelyMatch(a, b) {
   const ka = statKey(a), kb = statKey(b);
   if (!ka || !kb) return false;
-  return ka === kb || ka.includes(kb) || kb.includes(ka);
+  if (ka === kb) return true;
+  // Substring is a useful fallback for wording drift ("Earned Runs" vs "Earned Runs
+  // Allowed"), but PrizePicks' display names are littered with 2-3 character
+  // abbreviations — Ks, TB, PO, SB — and "Hitter Ks" contains "Ks", so a hitter's
+  // strikeout leg would bind to a PITCHER's strikeout row and inherit its research.
+  // Anything that short has to match exactly.
+  const MIN_FUZZY = 5;
+  if (ka.length < MIN_FUZZY || kb.length < MIN_FUZZY) return false;
+  return ka.includes(kb) || kb.includes(ka);
+}
+
+// A slip screenshot shows PrizePicks' DISPLAY name ("Hitter Ks", "Ks", "TB"), while
+// a projection's stat_type is the long form ("Hitter Strikeouts", "Total Bases").
+// Neither contains the other, so comparing against stat_type alone silently failed
+// to match the most common MLB props. Compare against both names PP gives us.
+function rowMatchesStat(legStat, row) {
+  return statsLikelyMatch(legStat, row.stat) || statsLikelyMatch(legStat, row.statDisplay);
 }
 
 // Find the live PrizePicks row for one OCR'd leg. Prefers an exact normalized
@@ -200,7 +216,7 @@ function matchProjection(leg, rows) {
   let best = null, bestScore = -1;
   for (const r of rows) {
     if (normKey(r.player) !== legPlayer) continue;
-    if (!statsLikelyMatch(leg.stat, r.stat)) continue;
+    if (!rowMatchesStat(leg.stat, r)) continue;
     let score = 1;
     if (leg.team && r.team && leg.team.toUpperCase() === String(r.team).toUpperCase()) score += 2;
     if (leg.line != null && Number(r.line) === Number(leg.line)) score += 1;

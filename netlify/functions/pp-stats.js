@@ -48,16 +48,24 @@ export const handler = async (event) => {
     // surfaces the vocabulary. Paging MLB's full ~3000-prop slate here — on every
     // cold page load — was heavy enough to help trigger PrizePicks' rate limiting.
     const rows = await fetchProps(league, { maxPages: 3 });
-    const counts = {};
+    // Key on stat_type (what the engine filters by) but keep the display name, since
+    // that's what the PrizePicks card shows — "Hitter Ks", not "Hitter Strikeouts".
+    // A dropdown listing stat_type reads like a different app than the one the user
+    // is holding a screenshot of.
+    const seen = {};
     for (const r of rows) {
       const s = String(r.stat || '').trim();
-      if (s) counts[s] = (counts[s] || 0) + 1;
+      if (!s) continue;
+      const e = (seen[s] ||= { stat: s, display: '', count: 0 });
+      e.count++;
+      const d = String(r.statDisplay || '').trim();
+      if (d && !e.display) e.display = d;
     }
     // Busiest props first: a stat with 40 lines posted is far more useful to filter
     // to than one with a single straggler.
-    const statTypes = Object.entries(counts)
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .map(([stat, count]) => ({ stat, count }));
+    const statTypes = Object.values(seen)
+      .sort((a, b) => b.count - a.count || a.stat.localeCompare(b.stat))
+      .map(({ stat, display, count }) => ({ stat, display: display || stat, count }));
 
     if (store) { try { await store.setJSON(cacheKey, { at: Date.now(), statTypes }); } catch {} }
     return { statusCode: 200, headers, body: JSON.stringify({ league, cached: false, statTypes }) };

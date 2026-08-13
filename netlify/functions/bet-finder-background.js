@@ -58,7 +58,7 @@ async function fetchLeagueCatalog() {
   let store = null;
   try {
     store = getStore({ name: 'pp-league-catalog', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
-    const c = await store.get('catalog', { type: 'json' });
+    const c = await store.get('catalog-v2', { type: 'json' });
     if (c && c.at && Date.now() - c.at < LEAGUE_CATALOG_MS) return c.leagues;
   } catch { /* cache is best-effort */ }
 
@@ -81,10 +81,15 @@ async function fetchLeagueCatalog() {
       tag: leagueTagOf(name),
       projections: a.projections_count ?? a.props_count ?? null,
       active: a.active ?? null,
+      // parent_id marks a half/quarter split of another league (WNBA1H -> WNBA).
+      // Season boards (NFLSZN) report null here, so they need the name suffix.
+      parentId: a.parent_id ?? null,
+      parentName: a.parent_name ?? null,
+      lastFiveGames: a.last_five_games_enabled ?? null,
     };
   }).filter((l) => l.tag);
 
-  if (store) { try { await store.setJSON('catalog', { at: Date.now(), leagues }); } catch {} }
+  if (store) { try { await store.setJSON('catalog-v2', { at: Date.now(), leagues }); } catch {} }
   return leagues;
 }
 
@@ -164,9 +169,23 @@ async function fetchProps(leagueTag, opts = {}) {
     return {
       id: d.id,
       player: pa.display_name || pa.name || 'Unknown',
+      // PrizePicks carries TWO stat names and they differ constantly:
+      //   stat_type "Hitter Strikeouts"  <->  stat_display_name "Hitter Ks"
+      //   stat_type "Pitcher Strikeouts" <->  stat_display_name "Ks"
+      //   stat_type "Total Bases"        <->  stat_display_name "TB"
+      // The card in the app shows the DISPLAY name, so that's what a screenshot
+      // (and therefore parse-slip's OCR) reads. Keeping only stat_type meant
+      // every one of those legs failed to match a live projection.
       stat: a.stat_type || a.stat_display_name || '',
+      statDisplay: a.stat_display_name || '',
       line: a.line_score,
       position: pa.position || '',
+      gameId: a.game_id || null,          // authoritative game key (beats string matchups)
+      status: a.status || '',             // pre_game | in_progress | final
+      isPromo: a.is_promo === true,
+      isLive: a.is_live === true || a.in_game === true,
+      combo: pa.combo === true || a.event_type === 'combo',
+      today: typeof a.today === 'boolean' ? a.today : null,
       image: pa.image_url || '',
       oddsType: (a.odds_type || 'standard').toLowerCase(),
       team: team || '(unknown)',
@@ -182,8 +201,12 @@ async function fetchProps(leagueTag, opts = {}) {
 
 function filterToday(rows, todayOnly) {
   if (!todayOnly) return rows;
+  // PrizePicks stamps start_time with a local offset ("2026-08-13T19:30:00.000-04:00"),
+  // so comparing its date prefix against the UTC date drops every late game once UTC
+  // rolls over — a 10pm ET first pitch is already "tomorrow" in UTC. PP ships its own
+  // `today` boolean; trust that when present and only fall back to the string compare.
   const td = new Date().toISOString().slice(0, 10);
-  return rows.filter((r) => String(r.start).startsWith(td));
+  return rows.filter((r) => (typeof r.today === 'boolean' ? r.today : String(r.start).startsWith(td)));
 }
 
 // ---------- PrizePicks last-5 history (their own data, perfect name match) ----------
@@ -716,10 +739,14 @@ function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = nu
   // that stat — plain substring would quietly widen "Hits" to include "Hits Allowed"
   // (a pitching prop) and "Hits+Runs+RBIs". Substring stays as the fallback so
   // partial values still work: "Earned Runs" -> "Earned Runs Allowed".
+  // Checked against BOTH names PrizePicks carries: the filter may hold either the
+  // stat_type ("Hitter Strikeouts") or the display name the user sees ("Hitter Ks").
   const wantStat = statFilter ? String(statFilter).trim().toLowerCase() : null;
-  const statOf = (r) => String(r.stat || '').trim().toLowerCase();
-  const hasExact = wantStat ? rows.some((r) => statOf(r) === wantStat) : false;
-  const matchesStat = (r) => !wantStat || (hasExact ? statOf(r) === wantStat : statOf(r).includes(wantStat));
+  const namesOf = (r) => [String(r.stat || ''), String(r.statDisplay || '')]
+    .map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const hasExact = wantStat ? rows.some((r) => namesOf(r).includes(wantStat)) : false;
+  const matchesStat = (r) => !wantStat ||
+    (hasExact ? namesOf(r).includes(wantStat) : namesOf(r).some((n) => n.includes(wantStat)));
   // When filtering to one prop type, widen the net so the BEST available shows even
   // if probabilities are low (you've already chosen the prop; you just want the top of it).
   const pg = wantStat ? 8 : perGame;
