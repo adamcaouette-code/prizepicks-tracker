@@ -76,6 +76,11 @@ export const handler = async () => {
     "async function drainAll(){var today=new Date().toISOString().slice(0,10);var past=ALL_DATES.filter(function(d){return d<today;});if(!past.length){show('drain all','no past days to grade (today can\\'t be graded yet)');return;}for(var i=0;i<past.length;i++){await drain(past[i]);}show('DRAIN ALL DONE',{drained:past});}",
     "async function testAsk(){show('testing /api/ask ...','working');var body={pick:{player:'Junior Caminero',stat:'Hits+Runs+RBIs',line:2.5,matchup:'KC vs TB',recent5:[6,3,5,12,1],recentAvg:5.4},question:'is he in the starting lineup tonight'};var res=await call('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});show('test /api/ask',res.json||res);}",
     "async function testStats(){var p=document.getElementById('statsPlayer').value||'Junior Caminero';show('testing /api/player-stats ('+p+') ...','working');var res=await call('/api/player-stats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({player:p,league:'mlb'})});show('test /api/player-stats',res.json||res);}",
+    // PrizePicks probe. Paging a full slate takes a few seconds, so say so up front.
+    "async function probe(withRaw){var l=document.getElementById('probeLeague').value.trim();var u='/api/pp-probe'+(l?('?league='+encodeURIComponent(l)):'')+(withRaw?((l?'&':'?')+'raw=3'):'');show('probing PrizePicks'+(l?(' · '+l):' · leagues only')+' ...','paging the live board, this can take a few seconds');var res=await call(u);show('pp-probe'+(l?(' · '+l):''),res.json||res);}",
+    // Copy must NOT call show() — that would overwrite the very text being copied.
+    "function copyMsg(m){var e=document.getElementById('copyMsg');e.textContent=m;setTimeout(function(){e.textContent='';},4000);}",
+    "async function copyOut(){var t=out.textContent||'';if(!t.trim()){copyMsg('nothing to copy yet');return;}try{await navigator.clipboard.writeText(t);copyMsg('copied '+t.length.toLocaleString()+' chars');}catch(e){var r=document.createRange();r.selectNodeContents(out);var s=window.getSelection();s.removeAllRanges();s.addRange(r);copyMsg('clipboard blocked — text selected, use your browser Copy');}}",
   ].join('\n');
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -123,7 +128,23 @@ export const handler = async () => {
     <button onclick="testStats()">test /api/player-stats</button>
   </div>
 
+  <h2>PrizePicks probe</h2>
+  <p style="color:#667;max-width:680px;margin:0 0 8px">
+    Dumps what PrizePicks actually returns — every league with the tag this app derives
+    from it, and per league the real stat_type strings, tiers, positions and raw rows.
+    Run it, hit <b>copy output</b>, paste it wherever it's useful.
+  </p>
+  <div class="row">
+    <input id="probeLeague" placeholder="league (blank = leagues only)" value="mlb" style="width:200px">
+    <button onclick="probe()">look up PrizePicks</button>
+    <button onclick="probe(true)">+ raw rows</button>
+  </div>
+
   <h2>Output</h2>
+  <div class="row">
+    <button onclick="copyOut()">copy output</button>
+    <span id="copyMsg" style="color:#667"></span>
+  </div>
   <pre id="out">// results show here</pre>
 
   <script>${script}</script>
