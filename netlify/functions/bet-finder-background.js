@@ -628,10 +628,15 @@ function propIdentity(r) {
 
 function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = null) {
   const allow = new Set(tiers && tiers.length ? tiers : ['goblin', 'standard']);
-  // Optional prop-type filter: e.g. "home runs". Matches the stat string loosely
-  // (case-insensitive substring), so it catches "Home Runs", "Hitter Home Runs", etc.
+  // Optional prop-type filter. The UI now sends PrizePicks' own stat_type (sourced
+  // live via pp-stats.js), so prefer an exact match when the board actually carries
+  // that stat — plain substring would quietly widen "Hits" to include "Hits Allowed"
+  // (a pitching prop) and "Hits+Runs+RBIs". Substring stays as the fallback so
+  // partial values still work: "Earned Runs" -> "Earned Runs Allowed".
   const wantStat = statFilter ? String(statFilter).trim().toLowerCase() : null;
-  const matchesStat = (r) => !wantStat || String(r.stat || '').toLowerCase().includes(wantStat);
+  const statOf = (r) => String(r.stat || '').trim().toLowerCase();
+  const hasExact = wantStat ? rows.some((r) => statOf(r) === wantStat) : false;
+  const matchesStat = (r) => !wantStat || (hasExact ? statOf(r) === wantStat : statOf(r).includes(wantStat));
   // When filtering to one prop type, widen the net so the BEST available shows even
   // if probabilities are low (you've already chosen the prop; you just want the top of it).
   const pg = wantStat ? 8 : perGame;
