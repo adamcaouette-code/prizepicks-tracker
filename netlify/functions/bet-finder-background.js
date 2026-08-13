@@ -1226,7 +1226,9 @@ export const handler = async (event) => {
       // Merge by projectionId (fallback to player|stat|line) instead of appending,
       // so re-running the same day updates picks in place rather than duplicating.
       // An already-graded entry is preserved over a fresh (ungraded) re-log.
-      const keyOf = (p) => p.projectionId || `${p.player}|${p.stat}|${p.line}`;
+      // Source-scoped so a re-run only replaces this engine's own rows — slip-judge
+      // entries for the same projection are separate predictions and must survive.
+      const keyOf = (p) => `${p.source || 'board'}|${p.projectionId || `${p.player}|${p.stat}|${p.line}`}`;
       const byKey = new Map();
       for (const p of existing) byKey.set(keyOf(p), p);
       for (const p of logged) {

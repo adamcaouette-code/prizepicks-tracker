@@ -331,6 +331,71 @@ export const handler = async (event) => {
       l.image ??= src.image || null;
     }
 
+    // ---- log judged legs for auto-grading + calibration -----------------------
+    // Same pick-log the board engine writes, so grade-picks.js and calibration.js
+    // pick these up with no changes on their side. Two things matter here:
+    //
+    //  1. grade-picks.js grades with `hit = actual > line` — i.e. "did the OVER
+    //     hit", never "did the user's side hit". Board mode only ever logs
+    //     over-probabilities, so we convert: an under leg at P(under)=0.66 is
+    //     logged as prob 0.34. Logging the side-probability raw would invert
+    //     every under and quietly poison the calibration curve.
+    //  2. grade-picks.js requires projectionId; a leg that matched no live
+    //     projection can never be graded, so logging it would just park a row in
+    //     "pending" forever. Those are skipped, and counted in the response.
+    let loggedForCalibration = 0, skippedNoProjection = 0;
+    try {
+      const logStore = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+      const day = new Date().toISOString().slice(0, 10);
+      const stamp = new Date().toISOString();
+
+      const rows = [];
+      for (const l of judged.legs) {
+        const src = lookup.get(`${l.player}|${l.stat}`);
+        const projectionId = src?.id || null;
+        if (!projectionId) { skippedNoProjection++; continue; }
+
+        const line = l.line ?? src?.line ?? null;
+        const sideProb = Number(l.prob);
+        if (line == null || !isFinite(sideProb)) { skippedNoProjection++; continue; }
+
+        const side = String(l.pick || src?.pick || 'over').toLowerCase() === 'under' ? 'under' : 'over';
+        rows.push({
+          date: day, loggedAt: stamp, league,
+          projectionId,
+          player: l.player, stat: l.stat, line,
+          prob: side === 'under' ? 1 - sideProb : sideProb,  // ALWAYS P(over) — see note above
+          verdict: l.verdict, oddsType: l.oddsType || src?.oddsType || null,
+          team: l.team || src?.team || null,
+          matchup: l.matchup || src?.matchup || null,
+          image: l.image || src?.image || null,
+          source: 'slip',        // separates slip grades from board picks in calibration
+          sidePick: side,        // the side the user actually locked
+          sideProb,              // P(that side hits), as the judge stated it
+          result: null, hit: null, gradedAt: null,
+        });
+      }
+
+      if (rows.length) {
+        let existing = [];
+        try { existing = (await logStore.get(day, { type: 'json' })) || []; } catch {}
+        // Key on source too: a slip leg and a board pick can share a projectionId
+        // on the same day, and they're separate predictions worth scoring apart.
+        const keyOf = (p) => `${p.source || 'board'}|${p.projectionId || `${p.player}|${p.stat}|${p.line}`}`;
+        const byKey = new Map();
+        for (const p of existing) byKey.set(keyOf(p), p);
+        for (const p of rows) {
+          const prev = byKey.get(keyOf(p));
+          if (prev && (prev.hit === true || prev.hit === false)) continue; // never overwrite a graded row
+          byKey.set(keyOf(p), p);
+        }
+        await logStore.setJSON(day, [...byKey.values()]);
+        loggedForCalibration = rows.length;
+      }
+    } catch {
+      // logging is best-effort — never let it break a grade
+    }
+
     return {
       statusCode: 200,
       headers,
@@ -344,6 +409,8 @@ export const handler = async (event) => {
           leagueSupported: supported,
           oddsStatus: odds.status,
           bookLineStatus,
+          loggedForCalibration,
+          skippedNoProjection,
         },
       }, null, 2),
     };

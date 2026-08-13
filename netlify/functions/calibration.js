@@ -19,7 +19,10 @@ const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || 
 function dedupe(picks) {
   const m = new Map();
   for (const p of picks) {
-    const key = p.projectionId || `${p.date}|${p.player}|${p.stat}|${p.line}`;
+    // Source is part of the identity: the same projection can be predicted once by
+    // the board engine and again by the slip judge on the same day. Those are two
+    // separate predictions and both deserve to be scored.
+    const key = `${p.source || 'board'}|${p.projectionId || `${p.date}|${p.player}|${p.stat}|${p.line}`}`;
     const prev = m.get(key);
     if (!prev) { m.set(key, p); continue; }
     if (isGraded(p) && !isGraded(prev)) m.set(key, p); // prefer a graded copy
@@ -56,6 +59,7 @@ function aggregate(rawPicks) {
     bands: [],
     byTier: {},
     byLeague: {},
+    bySource: {},                    // board engine vs slip judge, scored apart
     plays: { n: 0, hits: 0 },        // verdict "play"
     playsLeans: { n: 0, hits: 0 },   // verdict "play" or "lean"
   };
@@ -80,6 +84,12 @@ function aggregate(rawPicks) {
     const lg = p.league || 'unknown';
     const l = (out.byLeague[lg] ||= { n: 0, hits: 0 });
     l.n++; l.hits += hit;
+
+    // Per-source Brier too — hit rate alone can't tell a sharp engine from a lucky
+    // one, and this is the number to put next to somebody else's engine.
+    const src = p.source || 'board';
+    const s = (out.bySource[src] ||= { n: 0, hits: 0, brierSum: 0 });
+    s.n++; s.hits += hit; s.brierSum += (prob - hit) ** 2;
 
     if (p.verdict === 'play') { out.plays.n++; out.plays.hits += hit; }
     if (p.verdict === 'play' || p.verdict === 'lean') { out.playsLeans.n++; out.playsLeans.hits += hit; }
@@ -155,6 +165,13 @@ function renderHTML(a) {
   <table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table>
   <h2>By league</h2>
   <table><thead><tr><th>league</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byLeague)}</tbody></table>
+  <h2>By engine</h2>
+  <table><thead><tr><th>source</th><th>n</th><th>over rate</th><th>brier ↓</th></tr></thead><tbody>
+    ${Object.entries(a.bySource).map(([k, v]) =>
+      `<tr><td>${esc(k === 'slip' ? 'slip judge' : k + ' engine')}</td><td>${v.n}</td><td>${pct(v.hits / v.n)}</td><td>${(v.brierSum / v.n).toFixed(3)}</td></tr>`).join('') ||
+      '<tr><td colspan="4" style="color:#888">—</td></tr>'}
+  </tbody></table>
+  <p class="note">Brier is the honest scoreboard: it rewards being right AND rewards not overclaiming. A rater that says 90% on legs that hit 70% scores <em>worse</em> (0.250) than one that says 70% (0.210). Compare engines on this number, never on whose percentages look bigger.</p>
   <h2>Verdict performance</h2>
   <table><thead><tr><th>verdict</th><th>n</th><th>win rate</th></tr></thead><tbody>
     <tr><td>play</td><td>${a.plays.n}</td><td>${a.plays.n ? pct(a.plays.hits / a.plays.n) : '—'}</td></tr>
