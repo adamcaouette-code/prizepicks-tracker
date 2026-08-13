@@ -15,7 +15,7 @@
 // PrizePicks rate-limits aggressively.
 
 import { getStore } from '@netlify/blobs';
-import { fetchProps, PP_LEAGUE_IDS } from './bet-finder-background.js';
+import { fetchProps, resolveLeagueId } from './bet-finder-background.js';
 
 const CACHE_MS = 15 * 60 * 1000;
 
@@ -26,8 +26,11 @@ export const handler = async (event) => {
     'Cache-Control': 'no-cache',
   };
   const league = String((event.queryStringParameters || {}).league || 'mlb').toLowerCase();
-  if (!PP_LEAGUE_IDS[league]) {
-    return { statusCode: 400, headers, body: JSON.stringify({ error: `Unknown league '${league}'` }) };
+  // Any league PrizePicks is posting, not just the ones pinned in PP_LEAGUE_IDS.
+  let leagueId = null;
+  try { leagueId = await resolveLeagueId(league); } catch { /* fall through to 400 */ }
+  if (!leagueId) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: `PrizePicks isn't posting a league called '${league}' right now` }) };
   }
 
   const cacheKey = `stats:${league}`;

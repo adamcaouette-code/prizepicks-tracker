@@ -40,7 +40,62 @@ async function recordCost(feature, model, apiResponse) {
   } catch { /* metering must never break anything */ }
 }
 // ----------------------------------------------------------------------------
-const PP_LEAGUE_IDS = { world_cup: '241', mlb: '2', wnba: '3', nba: '7', nfl: '9' };
+// Leagues whose ids are pinned here. Everything else PrizePicks posts is resolved
+// live via resolveLeagueId() below, so a new sport (or a tournament ending, like the
+// World Cup) needs no code change — the catalog is the source of truth.
+const PP_LEAGUE_IDS = { mlb: '2', wnba: '3', nba: '7', nfl: '9' };
+
+// ---- league catalog: every league PrizePicks is posting right now ----------
+// Cached hard: it changes on the order of days, and PrizePicks throttles.
+const LEAGUE_CATALOG_MS = 6 * 60 * 60 * 1000;
+
+// "World Cup" -> world_cup, "College Football" -> college_football
+function leagueTagOf(name) {
+  return String(name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+async function fetchLeagueCatalog() {
+  let store = null;
+  try {
+    store = getStore({ name: 'pp-league-catalog', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+    const c = await store.get('catalog', { type: 'json' });
+    if (c && c.at && Date.now() - c.at < LEAGUE_CATALOG_MS) return c.leagues;
+  } catch { /* cache is best-effort */ }
+
+  const res = await fetch('https://partner-api.prizepicks.com/leagues?per_page=250', {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      Accept: 'application/json',
+      Referer: 'https://app.prizepicks.com/',
+    },
+  });
+  if (!res.ok) throw new Error(`PrizePicks /leagues returned ${res.status}`);
+  const full = await res.json();
+
+  const leagues = (full.data || []).map((d) => {
+    const a = d.attributes || {};
+    const name = a.name || a.display_name || '';
+    return {
+      id: String(d.id),
+      name,
+      tag: leagueTagOf(name),
+      projections: a.projections_count ?? a.props_count ?? null,
+      active: a.active ?? null,
+    };
+  }).filter((l) => l.tag);
+
+  if (store) { try { await store.setJSON('catalog', { at: Date.now(), leagues }); } catch {} }
+  return leagues;
+}
+
+// Wired tag -> pinned id; anything else -> looked up in the live catalog.
+async function resolveLeagueId(leagueTag) {
+  const tag = leagueTagOf(leagueTag);
+  if (PP_LEAGUE_IDS[tag]) return PP_LEAGUE_IDS[tag];
+  const catalog = await fetchLeagueCatalog();
+  const hit = catalog.find((l) => l.tag === tag);
+  return hit ? hit.id : null;
+}
 const ODDS_PRIOR = { goblin: 0.62, standard: 0.55, demon: 0.45 };
 
 // PrizePicks payout tables (typical — adjust if your region differs)
@@ -54,8 +109,8 @@ const FLEX = {
 
 // ---------- data: pull + trim PrizePicks props (all pages) ----------
 async function fetchProps(leagueTag) {
-  const lid = PP_LEAGUE_IDS[leagueTag];
-  if (!lid) throw new Error(`Unknown league '${leagueTag}'`);
+  const lid = await resolveLeagueId(leagueTag);
+  if (!lid) throw new Error(`PrizePicks isn't posting a league called '${leagueTag}' right now`);
 
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -292,12 +347,18 @@ function attachStarters(candidates, teamMap) {
 }
 
 // ---------- ESPN team records (free, no key). Stored now, not yet judged. ----------
+// Keyed by PrizePicks league tag (leagueTagOf of its display name). A league absent
+// here simply gets no standings — fetchTeamRecords returns {} and the run continues.
 const ESPN_SLUGS = {
-  world_cup: { sport: 'soccer', league: 'fifa.world' },
   mlb: { sport: 'baseball', league: 'mlb' },
   nba: { sport: 'basketball', league: 'nba' },
   wnba: { sport: 'basketball', league: 'wnba' },
   nfl: { sport: 'football', league: 'nfl' },
+  nhl: { sport: 'hockey', league: 'nhl' },
+  cfb: { sport: 'football', league: 'college-football' },
+  college_football: { sport: 'football', league: 'college-football' },
+  cbb: { sport: 'basketball', league: 'mens-college-basketball' },
+  college_basketball: { sport: 'basketball', league: 'mens-college-basketball' },
 };
 
 function recordFromStats(stats, team) {
@@ -393,12 +454,18 @@ function resolveRecords(rows, espnMap) {
 }
 
 // ---------- win% via The Odds API. Degrades gracefully; reports WHY it failed. ----------
+// The Odds API sport keys, keyed by PrizePicks league tag. Absent = win% and the
+// DraftKings line comparison are skipped for that league, never an error.
 const ODDS_SPORT_KEYS = {
-  world_cup: 'soccer_fifa_world_cup',
   mlb: 'baseball_mlb',
   nba: 'basketball_nba',
   wnba: 'basketball_wnba',
   nfl: 'americanfootball_nfl',
+  nhl: 'icehockey_nhl',
+  cfb: 'americanfootball_ncaaf',
+  college_football: 'americanfootball_ncaaf',
+  cbb: 'basketball_ncaab',
+  college_basketball: 'basketball_ncaab',
 };
 
 function americanToProb(price) {
@@ -608,9 +675,17 @@ function mlbAllows(pos, stat) {
 }
 
 // ===== dispatch =====
+// PrizePicks posts many soccer competitions (EPL, MLS, UCL, ...). The gate is about
+// the sport, not one tournament, so match on the sport's stat vocabulary rather than
+// naming every league.
+function isSoccerStat(stat) {
+  const s = String(stat || '').toLowerCase();
+  return s.includes('shots on target') || s.includes('goalie saves') || s.includes('goals') ||
+         s.includes('assists') && s.includes('goal') || s.includes('clearances') || s.includes('tackles');
+}
 function positionAllows(pos, stat, league) {
   if (league === 'mlb') return mlbAllows(pos, stat);
-  if (league === 'world_cup') return soccerAllows(pos, stat);
+  if (isSoccerStat(stat)) return soccerAllows(pos, stat);
   return true; // no gate defined for this league yet -> fail open, never invent traps
 }
 
@@ -843,7 +918,7 @@ function parsePicks(text) {
   return [];
 }
 
-async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'world_cup', oppDef = {}) {
+async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}) {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
   const slim = {};
@@ -1083,7 +1158,7 @@ export const handler = async (event) => {
     if (!jobId) return { statusCode: 400, body: 'Missing jobId' };
 
     const params = {
-      league: body.league || 'world_cup',
+      league: body.league || 'mlb',
       bankroll: Number(body.bankroll) || 0,
       floor: Number(body.floor) || 0,
       legs: Number(body.legs) || 3,
@@ -1259,7 +1334,8 @@ export const handler = async (event) => {
 // ---- shared research helpers, reused by judge-slip.js (single-slip judging) ----
 // so both entry points pull PrizePicks/ESPN/Odds-API data through one implementation.
 export {
-  PP_LEAGUE_IDS, PARK_INDEX, PP_TO_ESPN_ABBR, ODDS_SPORT_KEYS,
+  PP_LEAGUE_IDS, PARK_INDEX, PP_TO_ESPN_ABBR, ODDS_SPORT_KEYS, ESPN_SLUGS,
+  fetchLeagueCatalog, resolveLeagueId, leagueTagOf,
   fetchProps, fetchHistory, attachHistory,
   fetchMlbStarters, attachStarters, mlbRole, mlbStatKind,
   fetchTeamRecords, resolveRecords, fetchTeamFullNames,

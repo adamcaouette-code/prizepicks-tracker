@@ -1,51 +1,54 @@
-// pp-leagues.js — one-time helper. Deploy, hit /api/pp-leagues, read the list.
-// Returns every league PrizePicks is showing RIGHT NOW with its id + live projection
-// count, so you know exactly what to add to PP_LEAGUE_IDS (and which are worth adding —
-// a league with 0 projections today has no slate). Read-only, no keys.
+// netlify/functions/pp-leagues.js
+//
+// Every league PrizePicks is posting right now, so the league selector reflects the
+// real board instead of a hardcoded list. That list had gone stale in both
+// directions: the World Cup was still showing after the tournament ended, and no
+// other sport PrizePicks offers could be selected at all.
+//
+//   GET /api/pp-leagues            -> leagues with a live slate, biggest first
+//   GET /api/pp-leagues?all=1      -> everything, including empty slates (debugging)
+//
+// Each entry carries `research`, which is the honest bit:
+//   "full"  — standings + win% + DraftKings line comparison are wired for this league
+//   "props" — props load and Claude still judges them, but with no research attached,
+//             so the judge is told to widen toward 50%. Worth knowing before you
+//             read a grade as gospel.
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  Accept: 'application/json',
-  Referer: 'https://app.prizepicks.com/',
-};
+import { fetchLeagueCatalog, ESPN_SLUGS, ODDS_SPORT_KEYS } from './bet-finder-background.js';
 
-export const handler = async () => {
+export const handler = async (event) => {
+  const q = event.queryStringParameters || {};
+  const headers = {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': 'no-cache',
+  };
+
   try {
-    // The leagues endpoint lists every active league. include=… is optional; the
-    // core data[] carries id + name, and usually a projections/props count.
-    const res = await fetch('https://partner-api.prizepicks.com/leagues?per_page=250', { headers: HEADERS });
-    if (!res.ok) {
-      return json(502, { error: `PrizePicks /leagues returned ${res.status}`, hint: 'If it 403/429s, retry in a minute — same throttling as the projections call.' });
-    }
-    const full = await res.json();
+    const catalog = await fetchLeagueCatalog();
 
-    const leagues = (full.data || []).map((d) => {
-      const a = d.attributes || {};
-      return {
-        id: d.id,                                   // <-- this is the PP_LEAGUE_IDS value
-        name: a.name || a.display_name || '(unnamed)',
-        projections: a.projections_count ?? a.props_count ?? null, // live slate size if provided
-        active: a.active ?? null,
-      };
-    });
+    let leagues = catalog.map((l) => ({
+      ...l,
+      // "full" needs BOTH sides: standings context and a market to price against.
+      research: (ESPN_SLUGS[l.tag] && ODDS_SPORT_KEYS[l.tag]) ? 'full' : 'props',
+    }));
 
-    // Sort by live slate size (biggest first); nulls last. A big count = a real board today.
-    leagues.sort((x, y) => (y.projections ?? -1) - (x.projections ?? -1));
+    // Default view is what you can actually bet today. A league with no projections
+    // is a dead button — that's exactly how the World Cup lingered.
+    if (q.all !== '1') leagues = leagues.filter((l) => (l.projections ?? 0) > 0);
 
-    // Flag the ones you already wired so it's obvious what's new.
-    const HAVE = { '241': 'world_cup', '2': 'mlb', '3': 'wnba', '7': 'nba', '9': 'nfl' };
-    for (const l of leagues) l.alreadyAdded = HAVE[l.id] || false;
+    leagues.sort((a, b) => (b.projections ?? -1) - (a.projections ?? -1) || a.name.localeCompare(b.name));
 
-    return json(200, {
-      count: leagues.length,
-      note: 'id = the value for PP_LEAGUE_IDS. projections = live count now (0 or null = no slate today).',
-      leagues,
-    });
-  } catch (e) {
-    return json(500, { error: String(e.message || e) });
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        count: leagues.length,
+        note: 'research:"full" = standings + win% + book lines wired; "props" = props only, grades are thinner.',
+        leagues,
+      }, null, 2),
+    };
+  } catch (err) {
+    return { statusCode: 502, headers, body: JSON.stringify({ error: String(err.message || err) }) };
   }
 };
-
-function json(statusCode, body) {
-  return { statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body, null, 2) };
-}
