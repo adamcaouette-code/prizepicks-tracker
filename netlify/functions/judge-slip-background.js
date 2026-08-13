@@ -309,6 +309,26 @@ export const handler = async (event) => {
     const enrichedLegs = working.map((leg) => {
       const research = {};
       if (leg.last5) { research.recent5 = leg.last5; research.recentAvg = leg.avg; }
+      // Statistical anchors, computed HERE because models eyeball this arithmetic badly:
+      // a real slip run had the judge price a ~15% single-game HR at 34%. Both anchors
+      // are P(over the judged line); the prompt tells the judge to invert for unders.
+      if (Array.isArray(leg.last5) && leg.line != null) {
+        const nums = leg.last5.map(Number).filter((v) => isFinite(v));
+        if (nums.length >= 3) {
+          research.recentOverRate = Math.round((nums.filter((v) => v > Number(leg.line)).length / nums.length) * 100) / 100;
+        }
+        // Poisson tail for low-line counting props ("does it happen at least once/twice") —
+        // exactly the shape PrizePicks fills its board with, and exactly where per-game
+        // probability is most misjudged. Skipped for higher lines where the stat stops
+        // behaving like a count of rare events.
+        const avg = Number(leg.avg);
+        if (isFinite(avg) && avg > 0 && Number(leg.line) <= 2.5) {
+          const k = Math.floor(Number(leg.line));    // over L  ⇔  X ≥ floor(L)+1
+          let term = Math.exp(-avg), cdf = term;
+          for (let i = 1; i <= k; i++) { term *= avg / i; cdf += term; }
+          research.poissonAnchor = Math.round(Math.max(0, Math.min(1, 1 - cdf)) * 100) / 100;
+        }
+      }
       if (teamRecords[leg.team]) research.teamRecord = teamRecords[leg.team];
       if (odds.teamWinProbs?.[leg.team] != null) research.teamWinPct = Math.round(odds.teamWinProbs[leg.team] * 100);
       if (leg.oppSP) research.oppSP = leg.oppSP;

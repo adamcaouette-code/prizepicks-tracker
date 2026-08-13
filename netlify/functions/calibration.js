@@ -107,7 +107,12 @@ const pct = (x) => (x == null ? '—' : `${(x * 100).toFixed(1)}%`);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
 function renderHTML(a) {
-  const diffColor = (d) => (Math.abs(d) <= 0.04 ? '#34d399' : Math.abs(d) <= 0.10 ? '#fbbf24' : '#f87171');
+  const n = a.graded;
+  // Below ~50 graded picks a Brier score is mostly noise. Show the numbers with n
+  // beside them, but say plainly that they don't mean much yet — this page exists
+  // to be honest, not encouraging.
+  const early = n > 0 && n < 50;
+  const diffColor = (d) => (Math.abs(d) <= 0.04 ? 'var(--grn)' : Math.abs(d) <= 0.10 ? 'var(--amb)' : 'var(--red)');
 
   const bandRows = a.bands.map((b) => {
     const diff = b.actual - b.predicted;
@@ -116,81 +121,104 @@ function renderHTML(a) {
       <td>${pct(b.predicted)}</td><td>${pct(b.actual)}</td>
       <td style="color:${diffColor(diff)}">${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="5" style="color:#888">No graded picks yet.</td></tr>';
+  }).join('') || '<tr><td colspan="5" class="mut">No graded picks yet.</td></tr>';
 
   const breakdown = (obj) => Object.entries(obj).map(([k, v]) =>
     `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${pct(v.hits / v.n)}</td></tr>`).join('') ||
-    '<tr><td colspan="3" style="color:#888">—</td></tr>';
+    '<tr><td colspan="3" class="mut">—</td></tr>';
 
-  const note = a.graded === 0
-    ? `<p class="note">No graded picks yet. The grader runs daily and fills in results a day or two after games. Once a slate has been graded, calibration shows up here.</p>`
-    : `<p class="note">Calibration uses the over-probability on every logged pick (play, lean, and pass), so even passes count toward whether the numbers are honest. "Diff" is actual minus predicted — green is well-calibrated (±4pts), red is off by 10+.</p>`;
+  const engineRows = Object.entries(a.bySource || {}).map(([k, v]) =>
+    `<tr><td>${esc(k === 'slip' ? 'slip judge' : k + ' engine')}</td><td>${v.n}</td><td>${pct(v.hits / v.n)}</td><td>${(v.brierSum / v.n).toFixed(3)}</td></tr>`).join('') ||
+    '<tr><td colspan="4" class="mut">—</td></tr>';
 
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
-  const pendRows = pendDates.map(([d, n], i) =>
-    `<tr><td>${d}${i === 0 ? ' <span style="color:#6cf">(newest — usually today, games not final)</span>' : ''}</td><td>${n}</td></tr>`).join('')
-    || '<tr><td colspan="2" style="color:#667">none — all gradeable picks are graded</td></tr>';
+  const pendRows = pendDates.map(([d, c], i) =>
+    `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
+    || '<tr><td colspan="2" class="mut">none — everything gradeable is graded</td></tr>';
+
+  const plWin = a.playsLeans.n ? a.playsLeans.hits / a.playsLeans.n : null;
+  const record = a.playsLeans.n ? `${a.playsLeans.hits}–${a.playsLeans.n - a.playsLeans.hits}` : '—';
+
+  const stateNote = n === 0
+    ? `<div class="callout">No graded picks yet. The grader runs every morning and fills in results once games settle — this page starts meaning something a day or two after your first logged slate.</div>`
+    : early
+      ? `<div class="callout amber"><b>EARLY — n=${n}.</b> Below ~50 graded picks these numbers are mostly noise: a hot or cold week can swing them wildly. Don't draw conclusions (or settle arguments) yet.</div>`
+      : `<div class="callout">Calibration scores every logged pick — plays, leans and passes alike — so the numbers can't be flattered by only counting winners. "Diff" is actual minus predicted; green is honest (±4pts), red is off by 10+.</div>`;
+
+  const card = (v, l, sub) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000000"><link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>AtomBets · Calibration</title><style>
-  :root{color-scheme:dark}
-  body{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b0e11;color:#e6e6e6;margin:0;padding:24px}
-  h1{font-size:18px;margin:0 0 4px} h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#8aa;margin:28px 0 8px}
-  .cards{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
-  .card{background:#13181d;border:1px solid #1f2730;border-radius:10px;padding:12px 16px;min-width:120px}
-  .card .v{font-size:22px;font-weight:700} .card .l{font-size:11px;color:#8aa;text-transform:uppercase;letter-spacing:.06em}
-  table{border-collapse:collapse;width:100%;max-width:560px;margin:4px 0}
-  th,td{text-align:left;padding:6px 12px;border-bottom:1px solid #1a2128} th{color:#8aa;font-weight:600;font-size:11px;text-transform:uppercase}
-  td{font-variant-numeric:tabular-nums} .note{color:#9aa;max-width:560px;font-size:12px}
-  .ts{color:#667;font-size:11px;margin-top:24px}
+  :root{color-scheme:dark;--bg:#000;--ink:#fff;--dim:#8f8f8f;--faint:#4a4a4a;--line:#1c1c1c;
+    --grn:#7ee2a8;--amb:#e2c97e;--red:#e28c7e;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{font:13px/1.6 var(--mono);background:var(--bg);color:var(--ink);margin:0;padding:26px 18px 60px;max-width:720px;margin-inline:auto}
+  h1{font:800 22px/1.2 -apple-system,'Helvetica Neue',sans-serif;letter-spacing:-.02em;margin:0}
+  h1 span{color:var(--dim);font-weight:600}
+  .sub{color:var(--dim);font-size:11px;margin:6px 0 22px}
+  h2{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);font-weight:600;
+    margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:baseline}
+  h2 a{color:var(--faint);text-decoration:none;letter-spacing:.04em;margin-left:auto}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px}
+  .card{border:1px solid var(--line);border-radius:6px;padding:13px 14px}
+  .card .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+  .card .l{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-top:5px}
+  .card .s{font-size:10px;color:var(--faint);margin-top:3px}
+  .callout{border:1px solid var(--line);border-radius:6px;padding:12px 14px;font-size:11px;color:var(--dim);margin:16px 0;line-height:1.7}
+  .callout.amber{border-color:var(--amb);color:var(--amb)}
+  table{border-collapse:collapse;width:100%}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+  th{color:var(--faint);font-size:9px;letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+  tr:last-child td{border-bottom:none}
+  .mut{color:var(--faint)}
+  .wrap{overflow-x:auto}
 </style></head><body>
-  <a href="/api/dev" title="dev" style="position:fixed;top:10px;right:10px;width:16px;height:16px;border:1px solid #1a2128;border-radius:3px;opacity:.12;text-decoration:none;z-index:99" aria-label="dev"></a>
-  <h1>AtomBets · Calibration</h1>
+  <h1>AtomBets <span>· Calibration</span></h1>
+  <div class="sub">when the engine says 65%, does it hit 65%? — every logged pick counts, passes included</div>
+
   <div class="cards">
-    <div class="card"><div class="v">${a.graded}</div><div class="l">graded</div></div>
-    <div class="card"><div class="v">${a.pendingGradeable}</div><div class="l">pending (gradeable)</div></div>
-    <div class="card"><div class="v">${a.combos}</div><div class="l">combos (skip)</div></div>
-    <div class="card"><div class="v">${a.givenUp}</div><div class="l">given up</div></div>
-    <div class="card"><div class="v">${pct(a.overall)}</div><div class="l">over rate</div></div>
-    <div class="card"><div class="v">${a.brier == null ? '—' : a.brier.toFixed(3)}</div><div class="l">brier ↓</div></div>
-    <div class="card"><div class="v">${a.playsLeans.n ? pct(a.playsLeans.hits / a.playsLeans.n) : '—'}</div><div class="l">play+lean win</div></div>
+    ${card(n, 'graded', a.pendingGradeable ? a.pendingGradeable + ' pending' : '')}
+    ${card(record, 'plays+leans W–L', plWin != null ? pct(plWin) + ' win rate' : '')}
+    ${card(pct(a.overall), 'over rate', 'all graded picks')}
+    ${card(a.brier == null ? '—' : a.brier.toFixed(3) + (early ? ' <span style="font-size:11px;color:var(--amb)">n=' + n + '</span>' : ''), 'brier ↓', early ? 'early — mostly noise' : 'lower is better')}
   </div>
-  ${note}
-  <h2>Pending (gradeable) by day</h2>
-  <table><thead><tr><th>date</th><th>pending</th></tr></thead><tbody>${pendRows}</tbody></table>
-  <p class="note">Most "pending" is the newest day's slate (games not final yet) — the daily grader clears each day the morning after. Combos can't be graded this way; "given up" tried 3× with no result.</p>
+  ${stateNote}
+
+  <h2>By engine <a href="/api/calibration?format=json">json ↗</a></h2>
+  <div class="wrap"><table><thead><tr><th>source</th><th>n</th><th>over rate</th><th>brier ↓</th></tr></thead><tbody>${engineRows}</tbody></table></div>
+  <div class="callout">Brier is the honest scoreboard: right AND not overclaiming. A rater saying 90% on legs that hit 70% scores <i>worse</i> (0.250) than one saying 70% (0.210). Compare engines on this, never on whose percentages look bigger.</div>
+
   <h2>Calibration by predicted band</h2>
-  <table><thead><tr><th>P(over) band</th><th>n</th><th>predicted</th><th>actual</th><th>diff (pts)</th></tr></thead><tbody>${bandRows}</tbody></table>
-  <h2>By tier</h2>
-  <table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table>
-  <h2>By league</h2>
-  <table><thead><tr><th>league</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byLeague)}</tbody></table>
-  <h2>By engine</h2>
-  <table><thead><tr><th>source</th><th>n</th><th>over rate</th><th>brier ↓</th></tr></thead><tbody>
-    ${Object.entries(a.bySource).map(([k, v]) =>
-      `<tr><td>${esc(k === 'slip' ? 'slip judge' : k + ' engine')}</td><td>${v.n}</td><td>${pct(v.hits / v.n)}</td><td>${(v.brierSum / v.n).toFixed(3)}</td></tr>`).join('') ||
-      '<tr><td colspan="4" style="color:#888">—</td></tr>'}
-  </tbody></table>
-  <p class="note">Brier is the honest scoreboard: it rewards being right AND rewards not overclaiming. A rater that says 90% on legs that hit 70% scores <em>worse</em> (0.250) than one that says 70% (0.210). Compare engines on this number, never on whose percentages look bigger.</p>
+  <div class="wrap"><table><thead><tr><th>P(over) band</th><th>n</th><th>predicted</th><th>actual</th><th>diff (pts)</th></tr></thead><tbody>${bandRows}</tbody></table></div>
+
   <h2>Verdict performance</h2>
-  <table><thead><tr><th>verdict</th><th>n</th><th>win rate</th></tr></thead><tbody>
+  <div class="wrap"><table><thead><tr><th>verdict</th><th>n</th><th>win rate</th></tr></thead><tbody>
     <tr><td>play</td><td>${a.plays.n}</td><td>${a.plays.n ? pct(a.plays.hits / a.plays.n) : '—'}</td></tr>
-    <tr><td>play + lean</td><td>${a.playsLeans.n}</td><td>${a.playsLeans.n ? pct(a.playsLeans.hits / a.playsLeans.n) : '—'}</td></tr>
-  </tbody></table>
-  <h2>API spend (last 30 days)</h2>
+    <tr><td>play + lean</td><td>${a.playsLeans.n}</td><td>${a.playsLeans.n ? pct(plWin) : '—'}</td></tr>
+  </tbody></table></div>
+
+  <h2>By tier</h2>
+  <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
+
+  <h2>By league</h2>
+  <div class="wrap"><table><thead><tr><th>league</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byLeague)}</tbody></table></div>
+
+  <h2>Pending (gradeable) by day</h2>
+  <div class="wrap"><table><thead><tr><th>date</th><th>pending</th></tr></thead><tbody>${pendRows}</tbody></table></div>
+  <div class="callout">Most pending is tonight's slate — the daily grader clears each day the morning after. Combos can't be graded this way; "given up" (${a.givenUp}) tried 3× with no result; combos skipped: ${a.combos}.</div>
+
+  <h2>API spend (30 days)</h2>
   <div class="cards">
-    <div class="card"><div class="v">$${(a.spend?.today ?? 0).toFixed(2)}</div><div class="l">today</div></div>
-    <div class="card"><div class="v">$${(a.spend?.week ?? 0).toFixed(2)}</div><div class="l">7 days</div></div>
-    <div class="card"><div class="v">$${(a.spend?.month ?? 0).toFixed(2)}</div><div class="l">30 days</div></div>
+    ${card('$' + (a.spend?.today ?? 0).toFixed(2), 'today', '')}
+    ${card('$' + (a.spend?.week ?? 0).toFixed(2), '7 days', '')}
+    ${card('$' + (a.spend?.month ?? 0).toFixed(2), '30 days', '')}
   </div>
-  <table><thead><tr><th>feature</th><th>spend (30d)</th></tr></thead><tbody>
-    ${Object.entries(a.spend?.byFeature || {}).sort((x, y) => y[1] - x[1]).map(([f, v]) => `<tr><td>${esc(f)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" style="color:#667">no metered calls yet</td></tr>'}
-  </tbody></table>
-  <table><thead><tr><th>model</th><th>spend (30d)</th></tr></thead><tbody>
-    ${Object.entries(a.spend?.byModel || {}).sort((x, y) => y[1] - x[1]).map(([m, v]) => `<tr><td>${esc(m)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" style="color:#667">—</td></tr>'}
-  </tbody></table>
-  <p class="note">Self-metered from each Claude call's token usage at current per-model rates (Sonnet 5 intro pricing until Aug 31). This is AtomBets' own spend only — it can't see your Anthropic balance or other usage; for that, check console.anthropic.com → Billing.</p>
-  <p class="ts">generated ${new Date().toISOString()}</p>
+  <div class="wrap" style="margin-top:12px"><table><thead><tr><th>feature</th><th>spend (30d)</th></tr></thead><tbody>
+    ${Object.entries(a.spend?.byFeature || {}).sort((x, y) => y[1] - x[1]).map(([f, v]) => `<tr><td>${esc(f)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" class="mut">no metered calls yet</td></tr>'}
+  </tbody></table></div>
+
+  <div class="sub" style="margin-top:30px">generated ${new Date().toISOString()} · <a href="/" style="color:var(--dim)">← terminal</a></div>
 </body></html>`;
 }
 
