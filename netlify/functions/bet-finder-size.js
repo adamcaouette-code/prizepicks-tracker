@@ -11,7 +11,11 @@
 // POWER_PURE[tier][legs] = all-hit multiplier for a slip entirely of that tier.
 const POWER_PURE = {
   goblin:   { 3: 2.0,  4: 2.3,  5: 2.6,  6: 3.25 },
-  standard: { 3: 4.75, 4: 7.0,  5: 10.0, 6: 16.0 },
+  // 2-pick Power is the one 2-leg entry PrizePicks offers, at a flat 3x for
+  // standard picks. Without this row a pure standard pair fell through to the
+  // per-leg-factor estimate (4.75^(2/3) ≈ 2.82) and was labeled "mixed" — both
+  // wrong. Goblin/demon pairs stay estimated; those multipliers are unverified.
+  standard: { 2: 3.0, 3: 4.75, 4: 7.0,  5: 10.0, 6: 16.0 },
   demon:    { 3: 12.0, 4: 23.0, 5: 45.0, 6: 97.0 },
 };
 // FLEX_PURE[tier][legs] = { hitsCorrect: multiplier, ... }
@@ -130,7 +134,9 @@ function sizeParlay(legs, { bankroll, floor, maxStake }) {
     rec.payouts = Object.entries(table)
       .map(([hits, m]) => ({ hits: Number(hits), pays: Math.round(rec.stake * m * 100) / 100 }))
       .sort((a, b) => b.hits - a.hits);
-    if (mixed) rec.note = (rec.note ? rec.note + ' ' : '') + '(mixed-tier estimate)';
+    // "mixed" here really means "no verified payout table for this exact slip" —
+    // it also covers pure 2-leg goblin/demon pairs, so say what it is.
+    if (mixed) rec.note = (rec.note ? rec.note + ' ' : '') + '(estimated payout table)';
     out.entries[entry] = rec;
     if (rec.stake > 0) {
       const g = expectedLogGrowth(probs, table, rec.stake / bankroll);
