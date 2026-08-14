@@ -379,6 +379,14 @@ export const handler = async (event) => {
       l.team ??= src.team || null;
       l.matchup ??= src.matchup || null;
       l.image ??= src.image || null;
+      // Raw numbers for the verdict card's stats panel — straight from
+      // PrizePicks/ESPN, deliberately NOT the judge's output, so the user can
+      // check the verdict against the same facts the judge saw.
+      if (src.last5) { l.recent5 ??= src.last5; l.recentAvg ??= src.avg; }
+      if (src.histGames) l.histGames ??= src.histGames;
+      if (src.oppSP) l.oppSP ??= src.oppSP;
+      if (src.selfSP) l.selfSP ??= src.selfSP;
+      if (src.park != null) l.parkIndex ??= src.park;
     }
 
     // ---- log judged legs for auto-grading + calibration -----------------------
@@ -468,3 +476,7 @@ export const handler = async (event) => {
     return fail(String(err.message || err));
   }
 };
+
+// Pure helpers, exported for tests — the dual-name stat matcher is where slips
+// silently failed to bind to live projections, so it stays under test.
+export { statKey, statsLikelyMatch, rowMatchesStat, matchProjection };

@@ -1025,6 +1025,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     p.position ??= src.position || '';
     p.image ??= src.image || '';                    // player headshot
     if (src.last5) { p.recent5 ??= src.last5; p.recentAvg ??= src.avg; } // last-5 for the UI
+    if (src.histGames) p.histGames ??= src.histGames; // per-game value + opponent + home/away, for the stats panel
     if (src.oppSP) p.oppSP ??= src.oppSP;            // opposing starter (hitter props) — for UI/validation
     if (src.selfSP) p.selfSP ??= src.selfSP;         // own season line (pitcher props)
     if (src.park != null) p.parkIndex ??= src.park;  // home park run index
@@ -1408,4 +1409,5 @@ export {
   fetchTeamRecords, resolveRecords, fetchTeamFullNames,
   fetchWinProbs, fetchOppDefense, normStat, normKey, americanToProb,
   recordCost, PRICES,
+  filterToday, findCandidates, positionAllows, propIdentity,   // pure helpers, exported for tests
 };
