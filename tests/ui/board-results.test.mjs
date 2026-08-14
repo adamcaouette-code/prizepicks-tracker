@@ -52,19 +52,42 @@ async function renderBoard(browser, url, timezoneId) {
 export default async function ({ t, url, browser }) {
   const { page, errors, unstubbed } = await renderBoard(browser, url, 'America/New_York');
 
-  // ---- rows and verdict styling ------------------------------------------
+  const names = () => page.$$eval('#searchResults .leg .name', els => els.map(e => e.textContent.trim()));
+  const gtimes = () => page.$$eval('#searchResults .leg .team',
+    els => els.map(e => { const s = e.querySelector('.gtime'); return s ? s.textContent.trim() : null; }));
+
+  // ---- rows, default sort (edge), verdict styling -------------------------
   t.eq('every pick renders a row', await page.$$eval('#searchResults .leg', l => l.length), 4);
+  t.eq('default order is probability, best edge first',
+    await names(), ['Elly De La Cruz', 'No Extras Guy', 'Junk Time Guy', 'Corbin Carroll']);
   const pct = await page.$$eval('#searchResults .pct', els => els.map(e => e.className));
-  t.eq('board-mode "pass" is styled as fade, not left bare', pct[1], 'pct fade');
+  t.eq('board-mode "pass" is styled as fade, not left bare', pct[3], 'pct fade');
   t.ok('probabilities render as percentages', /68%/.test(await page.textContent('#searchResults')));
 
+  // ---- sort control -------------------------------------------------------
+  const sortBtns = await page.$$eval('#searchResults .sortbtn',
+    els => els.map(e => ({ label: e.textContent.trim(), sort: e.dataset.sort, active: e.classList.contains('active') })));
+  t.eq('three sorts offered, edge active by default',
+    sortBtns, [{ label: 'EDGE %', sort: 'edge', active: true }, { label: 'TEAM', sort: 'team', active: false }, { label: 'TIME', sort: 'time', active: false }]);
+
+  await page.click('#searchResults .sortbtn[data-sort="team"]');
+  t.eq('team sort is alphabetical by team (ARI, BOS, CIN, LAD)',
+    await names(), ['Corbin Carroll', 'No Extras Guy', 'Elly De La Cruz', 'Junk Time Guy']);
+
+  await page.click('#searchResults .sortbtn[data-sort="time"]');
+  t.eq('time sort is soonest first, unknown times sink to the bottom',
+    await names(), ['Elly De La Cruz', 'Corbin Carroll', 'No Extras Guy', 'Junk Time Guy']);
+
+  await page.click('#searchResults .sortbtn[data-sort="edge"]');
+  t.eq('edge sort restores probability order', await names(),
+    ['Elly De La Cruz', 'No Extras Guy', 'Junk Time Guy', 'Corbin Carroll']);
+
   // ---- game start time, viewer-local -------------------------------------
-  const times = await page.$$eval('#searchResults .leg .team',
-    els => els.map(e => { const s = e.querySelector('.gtime'); return s ? s.textContent.trim() : null; }));
+  const times = await gtimes();
   t.eq('tonight game shows local time (ET viewer)', times[0], '7:30 PM');
-  t.eq('late west-coast game rolls to tomorrow for an ET viewer', times[1], 'Sat 1:15 AM');
-  t.eq('missing start_time renders no chip at all', times[2], null);
-  t.eq('unparseable start_time renders no chip at all', times[3], null);
+  t.eq('late west-coast game rolls to tomorrow for an ET viewer', times[3], 'Sat 1:15 AM');
+  t.eq('missing start_time renders no chip at all', times[1], null);
+  t.eq('unparseable start_time renders no chip at all', times[2], null);
   const dotIsCss = await page.$eval('#searchResults .gtime',
     el => getComputedStyle(el, '::before').content.includes('·'));
   t.ok('separator is CSS decoration, not DOM text', dotIsCss);
@@ -130,7 +153,7 @@ export default async function ({ t, url, browser }) {
   const wtimes = await west.page.$$eval('#searchResults .leg .team',
     els => els.map(e => { const s = e.querySelector('.gtime'); return s ? s.textContent.trim() : null; }));
   t.eq('same game, PT viewer: 7:30 ET reads 4:30 PM', wtimes[0], '4:30 PM');
-  t.eq('the late PT game is still today out west — no weekday prefix', wtimes[1], '10:15 PM');
+  t.eq('the late PT game is still today out west — no weekday prefix', wtimes[3], '10:15 PM');
   t.eq('no JS errors (PT viewer)', west.errors, []);
   await west.page.close();
 }

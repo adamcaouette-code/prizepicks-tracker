@@ -1,30 +1,40 @@
-// The Find Bets run must OVERLAP league research with the PrizePicks props pull.
+// The Find Bets run must OVERLAP work, twice over:
 //
-// Team records, MLB starters and opponent defense need only the league tag, and
-// the Odds API call needs the board only at its final name-mapping step — so all
-// of them start at t=0 alongside fetchProps. Only recent form waits: it looks
-// each candidate up by projection id. This suite intercepts every outbound call,
-// gives each a chunky synthetic latency, and stamps when it was ISSUED — if the
-// pipelining regresses to sequential, research start times jump to after the
-// props fetch ends and this fails.
+//  1. Across phases — team records, MLB starters and opponent defense need only
+//     the league tag, and the Odds API call needs the board only at its final
+//     name-mapping step, so all of them start at t=0 alongside fetchProps. Only
+//     recent form waits: it looks each candidate up by projection id.
+//  2. Within the props pull — the board is ~12 pages and fetching them one at a
+//     time was the single slowest stretch of a run. Page 1 goes alone (it carries
+//     meta.total_pages), the rest go in parallel waves. Same for ESPN's
+//     per-game starter summaries.
+//
+// Every outbound call is intercepted with a synthetic latency and stamped with
+// when it was issued and how many of its kind were in flight — if either overlap
+// regresses to sequential, the stamps say so and this fails.
 
 import { loadFn, mockFetch } from '../helpers/fn.mjs';
 import { reset } from '../helpers/blobs.mjs';
 
-const LAT = { catalog: 60, props: 240, standings: 90, scoreboard: 90, odds: 90, claude: 60 };
+const LAT = { catalog: 60, propsPage: 100, standings: 90, summary: 60, odds: 90, claude: 60 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const PROPS_PAGE = {
-  data: [
-    { id: 'p1', type: 'projection', attributes: { stat_type: 'Hits', stat_display_name: 'Hits', line_score: 0.5, odds_type: 'goblin', description: 'CIN', start_time: new Date().toISOString(), today: true }, relationships: { new_player: { data: { id: 'n1' } } } },
-    { id: 'p2', type: 'projection', attributes: { stat_type: 'Hits', stat_display_name: 'Hits', line_score: 1.5, odds_type: 'standard', description: 'PIT', start_time: new Date().toISOString(), today: true }, relationships: { new_player: { data: { id: 'n2' } } } },
-  ],
-  included: [
+// Three pages: 1 and 2 full (250 rows), 3 short — so pagination must reach page 3.
+function propsPage(page) {
+  const full = page < 3;
+  const n = full ? 250 : 40;
+  const data = Array.from({ length: n }, (_, i) => ({
+    id: `p${page}-${i}`, type: 'projection',
+    attributes: { stat_type: 'Hits', stat_display_name: 'Hits', line_score: 0.5 + (i % 3),
+      odds_type: i % 2 ? 'standard' : 'goblin', description: i % 2 ? 'PIT' : 'CIN',
+      start_time: new Date().toISOString(), today: true },
+    relationships: { new_player: { data: { id: i % 2 ? 'n2' : 'n1' } } },
+  }));
+  return { data, included: [
     { id: 'n1', type: 'new_player', attributes: { display_name: 'Elly De La Cruz', team: 'CIN', position: 'SS', market: 'Cincinnati' } },
     { id: 'n2', type: 'new_player', attributes: { display_name: 'Oneil Cruz', team: 'PIT', position: 'CF', market: 'Pittsburgh' } },
-  ],
-  meta: { total_pages: 1 },
-};
+  ], meta: { total_pages: 3 } };
+}
 
 export default async function ({ t }) {
   reset();
@@ -34,21 +44,30 @@ export default async function ({ t }) {
   const T0 = Date.now();
   const starts = {};
   const ends = {};
-  const mark = async (label, ms) => {
+  const live = { page: 0, summary: 0 };
+  const peak = { page: 0, summary: 0 };
+  const mark = async (label, ms, kind) => {
     if (starts[label] == null) starts[label] = Date.now() - T0;
+    if (kind) { live[kind]++; peak[kind] = Math.max(peak[kind], live[kind]); }
     await sleep(ms);
+    if (kind) live[kind]--;
     ends[label] = Date.now() - T0;
   };
 
   const mock = mockFetch([
     ['partner-api.prizepicks.com/leagues', async () => { await mark('catalog', LAT.catalog);
-      return { data: [{ id: '2', type: 'league', attributes: { name: 'MLB', projections_count: 500 } }] }; }],
-    ['partner-api.prizepicks.com/projections', async () => { await mark('props', LAT.props); return PROPS_PAGE; }],
+      return { data: [{ id: '2', type: 'league', attributes: { name: 'MLB', projections_count: 750 } }] }; }],
+    ['partner-api.prizepicks.com/projections', async (url) => {
+      const page = Number(new URL(url).searchParams.get('page')) || 1;
+      await mark(`props_p${page}`, LAT.propsPage, 'page');
+      return propsPage(page); }],
     ['/standings', async () => { await mark('records', LAT.standings); return { children: [] }; }],
-    ['/scoreboard', async () => { await mark('starters', LAT.scoreboard); return { events: [] }; }],
-    ['/summary', async () => ({})],
+    ['/scoreboard', async () => { await mark('scoreboard', 40);
+      return { events: Array.from({ length: 8 }, (_, i) => ({ id: `ev${i}`, competitions: [{ competitors: [] }] })) }; }],
+    ['/summary', async (url) => { const ev = new URL(url).searchParams.get('event');
+      await mark(`summary_${ev}`, LAT.summary, 'summary'); return {}; }],
     ['the-odds-api.com', async () => { await mark('odds', LAT.odds); return []; }],
-    [/projections\/p\d+\/history/, async () => { await mark('history', 20); return { games: [] }; }],
+    ['/history', async () => { await mark('history', 20); return { games: [] }; }],
     ['api.anthropic.com', async () => { await mark('claude', LAT.claude);
       return { content: [{ type: 'text', text: JSON.stringify({ picks: [
         { player: 'Elly De La Cruz', stat: 'Hits', line: 0.5, verdict: 'play', prob: 0.7, key_risk: 'k', reasoning: 'r' },
@@ -63,15 +82,26 @@ export default async function ({ t }) {
     mock.restore();
   }
 
+  const propsEnd = Math.max(...Object.keys(ends).filter((k) => k.startsWith('props_p')).map((k) => ends[k]));
   t.note(Object.entries(starts).sort((a, b) => a[1] - b[1])
-    .map(([k, v]) => `${k}@${v}ms→${ends[k] ?? '?'}ms`).join('  '));
+    .map(([k, v]) => `${k}@${v}→${ends[k] ?? '?'}`).join('  '));
 
-  t.ok('team records start before props returns', starts.records < ends.props, `records@${starts.records}, props ends@${ends.props}`);
-  t.ok('MLB starters start before props returns', starts.starters < ends.props, `starters@${starts.starters}`);
-  t.ok('odds request is issued before props returns', starts.odds < ends.props, `odds@${starts.odds}`);
+  // ---- research overlaps the props pull -----------------------------------
+  t.ok('team records start before the props pull finishes', starts.records < propsEnd, `records@${starts.records}, props done@${propsEnd}`);
+  t.ok('MLB scoreboard starts before the props pull finishes', starts.scoreboard < propsEnd, `scoreboard@${starts.scoreboard}`);
+  t.ok('odds request is issued before the props pull finishes', starts.odds < propsEnd, `odds@${starts.odds}`);
   t.ok('recent form waits for candidates (needs projection ids)',
-    starts.history == null || starts.history >= ends.props,
+    starts.history == null || starts.history >= propsEnd,
     starts.history == null ? 'no history calls' : `history@${starts.history}`);
   t.ok('the judge runs last, after every research piece settles',
-    starts.claude >= Math.max(ends.props, ends.records, ends.odds, ends.starters), `claude@${starts.claude}`);
+    starts.claude >= Math.max(propsEnd, ends.records, ends.odds), `claude@${starts.claude}`);
+
+  // ---- pagination is parallel after page 1 --------------------------------
+  t.eq('all three board pages were fetched', ['props_p1', 'props_p2', 'props_p3'].every((k) => k in starts), true);
+  t.ok('page 1 goes alone (it carries total_pages)', starts.props_p2 >= ends.props_p1, `p2@${starts.props_p2}, p1 done@${ends.props_p1}`);
+  t.ok('later pages fetch concurrently, not one at a time', peak.page >= 2, `peak in-flight pages: ${peak.page}`);
+
+  // ---- starter summaries are parallel -------------------------------------
+  t.eq('every game got a summary call', Object.keys(starts).filter((k) => k.startsWith('summary_')).length, 8);
+  t.ok('summaries fetch concurrently, not one at a time', peak.summary >= 2, `peak in-flight summaries: ${peak.summary}`);
 }

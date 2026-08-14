@@ -142,23 +142,47 @@ async function fetchProps(leagueTag, opts = {}) {
   // two; we want every game today, so we follow pagination to the end.
   // MLB posts ~3000 props (13 pages), so this is where throttling actually bites —
   // callers that only need a sample (stat-name discovery) should pass maxPages.
+  //
+  // Page 1 goes alone (its errors are fatal, and it carries meta.total_pages);
+  // the REST fetch in parallel waves of 4. Fetching them one at a time made the
+  // props pull the single slowest stretch of a run — ~12 sequential round trips,
+  // each able to eat its own 429 backoff. The pages are independent, wave size 4
+  // stays under PrizePicks' throttle radar, and ppFetch still backs off politely
+  // on any 429 inside a wave.
   const players = {};
   const allData = [];
   const MAX_PAGES = Math.max(1, opts.maxPages || 12); // safety cap (~3000 props)
-  for (let page = 1; page <= MAX_PAGES; page++) {
+  const WAVE = 4;
+  const getPage = async (page) => {
     const url = `https://partner-api.prizepicks.com/projections?per_page=250&single_stat=true&league_id=${lid}&page=${page}`;
     const res = await ppFetch(url, headers);
     if (!res.ok) {
       if (page === 1) throw new Error(`PrizePicks returned ${res.status}${res.status === 429 ? ' (rate limited — try again in a minute)' : ''}`);
-      break; // a later page failing just ends pagination
+      return null; // a later page failing just ends pagination
     }
-    const full = await res.json();
+    return res.json();
+  };
+  // Absorbs one page; returns true when it was the board's last (short) page.
+  const absorb = (full) => {
     for (const i of full.included || []) {
       if (i.type === 'new_player') players[i.id] = i.attributes || {};
     }
     const data = full.data || [];
     allData.push(...data);
-    if (data.length < 250) break; // last page reached
+    return data.length < 250;
+  };
+
+  const first = await getPage(1);
+  let done = absorb(first);
+  // Trust meta.total_pages when PP sends it; otherwise probe up to the cap and
+  // stop at the first short/failed page, same as the sequential loop did.
+  const lastPage = Math.min(MAX_PAGES, Number(first?.meta?.total_pages) || MAX_PAGES);
+  for (let base = 2; base <= lastPage && !done; base += WAVE) {
+    const wave = [];
+    for (let p = base; p < base + WAVE && p <= lastPage; p++) wave.push(getPage(p));
+    for (const full of await Promise.all(wave)) {
+      if (!full || absorb(full)) { done = true; break; } // absorbed in page order
+    }
   }
 
   return allData.map((d) => {
@@ -244,8 +268,11 @@ async function fetchHistory(projectionId, attempt = 0) {
 }
 
 // Attach history gently: small batches with a pause between, so we don't trip
-// PrizePicks' rate limit (which can sink the whole run).
-async function attachHistory(candidates, batchSize = 6, pauseMs = 300) {
+// PrizePicks' rate limit (which can sink the whole run). 8×150ms instead of the
+// old 6×300ms — a 44-candidate board drops from 8 pauses to 5 and each is half
+// as long, and a 429 here only costs that one candidate's last-5 (fetchHistory
+// retries, then returns null), never the run.
+async function attachHistory(candidates, batchSize = 8, pauseMs = 150) {
   for (let i = 0; i < candidates.length; i += batchSize) {
     const batch = candidates.slice(i, i + batchSize);
     const results = await Promise.all(batch.map((c) => (c.id ? fetchHistory(c.id) : null)));
@@ -317,17 +344,23 @@ async function fetchMlbStarters() {
   const events = sb?.events || [];
   if (!events.length) return { teamMap: {}, status: { games: 0, starters: 0, message: 'no ESPN games' } };
 
-  // 1) enrich by athlete id via one summary call per game: throws + ERA/WHIP/K
+  // 1) enrich by athlete id via one summary call per game: throws + ERA/WHIP/K.
+  // Four games at a time — one-at-a-time with a 120ms sleep took ~10s on a full
+  // slate, and this sits on the judge's critical path. ESPN's public API takes
+  // this in stride, and espnJSON already degrades any single miss to null.
   const byId = {};
-  for (const e of events) {
-    const sum = await espnJSON(`https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/summary?event=${e.id}`);
-    for (const entry of collectProbables(sum)) {
-      const a = entry.athlete || {};
-      if (!a.id || byId[a.id]) continue;
-      byId[a.id] = { throws: a.throws?.abbreviation || null, ...pluckPitcherStats(entry.statistics || {}) };
+  let ei = 0;
+  await Promise.all(Array.from({ length: Math.min(4, events.length) }, async () => {
+    while (ei < events.length) {
+      const e = events[ei++];
+      const sum = await espnJSON(`https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/summary?event=${e.id}`);
+      for (const entry of collectProbables(sum)) {
+        const a = entry.athlete || {};
+        if (!a.id || byId[a.id]) continue;
+        byId[a.id] = { throws: a.throws?.abbreviation || null, ...pluckPitcherStats(entry.statistics || {}) };
+      }
     }
-    await sleep(120);
-  }
+  }));
 
   // 2) team -> game info, keyed by every name form so PP's nickname matches
   const teamMap = {};
