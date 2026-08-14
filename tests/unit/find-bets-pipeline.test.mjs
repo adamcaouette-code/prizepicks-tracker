@@ -75,9 +75,12 @@ export default async function ({ t }) {
       ] }) }], usage: {} }; }],
   ]);
 
+  let done = null;
   try {
     const { handler } = await loadFn('bet-finder-background.js');
     await handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'pipe1', league: 'mlb', legs: 2, bankroll: 100 }) });
+    const { read } = await import('../helpers/blobs.mjs');
+    done = read('bet-jobs', 'pipe1');
   } finally {
     mock.restore();
   }
@@ -104,4 +107,19 @@ export default async function ({ t }) {
   // ---- starter summaries are parallel -------------------------------------
   t.eq('every game got a summary call', Object.keys(starts).filter((k) => k.startsWith('summary_')).length, 8);
   t.ok('summaries fetch concurrently, not one at a time', peak.summary >= 2, `peak in-flight summaries: ${peak.summary}`);
+
+  // ---- the run reports its own timing back to the browser -----------------
+  // Without this the console report has nothing to print, and a slow run is
+  // once again unfalsifiable.
+  const tm = done?.result?.timing;
+  t.ok('the finished job carries a timing block', !!tm);
+  t.ok('every piece that ran is timed',
+    ['props', 'records', 'odds', 'starters', 'history', 'judge'].every((k) => typeof tm?.pieces?.[k] === 'number'),
+    JSON.stringify(tm?.pieces));
+  t.ok('board size is reported', tm?.rows > 0 && tm?.candidates > 0, `${tm?.rows} rows, ${tm?.candidates} candidates`);
+  t.ok('wall time is at least the slowest piece', tm.totalMs >= Math.max(...Object.values(tm.pieces)),
+    `total ${tm.totalMs}ms`);
+  t.ok('and LESS than the sum, proving the pieces really overlapped',
+    tm.totalMs < Object.values(tm.pieces).reduce((a, b) => a + b, 0),
+    `total ${tm.totalMs}ms vs sum ${Object.values(tm.pieces).reduce((a, b) => a + b, 0)}ms`);
 }

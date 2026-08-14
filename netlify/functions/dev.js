@@ -29,10 +29,46 @@ function dayCounts(arr) {
   return { total: arr.length, unique: uniq.length, graded, pending, combos };
 }
 
+// Run timings, newest first. bet-finder-background writes one row per completed
+// run to the run-stats blob (last 20 per league) with per-phase durations, so a
+// "why was that slow" question has an answer that isn't a guess.
+function timingTable(runs) {
+  if (!runs.length) return '<tr><td colspan="5" style="color:#888">no completed runs yet — run Find Bets once</td></tr>';
+  const secs = (ms) => (ms == null ? '—' : (ms / 1000).toFixed(1) + 's');
+  return runs.map((r) => {
+    // Slowest phase first: that's the one worth attacking.
+    const phases = (r.phases || []).slice().sort((a, b) => b.ms - a.ms)
+      .map((p) => `${p.phase} ${secs(p.ms)}`).join(' · ');
+    const slow = r.totalMs > 90000 ? '#f87171' : r.totalMs > 45000 ? '#fbbf24' : '#34d399';
+    return `<tr>
+      <td>${new Date(r.at).toLocaleString()}</td>
+      <td>${r.league || '—'}</td>
+      <td style="color:${slow}">${secs(r.totalMs)}</td>
+      <td style="color:#889">${r.model || '—'}</td>
+      <td style="color:#889">${phases || '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
 export const handler = async () => {
   const headers = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' };
   let rows = '';
   let keys = [];
+  let runRows = '';
+  try {
+    const rs = getStore({ name: 'run-stats', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+    const leagues = (await rs.list()).blobs.map((b) => b.key);
+    const all = [];
+    for (const lg of leagues) {
+      let hist = [];
+      try { hist = (await rs.get(lg, { type: 'json' })) || []; } catch { hist = []; }
+      for (const h of hist) all.push({ ...h, league: lg });
+    }
+    all.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    runRows = timingTable(all.slice(0, 25));
+  } catch (e) {
+    runRows = `<tr><td colspan="5" style="color:#f87171">error: ${String(e.message || e)}</td></tr>`;
+  }
   try {
     const store = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
     try { keys = (await store.list()).blobs.map((b) => b.key); } catch { keys = []; }
@@ -105,6 +141,17 @@ export const handler = async () => {
     <a href="/api/calibration?league=mlb" target="_blank">calibration · mlb ↗</a>
     <a href="/api/calibration?format=json" target="_blank">calibration · json ↗</a>
   </div>
+
+  <h2>Run timings (newest first)</h2>
+  <p style="color:#667;max-width:680px;margin:0 0 8px">
+    Every completed Find Bets run records its own wall time and per-phase durations.
+    Phases are listed <b>slowest first</b> — that's the one worth attacking. Green under
+    45s, amber under 90s, red past that. The board page also prints a live per-piece
+    breakdown to its own console on every run, and shows it under
+    <b>◇ Last Run Timing</b> at the bottom of the page.
+  </p>
+  <table><thead><tr><th>when</th><th>league</th><th>wall</th><th>model</th><th>phases (slowest first)</th></tr></thead>
+  <tbody>${runRows}</tbody></table>
 
   <h2>Pick log by day (deduped)</h2>
   <table><thead><tr><th>date</th><th>unique</th><th>graded</th><th>pending</th><th>combos</th><th>actions</th></tr></thead>

@@ -33,7 +33,12 @@ const RESULT = { board: [
   { player: 'Junk Time Guy', team: 'LAD', matchup: 'LAD vs SF', stat: 'Hits', line: 1.5, pick: 'over',
     verdict: 'lean', prob: 0.60, oddsType: 'standard', image: null, start: 'not-a-date',
     key_risk: 'r', reasoning: 'x' },
-], teamRecords: { CIN: '61-59' }, winProbs: { CIN: 0.55 } };
+], teamRecords: { CIN: '61-59' }, winProbs: { CIN: 0.55 },
+  timing: { totalMs: 41200, rows: 2941, candidates: 44,
+    pieces: { props: 8100, judge: 26400, history: 5200, starters: 3100, records: 900, odds: 700, defense: 10 },
+    phases: [{ phase: 'pulling props', ms: 8200 }, { phase: 'gathering data', ms: 5400 }] },
+  params: { league: 'mlb', legs: 3, tiers: ['goblin', 'standard'] },
+  oddsStatus: { status: 'ok', message: 'Win% loaded for 30 team(s).' } };
 
 async function renderBoard(browser, url, timezoneId) {
   const app = await openApp(browser, {

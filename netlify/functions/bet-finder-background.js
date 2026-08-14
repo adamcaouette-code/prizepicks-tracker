@@ -1308,12 +1308,21 @@ export const handler = async (event) => {
     // props wait can't surface as an unhandled rejection (which Node treats as
     // fatal). Promise.allSettled below still sees the real rejection.
     const guard = (p) => { p.catch(() => {}); return p; };
+    // track() stamps each piece's wall time into result.timing so a slow run can
+    // be diagnosed from the browser console instead of guessed at. Pieces run
+    // concurrently, so these overlap — wall clock is NOT their sum.
+    const pieceMs = {};
+    const track = (label, p) => {
+      const t0 = Date.now();
+      Promise.resolve(p).catch(() => {}).then(() => { pieceMs[label] = Date.now() - t0; });
+      return p;
+    };
 
-    const rowsP = guard(fetchProps(params.league).then((r) => filterToday(r, params.today)));
-    const recordsP  = guard(fetchTeamRecords(params.league));
-    const oddsP     = guard(fetchWinProbs(params.league, rowsP));   // awaits rowsP internally
-    const startersP = guard(params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null));
-    const defenseP  = guard(fetchOppDefense(params.league));
+    const rowsP = guard(track('props', fetchProps(params.league).then((r) => filterToday(r, params.today))));
+    const recordsP  = guard(track('records', fetchTeamRecords(params.league)));
+    const oddsP     = guard(track('odds', fetchWinProbs(params.league, rowsP)));   // awaits rowsP internally
+    const startersP = guard(track('starters', params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null)));
+    const defenseP  = guard(track('defense', fetchOppDefense(params.league)));
 
     const rows = await rowsP;
     const candidates = findCandidates(rows, params.tiers, 4, params.maxPicks || 44, params.statFilter);
@@ -1336,7 +1345,7 @@ export const handler = async (event) => {
     // instead of blocking the run.
     await tick('gathering data (records, odds, form, starters)');
 
-    const historyP = guard(attachHistory(candidates));                 // piece 3: recent form (mutates candidates)
+    const historyP = guard(track('history', attachHistory(candidates))); // piece 3: recent form (mutates candidates)
 
     const [recordsR, oddsR, historyR, startersR, defenseR] =
       await Promise.allSettled([recordsP, oddsP, historyP, startersP, defenseP]);
@@ -1362,7 +1371,9 @@ export const handler = async (event) => {
     phaseDone('gathering data');
 
     await tick('Claude researching lineups');
+    const judgeStart = Date.now();
     const picks = await judge(candidates, teamRecords, odds.teamWinProbs, params.league, oppDef);
+    pieceMs.judge = Date.now() - judgeStart;
     if (!picks.length) throw new Error('Claude returned no parseable picks.');
 
     const chosen = selectLegs(picks, params.legs);
@@ -1424,7 +1435,16 @@ export const handler = async (event) => {
 
     phaseDone('Claude researching lineups');
     await recordRun();
-    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, mlbStatus, allPicks: picks, params } });
+    // Per-piece wall times ride back with the result so the browser console can
+    // print a real breakdown of where a slow run spent its time.
+    const timing = {
+      totalMs: Date.now() - runStart,
+      pieces: pieceMs,                    // concurrent — wall clock ≠ sum
+      rows: rows.length,
+      candidates: candidates.length,
+      phases: phaseLog.slice(),
+    };
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, mlbStatus, timing, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });

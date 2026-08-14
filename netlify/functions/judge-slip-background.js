@@ -261,13 +261,33 @@ export const handler = async (event) => {
     await step('matching legs to live projections');
     const league = (slip.league || '').toLowerCase();
     const supported = !!PP_LEAGUE_IDS[league];
+    const runStart = Date.now();
+
+    // ---- research that needs no PrizePicks board starts NOW ------------------
+    // Same overlap as bet-finder: records, odds, starters and defense need only
+    // the league tag and the slip's own team strings, so they run WHILE the
+    // props pull + leg matching happens. Only recent form waits — it needs the
+    // matched projection ids. guard() pre-attaches a no-op catch so a rejection
+    // during the props wait can't become a fatal unhandled rejection; track()
+    // stamps wall times into result.timing for console troubleshooting.
+    const guard = (p) => { p.catch(() => {}); return p; };
+    const pieceMs = {};
+    const track = (label, p) => {
+      const t0 = Date.now();
+      Promise.resolve(p).catch(() => {}).then(() => { pieceMs[label] = Date.now() - t0; });
+      return p;
+    };
+    const working = legs.map((l) => ({ ...l }));
+    const recordsP  = guard(track('records', fetchTeamRecords(league)));
+    const oddsP     = guard(track('odds', fetchWinProbs(league, working)));
+    const startersP = guard(track('starters', league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null)));
+    const defenseP  = guard(track('defense', fetchOppDefense(league)));
 
     // ---- match each leg to a live projection, when the league is one we can pull ----
     let matchedCount = 0;
-    const working = legs.map((l) => ({ ...l }));
     let rows = [];
     if (supported) {
-      try { rows = await fetchProps(league); } catch { rows = []; }
+      try { rows = await track('props', fetchProps(league)); } catch { rows = []; }
     }
     for (const leg of working) {
       const row = rows.length ? matchProjection(leg, rows) : null;
@@ -281,14 +301,12 @@ export const handler = async (event) => {
       }
     }
 
-    // ---- gather research in parallel, same sources bet-finder-background.js uses ----
+    // ---- completion gate: research has been in flight since before the props
+    // pull; recent form starts here because it needs the matched ids ----------
     await step('gathering recent form, records and win%');
     const [historyR, recordsR, oddsR, startersR, defenseR] = await Promise.allSettled([
-      attachHistory(working.filter((l) => l.id)),                          // mutates: last5, avg
-      fetchTeamRecords(league),
-      fetchWinProbs(league, working),
-      league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null),
-      fetchOppDefense(league),
+      guard(track('history', attachHistory(working.filter((l) => l.id)))), // mutates: last5, avg
+      recordsP, oddsP, startersP, defenseP,
     ]);
 
     const teamRecords = recordsR.status === 'fulfilled' ? resolveRecords(working, recordsR.value) : {};
@@ -302,7 +320,7 @@ export const handler = async (event) => {
     // ---- DraftKings line comparison (best-effort; see attachBookLines for why this is separate) ----
     await step('comparing DraftKings lines');
     let bookLineStatus = 'skipped';
-    try { bookLineStatus = await attachBookLines(working, league, odds.games); }
+    try { bookLineStatus = await track('bookLines', attachBookLines(working, league, odds.games)); }
     catch { bookLineStatus = 'error'; }
 
     // ---- fold everything gathered into leg.research, per slip-judge-prompt.js ----
@@ -344,6 +362,7 @@ export const handler = async (event) => {
 
     // ---- judge ----
     await step('Claude grading each leg');
+    const judgeStart = Date.now();
     const { system, userContent } = buildSlipJudge(slip, enrichedLegs);
     const gameCount = new Set(enrichedLegs.map((l) => l.matchup || l.team).filter(Boolean)).size;
     const maxSearches = Math.max(1, Math.min(MAX_SEARCHES, gameCount || 1));
@@ -454,12 +473,16 @@ export const handler = async (event) => {
       // logging is best-effort — never let it break a grade
     }
 
+    pieceMs.judge = Date.now() - judgeStart;
     await jobs.setJSON(jobId, {
       status: 'done',
       result: {
         ok: true,
         legs: judged.legs,
         slip: judged.slip || null,
+        // per-piece wall times (concurrent — wall clock is not their sum), for
+        // the browser-console run report
+        timing: { totalMs: Date.now() - runStart, pieces: pieceMs },
         dataStatus: {
           matchedLegs: matchedCount,
           totalLegs: legs.length,
