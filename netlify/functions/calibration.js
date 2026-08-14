@@ -103,6 +103,19 @@ function aggregate(rawPicks) {
   return out;
 }
 
+// Blob reads are network round trips, and this endpoint reads one per logged day —
+// sequentially that grows without bound as the log fills, and it now blocks the
+// scoreboard on Today's Picks. Bounded parallelism keeps it flat-ish and well
+// inside the function's synchronous time budget.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx]); }
+  }));
+  return out;
+}
+
 const pct = (x) => (x == null ? '—' : `${(x * 100).toFixed(1)}%`);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
@@ -236,10 +249,11 @@ export const handler = async (event) => {
       keys = keys.filter((k) => k >= cutoff);
     }
 
-    let picks = [];
-    for (const k of keys) {
-      try { const day = await store.get(k, { type: 'json' }); if (Array.isArray(day)) picks.push(...day); } catch { /* skip */ }
-    }
+    const days = await mapLimit(keys, 12, async (k) => {
+      try { const day = await store.get(k, { type: 'json' }); return Array.isArray(day) ? day : []; }
+      catch { return []; }
+    });
+    let picks = days.flat();
     if (q.league) picks = picks.filter((p) => p.league === q.league);
 
     const agg = aggregate(picks);
@@ -253,10 +267,12 @@ export const handler = async (event) => {
       const today = new Date().toISOString().slice(0, 10);
       const d7 = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
       const d30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-      for (const k of ckeys) {
-        if (k < d30) continue;
-        let entries = [];
-        try { entries = (await costStore.get(k, { type: 'json' })) || []; } catch { continue; }
+      const recent = ckeys.filter((k) => k >= d30);
+      const costDays = await mapLimit(recent, 12, async (k) => {
+        try { return { k, entries: (await costStore.get(k, { type: 'json' })) || [] }; }
+        catch { return { k, entries: [] }; }
+      });
+      for (const { k, entries } of costDays) {
         for (const e of entries) {
           const usd = e.usd || 0;
           spend.month += usd;
