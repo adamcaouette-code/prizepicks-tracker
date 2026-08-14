@@ -507,6 +507,12 @@ function americanToProb(price) {
 
 // Returns { status, message, remaining, used, teamWinProbs }.
 // status is one of: ok | capped | error | skipped. NEVER throws — the run goes on.
+//
+// `rows` may be an ARRAY or a PROMISE of one. Nothing above the team-name mapping
+// at the bottom touches it, so the caller can start this fetch before PrizePicks
+// has answered and hand in the rows as a promise; we await it only at the point we
+// actually need it. `await` on a plain array is a no-op, so array callers are
+// unchanged.
 async function fetchWinProbs(leagueTag, rows) {
   const sport = ODDS_SPORT_KEYS[leagueTag];
   if (!sport) return { status: 'skipped', message: `No odds mapping for ${leagueTag}.`, teamWinProbs: {} };
@@ -571,9 +577,14 @@ async function fetchWinProbs(leagueTag, rows) {
     }
   }
 
-  // resolve to the exact PP team strings
+  // resolve to the exact PP team strings — the first point that needs the board.
+  // If the board itself failed we still return the odds we already paid for, but we
+  // must NOT cache a team-less result: the 60-min cache would then starve the next
+  // run of win% for an hour over an unrelated PrizePicks blip.
+  let resolvedRows = null, rowsOk = true;
+  try { resolvedRows = (await rows) || []; } catch { resolvedRows = []; rowsOk = false; }
   const teamWinProbs = {};
-  const teams = [...new Set((rows || []).map((r) => r.team).filter((t) => t && t !== '(unknown)'))];
+  const teams = [...new Set((resolvedRows || []).map((r) => r.team).filter((t) => t && t !== '(unknown)'))];
   for (const team of teams) {
     const k = team.toLowerCase();
     let p = oddsMap[k];
@@ -594,7 +605,7 @@ async function fetchWinProbs(leagueTag, rows) {
     message: `Win% loaded for ${found} team(s).${remaining != null ? ` ${remaining} Odds API requests left this month.` : ''}`,
     remaining, used, teamWinProbs, games: gamesOut,
   };
-  if (cacheStore) { try { await cacheStore.setJSON(leagueTag, { at: Date.now(), data: result }); } catch {} }
+  if (cacheStore && rowsOk) { try { await cacheStore.setJSON(leagueTag, { at: Date.now(), data: result }); } catch {} }
   return result;
 }
 
@@ -1244,10 +1255,28 @@ export const handler = async (event) => {
     };
     // ------------------------------------------------------------------------
 
-    await tick('pulling props');
+    await tick('pulling props + gathering data');
 
-    let rows = await fetchProps(params.league);
-    rows = filterToday(rows, params.today);
+    // ---- Overlap phase -----------------------------------------------------
+    // Team records, MLB starters and opponent-defense ranks need NOTHING from
+    // PrizePicks — only the league tag — and the Odds API call needs the board
+    // only at the very end, to map odds team names onto PP's team strings. So
+    // they all start NOW, alongside the props pull, instead of waiting for it.
+    // Only recent form (attachHistory) genuinely depends on the candidate list,
+    // because it looks up each prop by its PrizePicks projection id.
+    //
+    // guard() attaches a no-op catch so a research fetch that rejects during the
+    // props wait can't surface as an unhandled rejection (which Node treats as
+    // fatal). Promise.allSettled below still sees the real rejection.
+    const guard = (p) => { p.catch(() => {}); return p; };
+
+    const rowsP = guard(fetchProps(params.league).then((r) => filterToday(r, params.today)));
+    const recordsP  = guard(fetchTeamRecords(params.league));
+    const oddsP     = guard(fetchWinProbs(params.league, rowsP));   // awaits rowsP internally
+    const startersP = guard(params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null));
+    const defenseP  = guard(fetchOppDefense(params.league));
+
+    const rows = await rowsP;
     const candidates = findCandidates(rows, params.tiers, 4, params.maxPicks || 44, params.statFilter);
     const traps = rows
       .filter((r) => !positionAllows(r.position, r.stat, r.league))
@@ -1259,21 +1288,19 @@ export const handler = async (event) => {
     }
     phaseDone('pulling props');
 
-    // ---- Parallel fetch phase with a completion gate ----------------------
-    // These four are independent of each other (they only need rows/candidates),
-    // so they run concurrently. The judge MUST NOT start until every piece has
-    // settled — Promise.allSettled waits for ALL of them, success or failure,
-    // and the checklist below records which pieces arrived. A failed piece
-    // degrades gracefully (judge runs without it) instead of blocking the run.
+    // ---- Completion gate ---------------------------------------------------
+    // Four of the five pieces have been in flight since the run started; recent
+    // form starts here because it needs the candidate ids. The judge MUST NOT
+    // start until every piece has settled — Promise.allSettled waits for ALL of
+    // them, success or failure, and the checklist below records which pieces
+    // arrived. A failed piece degrades gracefully (judge runs without it)
+    // instead of blocking the run.
     await tick('gathering data (records, odds, form, starters)');
 
-    const [recordsR, oddsR, historyR, startersR, defenseR] = await Promise.allSettled([
-      fetchTeamRecords(params.league),                                  // piece 1: team records
-      fetchWinProbs(params.league, rows),                               // piece 2: win probabilities
-      attachHistory(candidates),                                        // piece 3: recent form (mutates candidates)
-      params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null), // piece 4: MLB starters
-      fetchOppDefense(params.league, rows),                             // piece 5: opponent defensive rank
-    ]);
+    const historyP = guard(attachHistory(candidates));                 // piece 3: recent form (mutates candidates)
+
+    const [recordsR, oddsR, historyR, startersR, defenseR] =
+      await Promise.allSettled([recordsP, oddsP, historyP, startersP, defenseP]);
 
     const checklist = {
       records: recordsR.status === 'fulfilled',
