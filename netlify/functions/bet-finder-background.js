@@ -1028,6 +1028,11 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     if (src.oppSP) p.oppSP ??= src.oppSP;            // opposing starter (hitter props) — for UI/validation
     if (src.selfSP) p.selfSP ??= src.selfSP;         // own season line (pitcher props)
     if (src.park != null) p.parkIndex ??= src.park;  // home park run index
+    // First pitch / tipoff, straight from PrizePicks' start_time. DISPLAY ONLY —
+    // the board shows it so you know how long you have to place the bet. It is
+    // deliberately absent from the judge's payload above and from the calibration
+    // log below: a clock skew or a postponed game must never move a probability.
+    if (src.start) p.start ??= src.start;
   }
   return picks;
 }
