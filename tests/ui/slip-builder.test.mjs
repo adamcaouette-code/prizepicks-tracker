@@ -18,6 +18,10 @@ const RESULT = { board: [
   mk('Alpha One', 'CIN', 0.5, 0.68, 'goblin', 'PP-A'),
   mk('Beta Two', 'PIT', 1.5, 0.62, 'standard', 'PP-B'),
   mk('Gamma Three', 'CHC', 0.5, 0.60, 'standard', 'PP-C'),
+  // A SECOND line of Alpha One's same prop. Legal to browse, never legal to add
+  // alongside the first — PrizePicks takes a prop once, and the two lines are
+  // nested rather than independent.
+  mk('Alpha One', 'CIN', 1.5, 0.55, 'goblin', 'PP-D'),
 ], params: { league: 'mlb' } };
 
 // bet-finder-size returns payouts in DOLLARS, scaled by the stake it was given —
@@ -87,7 +91,9 @@ export default async function ({ t, url, browser }) {
   // ---- the tray only exists once you pick something -----------------------
   t.ok('slip tray is hidden before any leg is added', !(await page.isVisible('#slipTray')));
   const addBtns = await page.$$('#searchResults .addbtn');
-  t.eq('every board card offers "+ slip"', addBtns.length, 3);
+  t.eq('every board card offers "+ slip"', addBtns.length, 4);
+  t.eq('alternate lines of one prop are marked on the board',
+    await page.$$eval('#searchResults .altline', e => e.length), 2);
 
   await addBtns[0].click();
   await page.waitForFunction(() => !document.getElementById('slipTray').hidden);
@@ -146,6 +152,16 @@ export default async function ({ t, url, browser }) {
     /3\.00x/.test(await page.textContent('#trayMath')));
   await page.fill('#trayStake', '10');
   await page.waitForFunction(() => /30\.00/.test(document.getElementById('trayMath').textContent));
+
+  // ---- the same prop cannot go on twice ----------------------------------
+  // Alpha One 0.5 is already in the tray; his 1.5 line must be refused.
+  const before = await page.$$eval('#slipTray .trayleg', l => l.length);
+  await (await page.$$('#searchResults .addbtn'))[3].click();
+  await page.waitForFunction(() => /already on this slip/.test(document.getElementById('trayMsg').textContent));
+  t.eq('a second line of the same prop is not added', await page.$$eval('#slipTray .trayleg', l => l.length), before);
+  const msg = await page.textContent('#trayMsg');
+  t.ok('...and it says which line is already there', /Alpha One/.test(msg) && /at 0\.5/.test(msg), msg);
+  t.ok('...and why, rather than just refusing', /aren’t independent/.test(msg), msg);
 
   // ---- removing a leg -----------------------------------------------------
   await (await page.$$('#searchResults .addbtn'))[2].click();

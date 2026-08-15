@@ -134,4 +134,36 @@ export default async function ({ t }) {
   t.eq('an under on a demon runs WITH the tier and is not flagged',
     tiers.find((p) => p.player === 'Demon Under').tierAgainstSide, false);
   t.eq('an over on a goblin runs with the tier', tiers.find((p) => p.player === 'Goblin Over').tierAgainstSide, false);
+
+  // ---- one prop per player, whatever the line ----------------------------
+  // The reported bug: the recommended slip carried "Altmaier Total Games Won
+  // under 7.5" AND "under 6.5". PrizePicks won't take one prop twice, and the
+  // two are NESTED — under 6.5 already means under 7.5 — so multiplying them as
+  // independent produces a number that is simply wrong.
+  const altLines = [
+    { player: 'Daniel Altmaier', stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 7.5, prob: 0.20, verdict: 'pass', matchup: 'ALT vs MUS' },
+    { player: 'Daniel Altmaier', stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 6.5, prob: 0.22, verdict: 'pass', matchup: 'ALT vs MUS' },
+    { player: 'Zeynep Sonmez',   stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 4.5, prob: 0.70, verdict: 'play', matchup: 'SON vs X' },
+    { player: 'Third Player',    stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 5.5, prob: 0.66, verdict: 'play', matchup: 'THI vs Y' },
+  ];
+  mod.attachSides(altLines, 'both');
+  const noDupes = mod.selectLegs(altLines, 3);
+  const altmaier = noDupes.filter((p) => p.player === 'Daniel Altmaier');
+  t.eq('the same prop never appears twice, however good both lines look', altmaier.length, 1);
+  t.eq('...and the slot goes to another player instead',
+    noDupes.map((p) => p.player).sort(), ['Daniel Altmaier', 'Third Player', 'Zeynep Sonmez']);
+
+  // A second leg on the same player is still allowed for a DIFFERENT stat —
+  // that's legal on PrizePicks and merely correlated, not duplicated.
+  const twoStats = [
+    { player: 'Same Guy', stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 7.5, prob: 0.70, verdict: 'play', matchup: 'A vs B' },
+    { player: 'Same Guy', stat: 'Aces', statDisplay: 'Aces', line: 4.5, prob: 0.68, verdict: 'play', matchup: 'A vs B' },
+    { player: 'Other Guy', stat: 'Aces', statDisplay: 'Aces', line: 3.5, prob: 0.64, verdict: 'play', matchup: 'C vs D' },
+  ];
+  mod.attachSides(twoStats, 'both');
+  const mixed = mod.selectLegs(twoStats, 3);
+  t.eq('two DIFFERENT props on one player are still allowed',
+    mixed.filter((p) => p.player === 'Same Guy').length, 2);
+  t.eq('...and they are different stats, not two lines of one',
+    new Set(mixed.filter((p) => p.player === 'Same Guy').map((p) => p.stat)).size, 2);
 }

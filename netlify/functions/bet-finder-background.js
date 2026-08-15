@@ -1180,7 +1180,18 @@ function selectLegs(picks, n, opts = {}) {
 
   const playerCount = {};   // player -> legs they appear in so far
   const gameCount = {};     // matchup -> legs from that game so far
+  const propSeen = new Set();  // player+stat -> already on the slip
   const chosen = [];
+
+  // One leg per player PER STAT, hard. Two lines of the same prop (Total Games
+  // Won under 7.5 AND under 6.5) is not a parlay:
+  //   - PrizePicks won't accept it; you can't take one prop twice.
+  //   - They're NESTED, not independent. Under 6.5 already means under 7.5, so
+  //     multiplying them as if independent gives a number that is simply wrong —
+  //     it understates the pair here and would overstate other pairs.
+  // MAX_PER_PLAYER still allows a second leg on the same player for a DIFFERENT
+  // stat, which is legal and only correlated rather than duplicated.
+  const propKeyOf = (p) => `${normKey(p.player)}|${normKey(p.statDisplay || p.stat)}`;
 
   // Two passes. Pass 1 also caps games so we spread the slip across matchups when
   // the slate allows it. Pass 2 relaxes the game cap (small slates may be one game)
@@ -1189,11 +1200,13 @@ function selectLegs(picks, n, opts = {}) {
     for (const p of pool) {
       if (chosen.length >= target) break;
       if (chosen.includes(p)) continue;
+      if (propSeen.has(propKeyOf(p))) continue;                                 // same prop, another line — never
       const who = playersOf(p);
       if (who.some((w) => (playerCount[w] || 0) >= MAX_PER_PLAYER)) continue;   // correlation cap (hard)
       const game = p.matchup || p.game || '';
       if (maxPerGame && game && (gameCount[game] || 0) >= maxPerGame) continue;  // game spread (soft)
       chosen.push(p);
+      propSeen.add(propKeyOf(p));
       who.forEach((w) => { playerCount[w] = (playerCount[w] || 0) + 1; });
       if (game) gameCount[game] = (gameCount[game] || 0) + 1;
     }
