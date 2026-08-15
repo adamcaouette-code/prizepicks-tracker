@@ -131,9 +131,16 @@ function sizeParlay(legs, { bankroll, floor, maxStake }) {
     if (entry === 'flex' && (n < 3 || !FLEX)) continue;
     const table = entry === 'power' ? POWER : FLEX;
     const rec = priceEntry(probs, table, bankroll, floor, maxStake, entry.toUpperCase());
-    rec.payouts = Object.entries(table)
-      .map(([hits, m]) => ({ hits: Number(hits), pays: Math.round(rec.stake * m * 100) / 100 }))
+    // The MULTIPLIER table is the fact; a payout is only that multiplier times
+    // whatever you actually stake. Return it separately so a caller pricing a
+    // fixed entry ("what does $10 pay?") doesn't have to go through `stake` —
+    // which is the Kelly recommendation and is legitimately 0 on negative EV.
+    // Reading payouts alone there showed $0.00 across the whole table.
+    rec.multipliers = Object.entries(table)
+      .map(([hits, m]) => ({ hits: Number(hits), mult: m }))
       .sort((a, b) => b.hits - a.hits);
+    rec.payouts = rec.multipliers
+      .map(({ hits, mult }) => ({ hits, pays: Math.round(rec.stake * mult * 100) / 100 }));
     // "mixed" here really means "no verified payout table for this exact slip" —
     // it also covers pure 2-leg goblin/demon pairs, so say what it is.
     if (mixed) rec.note = (rec.note ? rec.note + ' ' : '') + '(estimated payout table)';

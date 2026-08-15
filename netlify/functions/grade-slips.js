@@ -129,9 +129,16 @@ export const handler = async (event) => {
       // Payout straight from the multiplier table saved with the slip, so the
       // number shown later is the one that was quoted at save time.
       if (slip.sizing && ['won', 'partial'].includes(sum.status)) {
-        const table = slip.sizing.payouts || [];
-        const row = table.find((r) => Number(r.hits) === sum.hits);
-        slip.payout = row ? row.pays : null;
+        const row = (slip.sizing.payouts || []).find((r) => Number(r.hits) === sum.hits);
+        if (row && Number(row.pays) > 0) {
+          slip.payout = row.pays;
+        } else {
+          // Older slips were saved with payouts scaled by the Kelly stake, which
+          // is 0 on negative EV — those rows are all zero and would report a win
+          // as paying nothing. Recompute from the multiplier table when it's there.
+          const mult = (slip.sizing.multipliers || []).find((r) => Number(r.hits) === sum.hits);
+          slip.payout = mult ? Math.round(Number(slip.stake || 0) * mult.mult * 100) / 100 : (row ? row.pays : null);
+        }
       } else if (sum.status === 'lost') {
         slip.payout = 0;
       }

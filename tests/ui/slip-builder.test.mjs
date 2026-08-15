@@ -24,12 +24,20 @@ const RESULT = { board: [
 // so the mock scales too. A static table would let a stake-handling bug pass.
 const POWER_MULT = { 2: 3.0, 1: 0, 0: 0 };
 const FLEX_MULT = { 2: 2.5, 1: 1.0, 0: 0 };
+// Mirrors the real endpoint exactly, including the trap: `payouts` is scaled by
+// the KELLY-recommended stake, which is 0 whenever EV is non-positive. FLEX here
+// has negative EV, so its payouts are all zero — the page must price off
+// `multipliers` instead, or it shows $0.00 across the board.
+const entryFor = (label, ev, mult, stake) => {
+  const kelly = ev > 0 ? stake : 0;
+  return { label, evPerDollar: ev, stake: kelly,
+    multipliers: [2, 1, 0].map((h) => ({ hits: h, mult: mult[h] })),
+    payouts: [2, 1, 0].map((h) => ({ hits: h, pays: Math.round(kelly * mult[h] * 100) / 100 })) };
+};
 const sizingFor = (stake) => ({
   entries: {
-    power: { label: 'POWER', evPerDollar: 0.12, stake,
-      payouts: [2, 1, 0].map((h) => ({ hits: h, pays: Math.round(stake * POWER_MULT[h] * 100) / 100 })) },
-    flex: { label: 'FLEX', evPerDollar: -0.04, stake,
-      payouts: [2, 1, 0].map((h) => ({ hits: h, pays: Math.round(stake * FLEX_MULT[h] * 100) / 100 })) },
+    power: entryFor('POWER', 0.12, POWER_MULT, stake),
+    flex: entryFor('FLEX', -0.04, FLEX_MULT, stake),
   },
   hitDistribution: [0.1216, 0.4432, 0.4352],
   recommended: 'POWER', mixed: false,
@@ -98,8 +106,14 @@ export default async function ({ t, url, browser }) {
   await page.waitForFunction(() => /25\.00/.test(document.getElementById('trayMath').textContent));
   const flex = await page.textContent('#trayMath');
   t.ok('FLEX shows its own table', /\$25\.00/.test(flex) && /\$10\.00/.test(flex));
+  // The reported bug: FLEX has NEGATIVE EV here, so the endpoint's Kelly stake
+  // is 0 and its payouts array is all zeros. The table must still show what a
+  // $10 entry actually returns — a negative-EV slip is exactly when you want to
+  // see the payout you'd be chasing.
+  t.ok('a negative-EV entry still shows real dollars, not $0.00',
+    !/\$0\.00 \(2\.50x\)/.test(flex) && /\$25\.00 \(2\.50x\)/.test(flex), flex.slice(0, 160));
   t.ok('negative EV is called out as a reason not to play',
-    /-4\.0% expected value/.test(flex) && /telling you not to play/.test(flex), flex.slice(0, 140));
+    /-4\.0% expected value/.test(flex) && /telling you not to play/.test(flex), flex.slice(0, 160));
   await page.click('#slipTray .etoggle[data-entry="power"]');
   await page.waitForFunction(() => /30\.00/.test(document.getElementById('trayMath').textContent));
 
@@ -133,6 +147,7 @@ export default async function ({ t, url, browser }) {
     savePost.legs.map(l => l.projectionId), ['PP-A', 'PP-B']);
   t.eq('the leg keeps the side you took', savePost.legs[0].pick, 'over');
   t.eq('the quoted payout table is frozen with the slip', savePost.sizing.payouts[0].pays, 30);
+  t.eq('...and the multiplier table alongside it', savePost.sizing.multipliers[0].mult, 3.0);
   t.eq('...as dollars for the stake actually entered, not a bare multiplier', savePost.sizing.label, 'POWER');
   t.eq('...along with the EV it was quoted at', savePost.sizing.evPerDollar, 0.12);
 
