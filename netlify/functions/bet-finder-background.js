@@ -8,6 +8,8 @@
 // Env var:  ANTHROPIC_API_KEY  (set in Netlify, same place as ODDS_API_KEY)
 
 import { getStore } from '@netlify/blobs';
+// Raw MLB data (injuries, personIds, logos). No model involved — see mlb-stats.js.
+import { slate as mlbSlate, normKey as mlbNormKey, PP_TO_MLB_ABBR } from './mlb-stats.js';
 
 const MODEL = process.env.JUDGE_MODEL || 'claude-opus-4-8';
 const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap web searches so runs don't blow past the timeout
@@ -1072,6 +1074,12 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     // deliberately absent from the judge's payload above and from the calibration
     // log below: a clock skew or a postponed game must never move a probability.
     if (src.start) p.start ??= src.start;
+    // MLB Stats API extras (raw data, never the judge's): headshot, cap logo,
+    // personId for the lazy stats lookup, and the injury flag.
+    if (src.headshot) p.headshot ??= src.headshot;
+    if (src.teamLogo) { p.teamLogo ??= src.teamLogo; p.teamLogoFallback ??= src.teamLogoFallback; }
+    if (src.mlbId) p.mlbId ??= src.mlbId;
+    if (src.injured) p.injured ??= src.injured;
   }
   return picks;
 }
@@ -1328,6 +1336,15 @@ export const handler = async (event) => {
     const oddsP     = guard(track('odds', fetchWinProbs(params.league, rowsP)));   // awaits rowsP internally
     const startersP = guard(track('starters', params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null)));
     const defenseP  = guard(track('defense', fetchOppDefense(params.league)));
+    // MLB Stats API: the injury report, personIds (headshots) and team logos.
+    // Injuries are the one enrichment that must be known BEFORE you bet, so this
+    // rides in the concurrent wave rather than loading lazily — starting at t=0
+    // means it costs no wall time. Everything deeper (season lines, splits,
+    // game logs) is fetched lazily by the page instead. Blob-cached 20 min, so
+    // most runs pay nothing at all for it.
+    const mlbP = guard(track('mlbSlate', params.league === 'mlb'
+      ? mlbSlate().catch(() => null)          // enrichment: never fails a run
+      : Promise.resolve(null)));
 
     const rows = await rowsP;
     const candidates = findCandidates(rows, params.tiers, 4, params.maxPicks || 44, params.statFilter);
@@ -1352,8 +1369,8 @@ export const handler = async (event) => {
 
     const historyP = guard(track('history', attachHistory(candidates))); // piece 3: recent form (mutates candidates)
 
-    const [recordsR, oddsR, historyR, startersR, defenseR] =
-      await Promise.allSettled([recordsP, oddsP, historyP, startersP, defenseP]);
+    const [recordsR, oddsR, historyR, startersR, defenseR, mlbR] =
+      await Promise.allSettled([recordsP, oddsP, historyP, startersP, defenseP, mlbP]);
 
     const checklist = {
       records: recordsR.status === 'fulfilled',
@@ -1367,10 +1384,42 @@ export const handler = async (event) => {
     const oppDef = defenseR.status === 'fulfilled' && defenseR.value ? defenseR.value : {};
 
     let mlbStatus = null;
+    let mlbSlateData = null;
     if (params.league === 'mlb') {
       const sp = startersR.status === 'fulfilled' && startersR.value ? startersR.value : { teamMap: {}, status: { games: 0, starters: 0, message: 'starters fetch failed' } };
       const attached = attachStarters(candidates, sp.teamMap);
       mlbStatus = { ...sp.status, attached, checklist };
+
+      // ---- MLB Stats API enrichment (raw data, no model) ------------------
+      // Three things per candidate, all from the single roster call already
+      // made: the personId (which IS the headshot), the team's cap logo, and
+      // whether this exact player is on the injured list. The last one is the
+      // reason injuries aren't lazy — a prop on a player who isn't playing is
+      // not a bet, and you need to know that before you tap, not after.
+      mlbSlateData = mlbR.status === 'fulfilled' && mlbR.value ? mlbR.value : null;
+      if (mlbSlateData) {
+        let hs = 0, flagged = 0;
+        for (const c of candidates) {
+          const abbr = PP_TO_MLB_ABBR[String(c.team || '').toUpperCase()] || String(c.team || '').toUpperCase();
+          const t = mlbSlateData.teams?.[abbr];
+          if (t) { c.teamLogo = t.logo; c.teamLogoFallback = t.espnLogo; c.mlbTeamId = t.id; }
+          // A combo prop names two players; there is no single person to resolve.
+          const person = / \+ /.test(c.player) ? null : mlbSlateData.people?.[mlbNormKey(c.player)];
+          if (!person) continue;
+          c.mlbId = person.id;
+          if (person.headshot) { c.headshot = person.headshot; hs++; }
+          if (person.out) { c.injured = person.status || 'Not active'; flagged++; }
+        }
+        mlbStatus.mlb = {
+          games: mlbSlateData.counts?.games ?? null,
+          headshots: hs,
+          injuredOnBoard: flagged,
+          injuredLeaguewide: mlbSlateData.counts?.injured ?? null,
+          cached: mlbSlateData.cached === true,
+        };
+      } else {
+        mlbStatus.mlb = { error: 'MLB Stats API unavailable — headshots and injury flags are off for this run.' };
+      }
     }
     // ---- Gate passed: every piece settled. Hand the full puzzle to Claude. --
     phaseDone('gathering data');
@@ -1449,7 +1498,7 @@ export const handler = async (event) => {
       candidates: candidates.length,
       phases: phaseLog.slice(),
     };
-    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, mlbStatus, timing, allPicks: picks, params } });
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });

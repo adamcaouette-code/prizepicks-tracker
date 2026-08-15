@@ -103,6 +103,10 @@ export const handler = async () => {
     "var out=document.getElementById('out');",
     "function show(label,data){out.textContent='// '+label+'  ('+new Date().toLocaleTimeString()+')\\n'+(typeof data==='string'?data:JSON.stringify(data,null,2));}",
     "async function call(url,opts){try{var r=await fetch(url,opts);var t=await r.text();try{return{ok:r.ok,status:r.status,json:JSON.parse(t)};}catch(e){return{ok:r.ok,status:r.status,text:t.slice(0,160)};}}catch(e){return{ok:false,error:String(e)};}}",
+    "function mlbDate(){var v=document.getElementById('mlbDate').value.trim();return v?'&date='+encodeURIComponent(v):'';}",
+    "async function mlbProbe(){show('MLB raw shapes ...','working');var r=await call('/api/mlb-stats?mode=probe'+mlbDate());show('MLB probe',r.json||r);}",
+    "async function mlbSlate(){show('MLB slate ...','working');var r=await call('/api/mlb-stats?mode=slate'+mlbDate());show('MLB slate',r.json||r);}",
+    "async function mlbPlayer(){var id=document.getElementById('mlbPlayer').value.trim();if(!id)return show('MLB player','enter a personId');show('MLB player '+id+' ...','working');var r=await call('/api/mlb-stats?mode=player&id='+encodeURIComponent(id));show('MLB player '+id,r.json||r);}",
     "async function grade(d){show('grading '+d+' ...','working');var res=await call('/api/grade-picks?date='+d);show('grade '+d,res.json||res);}",
     "async function debug(d){show('debug '+d+' ...','working');var res=await call('/api/grade-debug?date='+d+'&limit=6');show('debug '+d,res.json||res);}",
     "async function clean(d){show('cleaning '+d+' ...','working');var res=await call('/api/cleanup?date='+d);show('clean '+d+' (refresh page to update counts)',res.json||res);}",
@@ -174,6 +178,21 @@ export const handler = async () => {
   <div class="row">
     <input id="statsPlayer" placeholder="player name" value="Junior Caminero">
     <button onclick="testStats()">test /api/player-stats</button>
+  </div>
+
+  <h2>MLB Stats API</h2>
+  <p style="color:#667;max-width:680px;margin:0 0 8px">
+    The board's injury flags, headshots and cap logos come from statsapi.mlb.com.
+    <b>probe</b> dumps the raw upstream shapes (including every distinct roster status
+    code it saw) so the parsers can be checked against reality; <b>slate</b> shows what
+    the app actually derives from them. No model is called by either.
+  </p>
+  <div class="row">
+    <input id="mlbDate" placeholder="YYYY-MM-DD (blank = today)" style="width:200px">
+    <button onclick="mlbProbe()">probe raw shapes</button>
+    <button onclick="mlbSlate()">slate + injuries</button>
+    <input id="mlbPlayer" placeholder="personId" style="width:120px">
+    <button onclick="mlbPlayer()">player</button>
   </div>
 
   <h2>PrizePicks probe</h2>

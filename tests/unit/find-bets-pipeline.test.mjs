@@ -68,6 +68,21 @@ export default async function ({ t }) {
       await mark(`summary_${ev}`, LAT.summary, 'summary'); return {}; }],
     ['the-odds-api.com', async () => { await mark('odds', LAT.odds); return []; }],
     ['/history', async () => { await mark('history', 20); return { games: [] }; }],
+    // MLB Stats API — injuries + headshots. Deliberately SLOW here so that if it
+    // ever moved onto the critical path the wall time would jump and the
+    // overlap assertions below would fail.
+    ['statsapi.mlb.com/api/v1/teams?sportId=1', async () => { await mark('mlbTeams', 80);
+      return { teams: [{ id: 113, name: 'Cincinnati Reds', abbreviation: 'CIN' }, { id: 134, name: 'Pittsburgh Pirates', abbreviation: 'PIT' }] }; }],
+    ['statsapi.mlb.com/api/v1/schedule', async () => { await mark('mlbSched', 120);
+      return { dates: [{ games: [{ gamePk: 1, gameDate: '2026-08-14T23:10:00Z', status: {}, teams: {
+        home: { team: { id: 113, abbreviation: 'CIN', name: 'Cincinnati Reds' } },
+        away: { team: { id: 134, abbreviation: 'PIT', name: 'Pittsburgh Pirates' } } } }] }] }; }],
+    [/statsapi\.mlb\.com.*roster/, async (url) => { const id = url.match(/teams\/(\d+)/)?.[1];
+      await mark(`mlbRoster_${id}`, 120);
+      return { roster: [
+        { person: { id: 5001, fullName: 'Elly De La Cruz' }, position: { abbreviation: 'SS' }, status: { code: 'A', description: 'Active' } },
+        { person: { id: 5002, fullName: 'Oneil Cruz' }, position: { abbreviation: 'CF' }, status: { code: 'D10', description: '10-Day Injured List' } },
+      ] }; }],
     ['api.anthropic.com', async () => { await mark('claude', LAT.claude);
       return { content: [{ type: 'text', text: JSON.stringify({ picks: [
         { player: 'Elly De La Cruz', stat: 'Hits', line: 0.5, verdict: 'play', prob: 0.7, key_risk: 'k', reasoning: 'r' },
@@ -93,6 +108,8 @@ export default async function ({ t }) {
   t.ok('team records start before the props pull finishes', starts.records < propsEnd, `records@${starts.records}, props done@${propsEnd}`);
   t.ok('MLB scoreboard starts before the props pull finishes', starts.scoreboard < propsEnd, `scoreboard@${starts.scoreboard}`);
   t.ok('odds request is issued before the props pull finishes', starts.odds < propsEnd, `odds@${starts.odds}`);
+  t.ok('the MLB slate (injuries + headshots) also starts before props finishes',
+    starts.mlbSched < propsEnd, `mlbSched@${starts.mlbSched}, props done@${propsEnd}`);
   t.ok('recent form waits for candidates (needs projection ids)',
     starts.history == null || starts.history >= propsEnd,
     starts.history == null ? 'no history calls' : `history@${starts.history}`);
@@ -133,4 +150,19 @@ export default async function ({ t }) {
   t.ok('every board pick carries a projectionId',
     board.every((p) => typeof p.projectionId === 'string' && p.projectionId.length > 0),
     JSON.stringify(board.map((p) => p.projectionId)));
+
+  // ---- MLB enrichment rode along without costing wall time ----------------
+  const elly = board.find((p) => p.player === 'Elly De La Cruz');
+  const oneil = board.find((p) => p.player === 'Oneil Cruz');
+  t.ok('a matched player gets a headshot automatically', /people\/5001\/headshot/.test(elly?.headshot || ''), elly?.headshot);
+  t.ok('...and the team cap logo', /team-cap-on-dark\/113/.test(elly?.teamLogo || ''), elly?.teamLogo);
+  t.ok('...and a personId for the lazy stats lookup', elly?.mlbId === 5001, String(elly?.mlbId));
+  t.eq('a healthy player carries no injury flag', elly?.injured, undefined);
+  t.eq('an injured player IS flagged on the card', oneil?.injured, '10-Day Injured List');
+  t.ok('the slate injury report rides back with the result',
+    !!done?.result?.mlbInjuries?.PIT?.length, JSON.stringify(done?.result?.mlbInjuries));
+  t.eq('the DEEP per-player endpoint was never called during the run',
+    Object.keys(starts).filter((k) => k.startsWith('mlbPlayer')), []);
+  t.ok('the MLB fetch finished before the judge started, so it added no wait',
+    ends.mlbSched < starts.claude, `mlb done@${ends.mlbSched}, claude@${starts.claude}`);
 }
