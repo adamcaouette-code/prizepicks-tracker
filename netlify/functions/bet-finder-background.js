@@ -1125,11 +1125,52 @@ function playersOf(p) {
     .filter(Boolean);
 }
 
-function selectLegs(picks, n) {
+// Every judged probability is P(OVER) — that is the contract with the prompt and
+// with the calibration log. An UNDER is therefore just 1 minus it, which means
+// the props the board discarded as weak overs are its strongest unders: a 0.30
+// over is a 0.70 under. Half the board was being thrown away.
+//
+// p.prob stays P(over) untouched (grade-picks and calibration both depend on it);
+// the side view lives in p.side / p.sideProb / p.sideVerdict.
+const sideVerdictFor = (q) => (q >= 0.62 ? 'play' : q >= 0.54 ? 'lean' : 'pass');
+
+function attachSides(picks, mode = 'both') {
+  for (const p of picks) {
+    const over = clamp(p.prob);
+    const side = mode === 'over' ? 'over'
+               : mode === 'under' ? 'under'
+               : (over < 0.5 ? 'under' : 'over');     // 'both': whichever side is the bet
+    p.side = side;
+    p.sideProb = side === 'under' ? 1 - over : over;
+    p.sideVerdict = sideVerdictFor(p.sideProb);
+    // PrizePicks moves the LINE for goblin/demon, so the tier favours one side:
+    // a goblin line is lowered (easy over, poor under), a demon raised (hard
+    // over, friendlier under). The probability already accounts for the line —
+    // but our payout tables are captured per tier, not per tier+side, so a leg
+    // taken against its tier's grain is priced on an unverified table. Flag it
+    // rather than quietly pricing it as if it were verified.
+    const tier = (p.oddsType || 'standard').toLowerCase();
+    p.tierAgainstSide = (tier === 'goblin' && side === 'under') || (tier === 'demon' && side === 'over');
+  }
+  return picks;
+}
+
+function selectLegs(picks, n, opts = {}) {
   const ord = { play: 0, lean: 1 };
   const pool = picks
-    .filter((p) => p.verdict === 'play' || p.verdict === 'lean')
-    .sort((a, b) => clamp(b.prob) - clamp(a.prob) || (ord[a.verdict] ?? 9) - (ord[b.verdict] ?? 9));
+    .filter((p) => (p.sideVerdict || p.verdict) === 'play' || (p.sideVerdict || p.verdict) === 'lean')
+    // A player MLB says isn't active is not a bet at any price. Never in a
+    // recommendation, whatever the number says.
+    .filter((p) => !p.injured)
+    .sort((a, b) => {
+      const q = (x) => (x.sideProb != null ? x.sideProb : clamp(x.prob));
+      if (q(b) !== q(a)) return q(b) - q(a);
+      // Tie-break toward the leg with real recent form behind it. Two legs at the
+      // same number are not equally trustworthy if one was read off a profile.
+      const data = (x) => (Array.isArray(x.recent5) && x.recent5.length ? 1 : 0);
+      if (data(b) !== data(a)) return data(b) - data(a);
+      return (ord[a.verdict] ?? 9) - (ord[b.verdict] ?? 9);
+    });
 
   const target = Math.max(2, Math.min(n, 6));
   // A single player may anchor at most this many legs. Legs are multiplied as if
@@ -1162,6 +1203,11 @@ function selectLegs(picks, n) {
   tryFill(Math.max(1, Math.ceil(target / 2)));
   if (chosen.length < target) tryFill(0);   // relax game spread, keep player cap
 
+  // Deliberately NOT padded to `target` with weaker legs. A slip is only as good
+  // as its worst leg, and filling a 5-leg request with two coinflips makes it
+  // worse than the 3-leg version. The caller reports the shortfall instead.
+  chosen.shortfall = target - chosen.length;
+  chosen.poolSize = pool.length;
   return chosen;
 }
 
@@ -1264,6 +1310,10 @@ export const handler = async (event) => {
       maxStake: body.maxStake ? Number(body.maxStake) : null,
       tiers: Array.isArray(body.tiers) && body.tiers.length ? body.tiers : ['goblin', 'standard'],
       statFilter: body.statFilter ? String(body.statFilter) : null, // e.g. "home runs" — judge only this prop type
+      // 'both' (default) shows whichever side is the bet per prop; 'over'/'under'
+      // force one. Unders come free: they are 1 - P(over) on the same judgement.
+      sides: ['both', 'over', 'under'].includes(String(body.sides || '').toLowerCase())
+        ? String(body.sides).toLowerCase() : 'both',
       maxPicks: body.maxPicks ? Math.max(3, Math.min(60, Number(body.maxPicks))) : null, // cap candidates → faster/cheaper
     };
 
@@ -1430,20 +1480,41 @@ export const handler = async (event) => {
     pieceMs.judge = Date.now() - judgeStart;
     if (!picks.length) throw new Error('Claude returned no parseable picks.');
 
+    // Decide each prop's side BEFORE selecting or filtering, so unders compete
+    // with overs on equal terms instead of being discarded as weak overs.
+    attachSides(picks, params.sides);
+
     const chosen = selectLegs(picks, params.legs);
-    const parlay = sizeParlay(chosen, params);     // bankroll defaults 0 -> $0 stakes
+    // Size on the probability of the side actually taken, not P(over).
+    const parlay = sizeParlay(chosen.map((p) => ({ ...p, prob: p.sideProb != null ? p.sideProb : p.prob })), params);
     const parlayLegs = chosen.map((p) => ({
-      player: p.player, stat: p.stat, line: p.line, prob: p.prob,
-      oddsType: p.oddsType, team: p.team, matchup: p.matchupLabel || p.matchup,
+      player: p.player, stat: p.stat, statDisplay: p.statDisplay, line: p.line,
+      prob: p.sideProb != null ? p.sideProb : p.prob,   // P(the side we're recommending)
+      probOver: p.prob, pick: p.side || 'over', verdict: p.sideVerdict || p.verdict,
+      oddsType: p.oddsType, tierAgainstSide: !!p.tierAgainstSide,
+      team: p.team, matchup: p.matchupLabel || p.matchup,
+      projectionId: p.projectionId || null, start: p.start || null,
+      headshot: p.headshot || null, teamLogo: p.teamLogo || null, teamLogoFallback: p.teamLogoFallback || null,
+      key_risk: p.key_risk || null, mlbId: p.mlbId || null,
     }));
+    // How the slip was built, so the card can say it rather than implying it.
+    const parlayNote = {
+      requested: Math.max(2, Math.min(params.legs, 6)),
+      built: chosen.length,
+      shortfall: chosen.shortfall || 0,
+      poolSize: chosen.poolSize || 0,
+      sides: params.sides,
+      againstTier: parlayLegs.filter((l) => l.tierAgainstSide).length,
+    };
     // Normally the board shows only plays/leans. But when the user filtered to a
     // specific prop type, show ALL of them sorted by prob (best on top) — they've
     // chosen the prop and want the strongest option even if it's a low-prob "pass".
     // Guard: never render the same prop twice (belt-and-suspenders on the dedupe above).
     const boardSeen = new Set();
+    const sideProbOf = (p) => (p.sideProb != null ? p.sideProb : p.prob || 0);
     const board = (params.statFilter
-      ? picks.slice().sort((a, b) => (b.prob || 0) - (a.prob || 0))
-      : picks.filter((p) => p.verdict === 'play' || p.verdict === 'lean')
+      ? picks.slice().sort((a, b) => sideProbOf(b) - sideProbOf(a))
+      : picks.filter((p) => p.sideVerdict === 'play' || p.sideVerdict === 'lean')
     ).filter((p) => { const k = propIdentity(p); if (boardSeen.has(k)) return false; boardSeen.add(k); return true; });
     const chosenKeys = new Set(chosen.map((p) => `${p.player}|${p.stat}|${p.line}`));
     for (const p of board) p.inParlay = chosenKeys.has(`${p.player}|${p.stat}|${p.line}`);
@@ -1498,7 +1569,7 @@ export const handler = async (event) => {
       candidates: candidates.length,
       phases: phaseLog.slice(),
     };
-    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params } });
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });
@@ -1517,4 +1588,5 @@ export {
   fetchWinProbs, fetchOppDefense, normStat, normKey, americanToProb,
   recordCost, PRICES,
   filterToday, findCandidates, positionAllows, propIdentity,   // pure helpers, exported for tests
+  attachSides, selectLegs, sideVerdictFor,
 };
