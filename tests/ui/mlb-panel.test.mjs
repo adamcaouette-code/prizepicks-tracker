@@ -80,9 +80,30 @@ export default async function ({ t, url, browser }) {
     /team-cap-on-dark/.test(logos[1].src), logos[1].src);
   t.ok('a card with a fallback falls back to the ESPN PNG when the SVG fails',
     /espncdn/.test(logos[0].src), logos[0].src);
-  t.ok('a card with no fallback hides the mark rather than leaving a broken image',
-    /display=.none./.test(logos[1].onerr || ''), logos[1].onerr);
-  t.ok('a card with no MLB match renders fine with no logo and no headshot', true);
+  t.ok('a card with no fallback hides the whole mark slot rather than leaving a broken image',
+    /tmark.*display=.none./.test(logos[1].onerr || ''), logos[1].onerr);
+
+  // The mark lives in the dead space between the name block and the numbers —
+  // not inline with the matchup text, where it was too small to identify.
+  const geom = await page.$$eval('#searchResults .leg', legs => legs.map(leg => {
+    const mark = leg.querySelector('.tmark');
+    const info = leg.querySelector('.info');
+    const right = leg.querySelector('.stat-right');
+    if (!mark) return null;
+    const m = mark.getBoundingClientRect(), i = info.getBoundingClientRect(), r = right.getBoundingClientRect();
+    return { w: Math.round(m.width), afterInfo: m.left >= i.right - 1, beforeStats: m.right <= r.left + 1,
+      insideMatchup: !!leg.querySelector('.team .tlogo'), legW: Math.round(leg.getBoundingClientRect().width) };
+  }).filter(Boolean));
+  t.eq('two cards carry a mark', geom.length, 2);
+  t.ok('the mark is big enough to identify a team', geom[0].w >= 28, `${geom[0].w}px`);
+  t.ok('...sits after the name block', geom[0].afterInfo);
+  t.ok('...and before the numbers', geom[0].beforeStats);
+  t.ok('...and is no longer crammed inline with the matchup text', !geom[0].insideMatchup);
+
+  // A card with no resolved team must not leave a hole where the mark would be.
+  const noMark = await page.$$eval('#searchResults .leg', legs =>
+    legs.filter(l => !l.querySelector('.tmark')).map(l => l.querySelector('.info') ? 'laid out' : 'broken'));
+  t.eq('a card with no MLB match still lays out normally, with no gap', noMark, ['laid out']);
 
   // ---- the deep numbers are lazy -----------------------------------------
   const mlbBtns = await page.$$('#searchResults .whybtn[data-panel="mlb"]');
