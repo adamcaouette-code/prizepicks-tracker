@@ -6,3 +6,17 @@
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
+
+# The whole app is one HTML file, so a cached copy means a stale APP — new
+# features appear to be "missing" rather than obviously old. iOS is especially
+# sticky once the page is added to the home screen (there's a webmanifest), so
+# the document is explicitly never cached. Icons and the manifest still are.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"

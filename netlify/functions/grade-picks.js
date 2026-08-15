@@ -147,3 +147,10 @@ export const handler = async (event) => {
     return { statusCode: 500, headers, body: JSON.stringify({ error: String(err.message || err) }) };
   }
 };
+
+// Shared with grade-slips.js so a saved slip's legs are settled by EXACTLY the
+// same rules as a logged pick — same history endpoint, same UTC-rollover game
+// picker, same `hit = actual > line` convention (i.e. "did the OVER hit"; the
+// caller flips it for an under). Two graders that could disagree would be worse
+// than one that's occasionally wrong.
+export { fetchHistory, pickGame, gradeOne, isCombo, FINAL_AFTER_MS, MAX_ATTEMPTS };

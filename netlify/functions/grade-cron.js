@@ -50,5 +50,23 @@ export const handler = async () => {
       error: last?.error ?? null,
     });
   }
-  return { statusCode: 200, body: JSON.stringify({ ran }) };
+  // Saved slips settle from the same history data, so grade them right after the
+  // pick log — that's what makes a saved slip update itself instead of sitting
+  // "pending" until you happen to open the page. Time-budgeted like the grader,
+  // so loop until it stops settling anything.
+  const slips = [];
+  for (let pass = 0; pass < 6; pass++) {
+    let out = null;
+    try {
+      const res = await fetch(`${base}/api/grade-slips`);
+      out = await res.json().catch(() => null);
+    } catch (e) {
+      out = { error: String(e.message || e) };
+    }
+    slips.push({ pass: pass + 1, legsGraded: out?.legsGraded ?? null, slipsSettled: out?.slipsSettled ?? null, error: out?.error ?? null });
+    if (out?.error || (!out?.legsGraded && !out?.timedOut)) break;
+    await sleep(500);
+  }
+
+  return { statusCode: 200, body: JSON.stringify({ ran, slips }) };
 };
