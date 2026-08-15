@@ -206,4 +206,37 @@ export default async function ({ t }) {
   t.ok('a 3-day-old slip is still inside the window', !!read('saved-slips', edge.id), 'grace day keeps it');
   t.eq('a long-expired slip is swept', read('saved-slips', old.id), null);
   t.eq('and the sweep is reported', out6.pruned, 1);
+
+  // ---------- no model spend on saved slips --------------------------------
+  // A saved slip is a RECORD, not a judgement. Saving one and settling it must
+  // cost nothing at the model: results come from PrizePicks' history endpoint
+  // and arithmetic. This asserts it against the real handlers rather than
+  // trusting that nobody adds a "let Claude summarise it" call later.
+  reset();
+  const slips7 = await loadFn('slips.js');
+  const guardMock = mockFetch([
+    [/history/, async () => history(2)],
+    ['api.anthropic.com', async () => { throw new Error('the saved-slip path must never call a model'); }],
+  ]);
+  let calls;
+  try {
+    const r7 = await slips7.handler({ httpMethod: 'POST', queryStringParameters: {}, body: JSON.stringify({
+      name: 'No model spend', entry: 'power', stake: 10,
+      legs: [
+        LEG({ id: 'M1', player: 'A', stat: 'Hits', line: 0.5, pick: 'over' }),
+        LEG({ id: 'M2', player: 'B', stat: 'Hits', line: 0.5, pick: 'under' }),
+      ],
+      sizing: { label: 'POWER', payouts: [{ hits: 2, pays: 30 }] } }) });
+    const s7 = JSON.parse(r7.body).slip;
+    await slips7.handler({ httpMethod: 'GET', queryStringParameters: {} });
+    const grader = await loadFn('grade-slips.js');
+    await grader.handler({ queryStringParameters: {} });
+    calls = guardMock.calls.map((c) => c.url);
+    t.ok('the slip still settled', read('saved-slips', s7.id).status === 'lost');
+  } finally { guardMock.restore(); }
+
+  t.eq('saving + listing + grading makes ZERO model calls',
+    calls.filter((u) => /anthropic|openai|\/v1\/messages/i.test(u)), []);
+  t.ok('every outbound call is a PrizePicks history lookup',
+    calls.every((u) => /prizepicks\.com/.test(u)), calls.join(' '));
 }
