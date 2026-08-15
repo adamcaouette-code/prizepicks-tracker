@@ -13,10 +13,11 @@
 //   ?mode=probe            small raw sample of each upstream response, for
 //                          checking the shapes against the live API.
 //
-// SHAPE CAUTION: this was written against MLB's documented response shapes but
-// could not be verified against the live API from the build environment, so every
-// reader is defensive — an unexpected shape yields null/[] and the caller carries
-// on. Run ?mode=probe against production to confirm.
+// SHAPES: ?mode=player was verified against the live API and corrected — see the
+// notes on hydrate=currentTeam, opponent-name resolution and two-way players
+// below. ?mode=slate is still written against documented shapes only; run
+// ?mode=probe against production to confirm it. Every reader is defensive either
+// way: an unexpected shape yields null/[] and the caller carries on.
 
 import { getStore } from '@netlify/blobs';
 
@@ -194,21 +195,41 @@ function seasonLine(splits, group) {
     hr: num(s.homeRuns), rbi: num(s.rbi), sb: num(s.stolenBases), so: num(s.strikeOuts), ab: num(s.atBats), games: num(s.gamesPlayed) };
 }
 
-async function player(id, season) {
+async function player(id, season, groupOverride) {
   const yr = season || String(new Date().getUTCFullYear());
-  return cached(`player-${id}-${yr}`, PLAYER_TTL, async () => {
-    const info = await api(`/people/${id}`);
+  return cached(`player-${id}-${yr}-${groupOverride || 'auto'}`, PLAYER_TTL, async () => {
+    // hydrate=currentTeam: the bare /people/{id} response came back with a null
+    // currentTeam against the live API, which left every player logo-less.
+    const info = await api(`/people/${id}?hydrate=currentTeam`);
     const p = info?.people?.[0] || null;
-    const group = /pitcher/i.test(p?.primaryPosition?.name || '') ? 'pitching' : 'hitting';
+    const posAbbr = String(p?.primaryPosition?.abbreviation || '').toUpperCase();
+    const posName = String(p?.primaryPosition?.name || '');
+    // TWP = two-way player. Their prop board is mostly hitting, so that stays the
+    // default, but the caller can ask for the pitching side explicitly.
+    const twoWay = posAbbr === 'TWP' || /two-way/i.test(posName);
+    const group = groupOverride === 'pitching' || groupOverride === 'hitting'
+      ? groupOverride
+      : (!twoWay && (posAbbr === 'P' || /pitcher/i.test(posName)) ? 'pitching' : 'hitting');
 
-    const [seasonR, logR, splitR] = await Promise.all([
+    const [seasonR, logR, splitR, tm] = await Promise.all([
       api(`/people/${id}/stats?stats=season&season=${yr}&group=${group}`),
       api(`/people/${id}/stats?stats=gameLog&season=${yr}&group=${group}`),
       api(`/people/${id}/stats?stats=statSplits&sitCodes=vl,vr&season=${yr}&group=${group}`),
+      teamMap(),
     ]);
 
+    // The game log names opponents in full ("Milwaukee Brewers"), which blows out
+    // a 60px cell. Resolve to the abbreviation via the cached team map, keyed by
+    // id first and name second.
+    const byName = {};
+    for (const t of Object.values(tm.byId || {})) byName[normKey(t.name)] = t.abbr;
+    const abbrOf = (opp) => {
+      if (!opp) return null;
+      return opp.abbreviation || tm.byId?.[opp.id]?.abbr || byName[normKey(opp.name)] || opp.name || null;
+    };
+
     const log = (logR?.stats?.[0]?.splits || []).slice(-10).reverse().map((s) => ({
-      date: s.date || null, opp: s.opponent?.abbreviation || s.opponent?.name || null, home: s.isHome ?? null,
+      date: s.date || null, opp: abbrOf(s.opponent), home: s.isHome ?? null,
       ...(group === 'pitching'
         ? { ip: s.stat?.inningsPitched ?? null, so: num(s.stat?.strikeOuts), er: num(s.stat?.earnedRuns), h: num(s.stat?.hits) }
         : { ab: num(s.stat?.atBats), h: num(s.stat?.hits), hr: num(s.stat?.homeRuns), rbi: num(s.stat?.rbi), so: num(s.stat?.strikeOuts), tb: num(s.stat?.totalBases) }),
@@ -223,12 +244,20 @@ async function player(id, season) {
         : { avg: s.stat?.avg ?? null, ops: s.stat?.ops ?? null, hr: num(s.stat?.homeRuns), ab: num(s.stat?.atBats) };
     }
 
+    // Team: prefer the hydrated currentTeam, but fall back to the team on the
+    // season split — that one is always present when the player has played.
+    const statTeam = seasonR?.stats?.[0]?.splits?.[0]?.team
+                  || logR?.stats?.[0]?.splits?.slice(-1)[0]?.team || null;
+    const teamId = p?.currentTeam?.id || statTeam?.id || null;
+    const teamAbbr = tm.byId?.[teamId]?.abbr || statTeam?.abbreviation || null;
+
     return {
-      id: Number(id), name: p?.fullName || null, group,
-      position: p?.primaryPosition?.abbreviation || null,
+      id: Number(id), name: p?.fullName || null, group, twoWay,
+      position: posAbbr || null,
       bats: p?.batSide?.code || null, throws: p?.pitchHand?.code || null,
       age: p?.currentAge ?? null,
-      teamId: p?.currentTeam?.id || null, teamLogo: teamLogoUrl(p?.currentTeam?.id),
+      teamId, teamAbbr,
+      teamLogo: teamLogoUrl(teamId), teamLogoFallback: espnLogoUrl(teamAbbr),
       headshot: headshotUrl(id),
       season: seasonLine(seasonR?.stats?.[0]?.splits, group),
       last10: log, splits,
@@ -242,7 +271,8 @@ export const handler = async (event) => {
   try {
     if (mode === 'player') {
       if (!q.id) return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'mode=player needs an id' }) };
-      return { statusCode: 200, headers: HEADERS, body: JSON.stringify(await player(q.id, q.season)) };
+      // ?group=pitching forces the pitching side of a two-way player.
+      return { statusCode: 200, headers: HEADERS, body: JSON.stringify(await player(q.id, q.season, q.group)) };
     }
     if (mode === 'teams') {
       return { statusCode: 200, headers: HEADERS, body: JSON.stringify(await teamMap()) };

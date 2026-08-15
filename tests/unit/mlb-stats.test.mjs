@@ -108,4 +108,79 @@ export default async function ({ t }) {
   t.eq('a dead upstream yields an empty slate rather than an error', degraded.games, []);
   t.eq('...with no people', Object.keys(degraded.people).length, 0);
   t.eq('...and no injuries invented', Object.keys(degraded.injuries).length, 0);
+
+  // ---- one player, against the REAL live shapes --------------------------
+  // Captured from production (Ohtani, 660271). Three things this exposed that
+  // the documented-shape guess got wrong, all fixed and pinned here:
+  //   1. /people/{id} returns a NULL currentTeam without hydrate=currentTeam,
+  //      which left every player with no team and no logo.
+  //   2. gameLog names opponents in FULL ("Milwaukee Brewers"); the card cell is
+  //      ~60px, so they have to be resolved to abbreviations.
+  //   3. A two-way player's position is TWP, not "Pitcher" — the old test
+  //      (/pitcher/i on the name) would have mis-grouped him.
+  reset();
+  const PEOPLE_NO_TEAM = { people: [{
+    id: 660271, fullName: 'Shohei Ohtani', currentAge: 32,
+    primaryPosition: { abbreviation: 'TWP', name: 'Two-Way Player' },
+    batSide: { code: 'L' }, pitchHand: { code: 'R' },
+    currentTeam: null,                       // exactly what the live API returned
+  }] };
+  const SEASON = { stats: [{ splits: [{ team: { id: 119, name: 'Los Angeles Dodgers' },
+    stat: { avg: '.292', obp: '.391', slg: '.544', ops: '.935', homeRuns: 27, rbi: 74, stolenBases: 7, strikeOuts: 118, atBats: 432, gamesPlayed: 116 } }] }] };
+  const GAMELOG = { stats: [{ splits: [
+    { date: '2026-08-03', isHome: false, opponent: { id: 112, name: 'Chicago Cubs' }, stat: { atBats: 4, hits: 2, homeRuns: 0, rbi: 0, strikeOuts: 0, totalBases: 2 } },
+    { date: '2026-08-13', isHome: true, opponent: { id: 158, name: 'Milwaukee Brewers' }, stat: { atBats: 4, hits: 1, homeRuns: 0, rbi: 0, strikeOuts: 1, totalBases: 2 } },
+  ] }] };
+  const SPLITS = { stats: [{ splits: [
+    { split: { code: 'vl' }, stat: { avg: '.301', ops: '.954', homeRuns: 12, atBats: 153 } },
+    { split: { code: 'vr' }, stat: { avg: '.287', ops: '.924', homeRuns: 15, atBats: 279 } },
+  ] }] };
+
+  const pm = mockFetch([
+    ['/api/v1/teams?sportId=1', async () => ({ teams: [
+      { id: 119, name: 'Los Angeles Dodgers', abbreviation: 'LAD' },
+      { id: 158, name: 'Milwaukee Brewers', abbreviation: 'MIL' },
+      { id: 112, name: 'Chicago Cubs', abbreviation: 'CHC' },
+    ] })],
+    [/\/people\/660271\?/, async () => PEOPLE_NO_TEAM],
+    [/stats=season/, async () => SEASON],
+    [/stats=gameLog/, async () => GAMELOG],
+    [/stats=statSplits/, async () => SPLITS],
+  ]);
+  let pl, pUrls;
+  try { pl = await mod.player('660271', '2026'); pUrls = pm.calls.map((c) => c.url); } finally { pm.restore(); }
+
+  t.ok('the people lookup asks for currentTeam to be hydrated',
+    pUrls.some((u) => /\/people\/660271\?hydrate=currentTeam/.test(u)), pUrls.find((u) => /people\/660271/.test(u)));
+  t.eq('a null currentTeam falls back to the team on the season split', pl.teamId, 119);
+  t.eq('...which yields an abbreviation', pl.teamAbbr, 'LAD');
+  t.ok('...and therefore a cap logo instead of null', /team-cap-on-dark\/119/.test(pl.teamLogo || ''), pl.teamLogo);
+  t.ok('...with the ESPN fallback resolved too', /lad\.png/.test(pl.teamLogoFallback || ''), pl.teamLogoFallback);
+
+  t.eq('full opponent names are resolved to abbreviations that fit a card cell',
+    pl.last10.map((g) => g.opp), ['MIL', 'CHC']);
+  t.eq('the log is newest-first', pl.last10[0].date, '2026-08-13');
+
+  t.eq('a two-way player is flagged as such', pl.twoWay, true);
+  t.eq('...and defaults to hitting, which is where his prop board lives', pl.group, 'hitting');
+  t.eq('...keeping the real position', pl.position, 'TWP');
+  t.eq('season line parsed', [pl.season.avg, pl.season.hr, pl.season.ops], ['.292', 27, '.935']);
+  t.eq('platoon splits parsed', [pl.splits.vsLHP.avg, pl.splits.vsRHP.avg], ['.301', '.287']);
+  t.eq('handedness kept — the reason splits matter', [pl.bats, pl.throws], ['L', 'R']);
+
+  // The pitching side of a two-way player is reachable on demand.
+  reset();
+  const pm2 = mockFetch([
+    ['/api/v1/teams?sportId=1', async () => ({ teams: [{ id: 119, name: 'Los Angeles Dodgers', abbreviation: 'LAD' }] })],
+    [/\/people\/660271\?/, async () => PEOPLE_NO_TEAM],
+    [/stats=season/, async () => ({ stats: [{ splits: [{ team: { id: 119 }, stat: { era: '2.87', whip: '1.05', strikeOuts: 62, inningsPitched: '47.0' } }] }] })],
+    [/stats=gameLog/, async () => ({ stats: [{ splits: [] }] })],
+    [/stats=statSplits/, async () => ({ stats: [{ splits: [] }] })],
+  ]);
+  let pitch, purls;
+  try { pitch = await mod.player('660271', '2026', 'pitching'); purls = pm2.calls.map((c) => c.url); } finally { pm2.restore(); }
+  t.eq('a group override switches a two-way player to his pitching line', pitch.group, 'pitching');
+  t.eq('...and parses pitching stats, not hitting ones', [pitch.season.era, pitch.season.so], ['2.87', 62]);
+  t.ok('...asking MLB for the pitching group', purls.some((u) => /group=pitching/.test(u)));
+  t.eq('the player lookup still calls no model', pUrls.filter((u) => /anthropic/.test(u)), []);
 }
