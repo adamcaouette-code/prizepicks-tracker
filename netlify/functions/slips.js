@@ -35,6 +35,22 @@ async function mapLimit(items, limit, fn) {
 
 const clean = (s, max) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
+// The date the legs PLAY — what grading keys off. Prefer the earliest leg's own
+// start time (PrizePicks stamps it with the game's local offset, so slicing the
+// date off it gives the right slate day).
+//
+// The fallback must NOT be toISOString(): that's UTC, and a slip saved at 9pm ET
+// is already tomorrow in UTC. Such a slip claims a slate a day ahead of its own
+// games, never matches them, and sits "pending" forever. US slates are keyed to
+// the US day, so fall back to the Eastern date.
+function slateDateFor(legs, now = new Date()) {
+  const starts = legs.map((l) => l.start).filter(Boolean).sort();
+  if (starts.length) return String(starts[0]).slice(0, 10);
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(now);   // en-CA formats as YYYY-MM-DD
+}
+
 // Keep only the fields a saved slip needs. Whatever the page happens to be
 // holding (judge prose, research blobs, images) does not belong in storage.
 function normalizeLeg(l = {}) {
@@ -56,6 +72,8 @@ function normalizeLeg(l = {}) {
     result: null, hit: null, gradedAt: null, gradeAttempts: 0,
   };
 }
+
+export { slateDateFor };
 
 export const handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -121,7 +139,7 @@ export const handler = async (event) => {
       createdAt: now.toISOString(),
       // The date the legs PLAY, which is what grading keys off — not the date you
       // saved it. Saving at 11pm for tomorrow's slate must not grade against today.
-      slateDate: (legs.find((l) => l.start) ? String(legs.find((l) => l.start).start).slice(0, 10) : now.toISOString().slice(0, 10)),
+      slateDate: slateDateFor(legs, now),
       league: clean(body.league, 20) || null,
       entry: String(body.entry || '').toLowerCase() === 'flex' ? 'flex' : 'power',
       stake: isFinite(stake) ? stake : 10,

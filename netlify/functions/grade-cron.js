@@ -18,7 +18,22 @@
 // and none of this touches a model.
 export const config = { schedule: '0 10,11,14 * * *' };
 
+import { getStore } from '@netlify/blobs';
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Heartbeat. Without a record of when this last fired, "did the cron run?" is
+// unanswerable — you can only observe that nothing got graded, which looks the
+// same whether the schedule never fired or there was simply nothing to settle.
+async function heartbeat(payload) {
+  try {
+    const store = getStore({ name: 'run-stats', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+    let log = [];
+    try { log = (await store.get('cron-heartbeat', { type: 'json' })) || []; } catch {}
+    log.push({ at: new Date().toISOString(), ...payload });
+    await store.setJSON('cron-heartbeat', log.slice(-30));
+  } catch { /* never let bookkeeping break the job */ }
+}
 
 export const handler = async () => {
   const base = process.env.URL || process.env.DEPLOY_PRIME_URL || 'https://atombets.netlify.app';
@@ -76,5 +91,12 @@ export const handler = async () => {
     await sleep(500);
   }
 
-  return { statusCode: 200, body: JSON.stringify({ ran, slips }) };
+  const summary = {
+    trigger: process.env.NETLIFY_DEV ? 'local' : 'schedule',
+    picks: ran.map((r) => ({ date: r.date, graded: r.totalGraded, pending: r.pendingSingles, error: r.error })),
+    slipLegsGraded: slips.reduce((a, s) => a + (s.legsGraded || 0), 0),
+    slipsSettled: slips.reduce((a, s) => a + (s.slipsSettled || 0), 0),
+  };
+  await heartbeat(summary);
+  return { statusCode: 200, body: JSON.stringify({ ran, slips, summary }) };
 };

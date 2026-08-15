@@ -239,4 +239,50 @@ export default async function ({ t }) {
     calls.filter((u) => /anthropic|openai|\/v1\/messages/i.test(u)), []);
   t.ok('every outbound call is a PrizePicks history lookup',
     calls.every((u) => /prizepicks\.com/.test(u)), calls.join(' '));
+
+  // ---------- the slate date must not drift into tomorrow ------------------
+  // A slip saved at 9pm Eastern is ALREADY tomorrow in UTC. Using the UTC date as
+  // the fallback stamped such a slip with a slate a day ahead of its own games —
+  // the grader then looked up the wrong day, never matched, and the slip sat
+  // "pending" forever. That is the bug behind "it didn't check at 3am".
+  reset();
+  const slips8 = await loadFn('slips.js');
+  const NINE_PM_ET = new Date('2026-08-15T01:30:00Z');   // = 9:30pm ET on the 14th
+  t.eq('a 9:30pm ET save is dated the 14th, not the UTC 15th',
+    slips8.slateDateFor([], NINE_PM_ET), '2026-08-14');
+  t.eq('a midday save is unambiguous either way',
+    slips8.slateDateFor([], new Date('2026-08-14T18:00:00Z')), '2026-08-14');
+  t.eq('a leg with a real start time always wins over the clock',
+    slips8.slateDateFor([{ start: '2026-08-14T19:30:00.000-04:00' }], NINE_PM_ET), '2026-08-14');
+  t.eq('the EARLIEST leg decides the slate',
+    slips8.slateDateFor([
+      { start: '2026-08-14T22:10:00.000-04:00' },
+      { start: '2026-08-14T13:05:00.000-04:00' },
+    ], NINE_PM_ET), '2026-08-14');
+
+  // ---------- an off-by-one slate date is still gradeable ------------------
+  // Belt and braces for slips already saved with a drifted date: the game lookup
+  // now accepts D-1 as well as D and D+1.
+  reset();
+  const slips9 = await loadFn('slips.js');
+  const drifted = JSON.parse((await slips9.handler({ httpMethod: 'POST', queryStringParameters: {}, body: JSON.stringify({
+    name: 'Drifted date', entry: 'power', stake: 10,
+    legs: [
+      LEG({ id: 'W1', player: 'A', stat: 'Hits', line: 0.5, pick: 'over' }),
+      LEG({ id: 'W2', player: 'B', stat: 'Hits', line: 0.5, pick: 'over' }),
+    ],
+    sizing: { label: 'POWER', multipliers: [{ hits: 2, mult: 3 }], payouts: [{ hits: 2, pays: 30 }] } }) })).body).slip;
+  // Force the slate a day AHEAD of the games, as the old fallback would have.
+  const bad = read('saved-slips', drifted.id);
+  bad.slateDate = '2026-08-15';
+  seed('saved-slips', drifted.id, bad);
+
+  const driftMock = mockFetch([[/history/, async () => ({ games: [{ stat_value: 2, game_start_time: '2026-08-14T23:30:00Z' }] })]]);
+  try {
+    const grader = await loadFn('grade-slips.js');
+    await grader.handler({ queryStringParameters: {} });
+  } finally { driftMock.restore(); }
+  const fixed = read('saved-slips', drifted.id);
+  t.eq('a slip dated a day ahead of its games still settles', fixed.status, 'won');
+  t.eq('...with the real result recorded', fixed.legs[0].result, 2);
 }

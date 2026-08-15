@@ -44,17 +44,18 @@ async function fetchHistory(projectionId, attempt = 0) {
   }
 }
 
-// PrizePicks stamps game times in UTC; a Pacific-evening game on date D shows up as
-// D+1 in UTC. Accept the game dated D or D+1 and, when both exist, take the closest
-// to loggedAt.
+// PrizePicks stamps game times in UTC; a Pacific-evening game on date D shows up
+// as D+1 in UTC. We also accept D-1: a slip saved late in the US evening can carry
+// a date one day AHEAD of its games, and without this an off-by-one is
+// unrecoverable — the lookup never matches and the row sits pending forever.
+// Where several match, the one closest to loggedAt wins, so widening the window
+// costs nothing in accuracy.
 function pickGame(pick, games) {
   if (!Array.isArray(games)) return null;
   const D = pick.date;
-  const Dplus = new Date(Date.parse(`${D}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
-  const cands = games.filter((g) => {
-    const d = String(g.game_start_time || g.start_time || '').slice(0, 10);
-    return d === D || d === Dplus;
-  });
+  const shift = (days) => new Date(Date.parse(`${D}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+  const window = new Set([shift(-1), D, shift(1)]);
+  const cands = games.filter((g) => window.has(String(g.game_start_time || g.start_time || '').slice(0, 10)));
   if (!cands.length) return null;
   if (cands.length === 1) return cands[0];
   const ref = pick.loggedAt ? Date.parse(pick.loggedAt) : Date.parse(`${D}T18:00:00Z`);

@@ -55,6 +55,20 @@ export const handler = async () => {
   let rows = '';
   let keys = [];
   let runRows = '';
+  let beatRows = '';
+  try {
+    const hs = getStore({ name: 'run-stats', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+    const log = (await hs.get('cron-heartbeat', { type: 'json' })) || [];
+    beatRows = log.slice().reverse().slice(0, 12).map((b) => `<tr>
+      <td>${new Date(b.at).toLocaleString()}</td>
+      <td style="color:#889">${(b.picks || []).map((p) => `${p.date}: ${p.graded ?? '—'}`).join(' · ') || '—'}</td>
+      <td style="color:${b.slipLegsGraded ? '#34d399' : '#667'}">${b.slipLegsGraded ?? 0}</td>
+      <td style="color:${b.slipsSettled ? '#34d399' : '#667'}">${b.slipsSettled ?? 0}</td>
+    </tr>`).join('');
+    if (!beatRows) beatRows = '<tr><td colspan="4" style="color:#fbbf24">The grading cron has never recorded a run. If this stays empty past the next 10:00/11:00/14:00 UTC, scheduled functions are not firing for this site.</td></tr>';
+  } catch (e) {
+    beatRows = `<tr><td colspan="4" style="color:#f87171">error: ${String(e.message || e)}</td></tr>`;
+  }
   try {
     const rs = getStore({ name: 'run-stats', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
     const leagues = (await rs.list()).blobs.map((b) => b.key);
@@ -107,6 +121,8 @@ export const handler = async () => {
     "async function mlbProbe(){show('MLB raw shapes ...','working');var r=await call('/api/mlb-stats?mode=probe'+mlbDate());show('MLB probe',r.json||r);}",
     "async function mlbSlate(){show('MLB slate ...','working');var r=await call('/api/mlb-stats?mode=slate'+mlbDate());show('MLB slate',r.json||r);}",
     "async function mlbPlayer(){var id=document.getElementById('mlbPlayer').value.trim();if(!id)return show('MLB player','enter a personId');show('MLB player '+id+' ...','working');var r=await call('/api/mlb-stats?mode=player&id='+encodeURIComponent(id));show('MLB player '+id,r.json||r);}",
+    "async function runCron(){show('running grade-cron ...','this drains yesterday + the day before, then settles slips');var r=await call('/api/grade-cron');show('grade-cron',r.json||r);}",
+    "async function gradeSlips(){show('grading saved slips ...','working');var r=await call('/api/grade-slips');show('grade-slips',r.json||r);}",
     "async function grade(d){show('grading '+d+' ...','working');var res=await call('/api/grade-picks?date='+d);show('grade '+d,res.json||res);}",
     "async function debug(d){show('debug '+d+' ...','working');var res=await call('/api/grade-debug?date='+d+'&limit=6');show('debug '+d,res.json||res);}",
     "async function clean(d){show('cleaning '+d+' ...','working');var res=await call('/api/cleanup?date='+d);show('clean '+d+' (refresh page to update counts)',res.json||res);}",
@@ -145,6 +161,17 @@ export const handler = async () => {
     <a href="/api/calibration?league=mlb" target="_blank">calibration · mlb ↗</a>
     <a href="/api/calibration?format=json" target="_blank">calibration · json ↗</a>
   </div>
+
+  <h2>Grading cron</h2>
+  <p style="color:#667;max-width:680px;margin:0 0 8px">
+    Every firing of grade-cron records a heartbeat, so "did it run at 3am?" has an
+    answer. Schedule is <b>0 10,11,14 UTC</b> — 10:00 is 3am PDT, 11:00 is 3am PST,
+    14:00 is the late backstop. A slip only settles once its games are FINAL, so a
+    slip whose slate is tonight will still read pending in the morning.
+  </p>
+  <table><thead><tr><th>fired</th><th>picks graded</th><th>slip legs</th><th>slips settled</th></tr></thead>
+  <tbody>${beatRows}</tbody></table>
+  <div class="row"><button onclick="runCron()">run grading now</button><button onclick="gradeSlips()">grade saved slips only</button></div>
 
   <h2>Run timings (newest first)</h2>
   <p style="color:#667;max-width:680px;margin:0 0 8px">
