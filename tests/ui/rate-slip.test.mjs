@@ -107,6 +107,10 @@ export default async function ({ t, url, browser }) {
   const status = await page.textContent('#dataStatusBanner');
   t.ok('data-provenance banner is shown', await page.isVisible('#dataStatusBanner'));
   t.ok('it admits only some legs matched a live projection', /1[^0-9].*2|1 of 2/.test(status), status.trim().slice(0, 80));
+  // A corrected goblin/demon changes the payout table, so it must be stated, and
+  // stated specifically enough to check.
+  t.ok('a corrected tier is reported, not silently applied', /Corrected 1 tier/.test(status), status.trim().slice(0, 120));
+  t.ok('...naming the leg and the direction of the fix', /Elly De La Cruz demon→goblin/.test(status));
 
   // ---- reset -------------------------------------------------------------
   await page.click('#rateResetBtn');

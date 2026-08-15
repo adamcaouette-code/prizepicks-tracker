@@ -42,7 +42,9 @@ export const JUDGE = { ok: true,
   slip: { weakestLeg: 'Seiya Suzuki over 0.5 HR', correlationFlag: 'Independent games.', overall: 'fade',
           overallReasoning: 'One play cannot carry a demon HR longshot on a Power play.' },
   dataStatus: { matchedLegs: 1, totalLegs: 2, leagueSupported: true, oddsStatus: 'ok', bookLineStatus: 'skipped',
-                loggedForCalibration: 1, skippedNoProjection: 1 } };
+                loggedForCalibration: 1, skippedNoProjection: 1,
+                tierCorrections: 1,
+                tierFixes: [{ player: 'Elly De La Cruz', stat: 'Hitter Ks', line: 0.5, was: 'demon', now: 'goblin' }] } };
 
 export const BOARD = { board: [
   { player: 'Sonia Citron', team: 'WAS', matchup: 'WAS vs PDX', stat: 'FG Made', statDisplay: 'FGM', line: 5,

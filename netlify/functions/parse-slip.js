@@ -32,7 +32,25 @@ For each pick capture:
 - stat: the stat name exactly as shown (e.g. "Rebounds", "PRA", "Fantasy Score", "FG Made")
 - line: the numeric line next to the arrow (a number, e.g. 23.5 or 6)
 - pick: "under" if the arrow points DOWN (PrizePicks labels this "less"); "over" if it points UP ("more")
-- oddsType: "demon" if a red devil/demon icon sits next to the line; "goblin" if a green goblin icon sits next to the line; otherwise "standard"
+- oddsType: the payout tier, read from the small icon next to the LINE (not the
+  player photo). Judge it by COLOR FIRST — the two icons are similar cartoon faces
+  at thumbnail size and are constantly confused, but their colors never overlap:
+    * GREEN face (goblin — green skin, pointed ears)  -> "goblin"
+    * RED / orange-red face (demon — red skin, horns) -> "demon"
+    * NO icon at all next to the line                 -> "standard"
+  Two independent cross-checks, and they must agree with the color before you
+  commit to goblin or demon:
+    1. Direction. A goblin is almost always paired with a LOWERED line (an easier
+       number, smaller payout); a demon with a RAISED line (a harder number,
+       bigger payout). PrizePicks may also print a small multiplier near the icon
+       (e.g. "x1.25" for a demon, "x0.8" for a goblin).
+    2. Count. Most legs on a typical slip are "standard" with NO icon. If you have
+       tagged nearly every leg goblin or demon, you are probably reading the
+       player photo or a team logo as an icon — re-check.
+  If you can see that an icon is present but genuinely cannot tell green from red,
+  return "standard" and add the player's name to slip-level "uncertainTiers".
+  Guessing between goblin and demon is worse than admitting standard: they sit on
+  opposite sides of the payout table.
 
 Also capture slip-level fields:
 - slipType: "flex" if the card says Flex, "power" if it says Power, else null
@@ -40,6 +58,8 @@ Also capture slip-level fields:
 - league: lowercase league code if visible ("wnba", "nba", "nfl", "mlb", "world_cup"), else null
 - matchup: the game shown as "AAA vs BBB" using team abbreviations, else null
 - alreadySettled: true if the card shows final results, win/loss coloring, a "Final" tag, or a payout; otherwise false
+- uncertainTiers: array of player names whose goblin/demon icon you could not read
+  confidently (see oddsType above). Empty array when every tier was clear.
 
 Return EXACTLY this shape and nothing else:
 {
@@ -48,6 +68,7 @@ Return EXACTLY this shape and nothing else:
   "league": null,
   "matchup": null,
   "alreadySettled": false,
+  "uncertainTiers": [],
   "legs": [
     { "player": "", "team": "", "position": null, "number": null, "stat": "", "line": 0, "pick": "under", "oddsType": "standard" }
   ]
@@ -136,6 +157,14 @@ export default async (req) => {
   if (slip.legs.some((l) => l.line == null)) {
     warnings.push("One or more lines could not be read as a number — confirm before judging.");
   }
+  // The goblin and demon icons are small, similar cartoon faces that differ mainly
+  // in color, and they sit on OPPOSITE ends of the payout table — so an unread one
+  // is worth saying out loud rather than quietly calling it standard.
+  if (slip.uncertainTiers.length) {
+    warnings.push(
+      `Couldn't read the goblin/demon icon for ${slip.uncertainTiers.join(", ")} — set to standard. Tap the tier to correct it.`
+    );
+  }
 
   return json({ ok: true, slip, warnings });
 };
@@ -148,6 +177,12 @@ function normalizeSlip(p) {
     league: lower(p.league) || null,
     matchup: p.matchup || null,
     alreadySettled: p.alreadySettled === true,
+    // Players whose goblin/demon icon the vision pass could not read. Those legs
+    // come back as "standard"; the review step flags them so you can set the tier
+    // yourself before judging.
+    uncertainTiers: Array.isArray(p.uncertainTiers)
+      ? p.uncertainTiers.filter((n) => typeof n === 'string' && n.trim()).map((n) => n.trim())
+      : [],
     legs,
   };
 }

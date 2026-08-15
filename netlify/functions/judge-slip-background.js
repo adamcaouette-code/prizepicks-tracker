@@ -289,6 +289,16 @@ export const handler = async (event) => {
     if (supported) {
       try { rows = await track('props', fetchProps(league)); } catch { rows = []; }
     }
+    // Tier (goblin / standard / demon) comes from OCR reading a small colored
+    // icon off a screenshot, and the green goblin and red demon get confused.
+    // The live projection carries PrizePicks' own odds_type, so when a leg binds
+    // to a row at the SAME line we take the feed's tier over the OCR's guess —
+    // ground truth beats pixel-reading. Guarded on an exact line match: a row at
+    // a different line is a different projection, and importing its tier would
+    // swap a correct read for a wrong one. Corrections are counted and reported,
+    // never applied silently — the tier changes the payout math.
+    let tierCorrections = 0;
+    const tierFixes = [];
     for (const leg of working) {
       const row = rows.length ? matchProjection(leg, rows) : null;
       if (row) {
@@ -298,6 +308,20 @@ export const handler = async (event) => {
         leg.matchup = row.matchupLabel || row.matchup;
         leg.image = row.image;
         leg.position = leg.position || row.position;
+        const sameLine = leg.line != null && Number(row.line) === Number(leg.line);
+        const feedTier = String(row.oddsType || '').toLowerCase();
+        if (sameLine && ['goblin', 'standard', 'demon'].includes(feedTier)) {
+          if (feedTier !== String(leg.oddsType || '').toLowerCase()) {
+            tierFixes.push({ player: leg.player, stat: leg.stat, line: leg.line, was: leg.oddsType || 'standard', now: feedTier });
+            tierCorrections++;
+          }
+          leg.oddsType = feedTier;
+          leg.tierSource = 'live';        // confirmed against the live board
+        } else {
+          leg.tierSource = 'image';       // still the screenshot's read
+        }
+      } else {
+        leg.tierSource = 'image';
       }
     }
 
@@ -398,6 +422,12 @@ export const handler = async (event) => {
       l.team ??= src.team || null;
       l.matchup ??= src.matchup || null;
       l.image ??= src.image || null;
+      // OVERWRITE, not ??=: the judge echoes oddsType back from the prompt, so a
+      // model slip could re-introduce the tier we just verified away. The tier
+      // drives the payout table in bet-finder-size, so it comes from our
+      // resolved value, never from the model's echo.
+      if (src.oddsType) l.oddsType = src.oddsType;
+      l.tierSource = src.tierSource || 'image';
       // Raw numbers for the verdict card's stats panel — straight from
       // PrizePicks/ESPN, deliberately NOT the judge's output, so the user can
       // check the verdict against the same facts the judge saw.
@@ -491,6 +521,8 @@ export const handler = async (event) => {
           bookLineStatus,
           loggedForCalibration,
           skippedNoProjection,
+          tierCorrections,      // tiers the live board disagreed with the screenshot on
+          tierFixes,            // ...and exactly which, so the banner can name them
         },
       },
     });
