@@ -1050,6 +1050,11 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
   for (const c of candidates) lookup[`${c.player}|${c.stat}`] = c;
   for (const p of picks) {
     const src = lookup[`${p.player}|${p.stat}`] || {};
+    // The PrizePicks projection id. Without it a pick can never be graded — it's
+    // the key every history lookup uses — and a slip saved from this board would
+    // sit "ungradeable" forever. It was previously only written into the pick-log
+    // rows, so it never reached the page.
+    if (src.id) p.projectionId ??= src.id;
     p.game ??= src.game || '(unknown game)';
     p.oddsType ??= src.oddsType || 'standard';     // so the board can show the tier
     p.team ??= src.team || '';                      // for team dropdowns

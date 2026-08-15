@@ -20,6 +20,11 @@ const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Orig
 
 // Flex pays on partial hits; Power is all-or-nothing. Slip status is the honest
 // summary of the legs, computed here rather than trusted from the client.
+//
+// An ungradeable leg (no projection id, a combo, or a lookup we gave up on) is
+// never fatal and never guessed. It just means the slip can't be fully settled —
+// EXCEPT when the gradeable legs already decide it, which is common: one
+// confirmed miss loses a Power card no matter what the unknown leg did.
 function summarize(slip) {
   const legs = slip.legs || [];
   const settled = legs.filter((l) => l.hit === true || l.hit === false);
@@ -27,17 +32,38 @@ function summarize(slip) {
   const hits = legs.filter((l) => l.hit === true).length;
   const misses = legs.filter((l) => l.hit === false).length;
 
-  if (settled.length + ungradeable.length < legs.length) {
-    // Power dies on the first confirmed miss — no need to wait for the rest.
-    if (slip.entry === 'power' && misses > 0) return { status: 'lost', hits, misses };
-    return { status: 'pending', hits, misses };
+  // A confirmed miss decides a Power card immediately — no reason to wait on the
+  // rest, gradeable or not.
+  if (slip.entry === 'power' && misses > 0) return { status: 'lost', hits, misses };
+
+  const undecided = legs.length - settled.length - ungradeable.length;
+  if (undecided > 0) return { status: 'pending', hits, misses };
+
+  // Everything that CAN be graded has been.
+  if (ungradeable.length) {
+    // Flex can still be decided if the unknown legs can't change the outcome:
+    // enough legs already missed to bust it regardless.
+    if (slip.entry === 'flex' && misses > 2) return { status: 'lost', hits, misses };
+    return { status: 'ungradeable', hits, misses, ungradeableLegs: ungradeable.length };
   }
-  if (ungradeable.length && settled.length < legs.length) return { status: 'ungradeable', hits, misses };
   if (slip.entry === 'power') return { status: misses === 0 ? 'won' : 'lost', hits, misses };
   // Flex: a full card is a win, a partial card still pays at some tiers — the
   // page shows the exact payout from the sizing table saved with the slip.
   if (misses === 0) return { status: 'won', hits, misses };
   return { status: hits >= 2 && hits >= legs.length - 2 ? 'partial' : 'lost', hits, misses };
+}
+
+// Slips are kept for a few days and then dropped, so the list stays readable
+// instead of becoming an archive nobody scrolls. Measured from the SLATE date
+// (when the legs played), not when you saved it.
+const RETENTION_DAYS = Number(process.env.SLIP_RETENTION_DAYS) || 3;
+function isExpired(slip, now = Date.now()) {
+  const basis = slip.slateDate || String(slip.createdAt || '').slice(0, 10);
+  const t = Date.parse(`${basis}T00:00:00Z`);
+  if (!isFinite(t)) return false;            // unparseable date: keep it, don't delete blind
+  // +1 day of grace so a slip that played last night is never swept before its
+  // own results have had a chance to land.
+  return now - t > (RETENTION_DAYS + 1) * 86400000;
 }
 
 export const handler = async (event) => {
@@ -52,13 +78,21 @@ export const handler = async (event) => {
     if (q.id) keys = keys.filter((k) => k === q.id);
 
     const report = [];
-    let legsGraded = 0, slipsSettled = 0, timedOut = false;
+    let legsGraded = 0, slipsSettled = 0, timedOut = false, pruned = 0;
 
     for (const key of keys) {
       if (Date.now() - start > BUDGET_MS) { timedOut = true; break; }
       let slip = null;
       try { slip = await store.get(key, { type: 'json' }); } catch { slip = null; }
       if (!slip || !Array.isArray(slip.legs)) continue;
+
+      // Retention sweep. Runs before grading so an expired slip isn't graded and
+      // then immediately deleted.
+      if (isExpired(slip)) {
+        if (!dry) { try { await store.delete(key); } catch {} }
+        pruned++;
+        continue;
+      }
       if (slip.status && !['pending', 'ungradeable'].includes(slip.status)) continue;   // already final
 
       let touched = false;
@@ -87,6 +121,7 @@ export const handler = async (event) => {
       slip.status = sum.status;
       slip.hits = sum.hits;
       slip.misses = sum.misses;
+      slip.ungradeableLegs = sum.ungradeableLegs || 0;
       if (['won', 'lost', 'partial'].includes(sum.status) && !slip.gradedAt) {
         slip.gradedAt = new Date().toISOString();
         slipsSettled++;
@@ -105,7 +140,7 @@ export const handler = async (event) => {
       report.push({ id: slip.id, name: slip.name, status: slip.status, hits: sum.hits, misses: sum.misses, payout: slip.payout });
     }
 
-    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ dry, timedOut, slips: keys.length, legsGraded, slipsSettled, report }, null, 2) };
+    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ dry, timedOut, slips: keys.length, legsGraded, slipsSettled, pruned, retentionDays: RETENTION_DAYS, report }, null, 2) };
   } catch (err) {
     return { statusCode: 500, headers: HEADERS, body: JSON.stringify({ error: String(err.message || err) }) };
   }

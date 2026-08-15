@@ -47,6 +47,9 @@ export default async function ({ t, url, browser }) {
       route.fulfill({ status: 200, contentType: 'application/json',
         body: JSON.stringify(sizingFor(Number(body.bankroll) || 0)) });
     },
+    // A saved slip whose slate has already finished triggers a settle-on-open
+    // pass, so this must be stubbed even in the build-a-slip flow.
+    '**/api/grade-slips*': { legsGraded: 0, slipsSettled: 0 },
     '**/api/slips': (route, request) => {
       if (request.method() === 'POST') {
         savePost = JSON.parse(request.postData() || '{}');
@@ -157,4 +160,61 @@ export default async function ({ t, url, browser }) {
   t.eq('no unstubbed API calls', unstubbed, []);
   t.eq('no JS errors', errors, []);
   await page.close();
+
+  // ---- waking up the morning after ---------------------------------------
+  // The overnight cron settles slips at a fixed hour; open the app before it
+  // runs and last night's card would still read "pending". Opening My Slips
+  // must settle anything whose slate has already finished.
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  let graded = false;
+  const pending = { slips: [{ id: 'p1', name: 'Last night', createdAt: yesterday + 'T22:00:00Z',
+    slateDate: yesterday, entry: 'power', stake: 10, status: 'pending',
+    legs: [{ player: 'A', stat: 'Hits', line: 0.5, pick: 'over', oddsType: 'goblin', hit: null, result: null },
+           { player: 'B', stat: 'Hits', line: 1.5, pick: 'over', oddsType: 'standard', hit: null, result: null }] }] };
+  const settled = { slips: [{ ...pending.slips[0], status: 'won', hits: 2, misses: 0, payout: 30,
+    legs: [{ ...pending.slips[0].legs[0], hit: true, result: 2 }, { ...pending.slips[0].legs[1], hit: true, result: 3 }] }] };
+
+  const morning = await openApp(browser, { url, routes: {
+    '**/api/pp-leagues*': LEAGUES, '**/api/pp-stats*': STATS,
+    '**/api/grade-slips*': (route) => { graded = true; route.fulfill({ status: 200, contentType: 'application/json', body: '{"legsGraded":2,"slipsSettled":1}' }); },
+    '**/api/slips': (route) => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify(graded ? settled : pending) }),
+  }});
+  await morning.page.click('#tabBtnSlips');
+  await morning.page.waitForSelector('#slipsBody .slipcard');
+  t.ok('opening My Slips settles a finished slate rather than showing stale pending', graded);
+  const headTxt = await morning.page.textContent('#slipsBody .sliphead');
+  t.ok('the card reads WON the morning after', /won/i.test(headTxt), headTxt.replace(/\s+/g, ' ').trim());
+  await morning.page.click('#slipsBody .sliphead');
+  await morning.page.waitForFunction(() => !document.querySelector('#slipsBody .slipbody').hidden);
+  const marks = await morning.page.$$eval('#slipsBody .sl-mark', ms => ms.map(m => m.className.replace('sl-mark ', '')));
+  t.eq('both legs show as hits with their real results', marks, ['hit', 'hit']);
+  t.ok('the payout is shown', /\$30\.00/.test(await morning.page.textContent('#slipsBody .slipbody')));
+  t.ok('retention is stated so vanishing slips are expected',
+    /kept for 3 days/.test(await morning.page.textContent('#slipsSummary')));
+  t.eq('no JS errors the morning after', morning.errors, []);
+  await morning.page.close();
+
+  // ---- a slip that can't be fully settled --------------------------------
+  const stuck = { slips: [{ id: 'u1', name: 'Half known', createdAt: yesterday + 'T22:00:00Z',
+    slateDate: yesterday, entry: 'power', stake: 10, status: 'ungradeable', hits: 1, misses: 0, ungradeableLegs: 1,
+    legs: [{ player: 'Known', stat: 'Hits', line: 0.5, pick: 'over', oddsType: 'goblin', hit: true, result: 2 },
+           { player: 'Unknown', stat: 'Hits', line: 0.5, pick: 'over', oddsType: 'standard', hit: null, result: null, ungradeable: 'no projection id' }] }] };
+  const odd = await openApp(browser, { url, routes: {
+    '**/api/pp-leagues*': LEAGUES, '**/api/pp-stats*': STATS,
+    '**/api/grade-slips*': { legsGraded: 0, slipsSettled: 0 },
+    '**/api/slips': stuck,
+  }});
+  await odd.page.click('#tabBtnSlips');
+  await odd.page.waitForSelector('#slipsBody .slipcard');
+  await odd.page.click('#slipsBody .sliphead');
+  await odd.page.waitForFunction(() => !document.querySelector('#slipsBody .slipbody').hidden);
+  const body = await odd.page.textContent('#slipsBody .slipbody');
+  t.ok('an unlookup-able leg is explained in plain words, not left broken',
+    /couldn’t be looked up/.test(body), body.replace(/\s+/g, ' ').slice(0, 120));
+  t.ok('the leg that DID grade is still shown as a hit',
+    await odd.page.$eval('#slipsBody .sl-mark', m => m.classList.contains('hit')));
+  t.ok('no payout is invented for an unsettled card', !/Paid/.test(body));
+  t.eq('and it renders without JS errors', odd.errors, []);
+  await odd.page.close();
 }

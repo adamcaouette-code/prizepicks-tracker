@@ -130,4 +130,80 @@ export default async function ({ t }) {
   const g3 = read('saved-slips', s3.id);
   t.eq('...and is marked ungradeable rather than guessed', g3.legs[0].ungradeable, 'no projection id');
   t.eq('the slip says so instead of claiming a result', g3.status, 'ungradeable');
+  t.eq('...and counts how many legs it could not look up', g3.ungradeableLegs, 2);
+
+  // ---------- one leg gradeable, one not -----------------------------------
+  // A missing id must never poison the legs that CAN be settled, and when the
+  // graded legs already decide the card, the unknown one is irrelevant.
+  reset();
+  const slips4 = await loadFn('slips.js');
+  const mkMixed = async (pick, name) => JSON.parse((await slips4.handler({ httpMethod: 'POST', queryStringParameters: {},
+    body: JSON.stringify({ name, entry: 'power', stake: 10,
+      legs: [
+        LEG({ id: 'G', player: 'Has Id', stat: 'Hits', line: 0.5, pick }),
+        { player: 'No Id', stat: 'Hits', line: 0.5, pick: 'over', start: '2026-08-14T19:30:00.000-04:00' },
+      ],
+      sizing: { label: 'POWER', payouts: [{ hits: 2, pays: 30 }] } }) })).body).slip;
+
+  const decided = await mkMixed('under', 'Decided by the graded leg');
+  const mock4 = mockFetch([['projections/G/history', async () => history(3)]]);  // 3 > 0.5 -> the UNDER lost
+  try {
+    const grader = await loadFn('grade-slips.js');
+    await grader.handler({ queryStringParameters: {} });
+  } finally { mock4.restore(); }
+  const g4 = read('saved-slips', decided.id);
+  t.eq('the gradeable leg still settles despite its neighbour', g4.legs[0].hit, false);
+  t.eq('the unknown leg is flagged, not guessed', g4.legs[1].ungradeable, 'no projection id');
+  t.eq('a confirmed miss loses a Power card even with an unknown leg', g4.status, 'lost');
+
+  reset();
+  const slips5 = await loadFn('slips.js');
+  const undecided = JSON.parse((await slips5.handler({ httpMethod: 'POST', queryStringParameters: {},
+    body: JSON.stringify({ name: 'Cannot be decided', entry: 'power', stake: 10,
+      legs: [
+        LEG({ id: 'H', player: 'Has Id', stat: 'Hits', line: 0.5, pick: 'over' }),
+        { player: 'No Id', stat: 'Hits', line: 0.5, pick: 'over', start: '2026-08-14T19:30:00.000-04:00' },
+      ] }) })).body).slip;
+  const mock5 = mockFetch([['projections/H/history', async () => history(2)]]);   // that leg HIT
+  try {
+    const grader = await loadFn('grade-slips.js');
+    await grader.handler({ queryStringParameters: {} });
+  } finally { mock5.restore(); }
+  const g5 = read('saved-slips', undecided.id);
+  t.eq('the known leg is recorded as a hit', g5.legs[0].hit, true);
+  t.eq('but a card that hinges on the unknown leg is NOT called a win', g5.status, 'ungradeable');
+  t.eq('...and no payout is invented for it', g5.payout, null);
+
+  // ---------- retention -----------------------------------------------------
+  // Old slips are swept so the list stays readable. Measured from the slate date
+  // with a day of grace, so last night's card is never deleted before it settles.
+  reset();
+  const slips6 = await loadFn('slips.js');
+  const withSlate = async (slateDate, name) => {
+    const r = await slips6.handler({ httpMethod: 'POST', queryStringParameters: {},
+      body: JSON.stringify({ name, entry: 'power', stake: 10,
+        legs: [LEG({ id: 'Z1', player: 'A', stat: 'Hits', line: 0.5, pick: 'over' }),
+               LEG({ id: 'Z2', player: 'B', stat: 'Hits', line: 0.5, pick: 'over' })] }) });
+    const slip = JSON.parse(r.body).slip;
+    slip.slateDate = slateDate;            // rewrite the slate to age it
+    seed('saved-slips', slip.id, slip);
+    return slip;
+  };
+  const iso = (daysAgo) => new Date(Date.now() - daysAgo * 86400000).toISOString().slice(0, 10);
+  const fresh = await withSlate(iso(0), 'Tonight');
+  const edge = await withSlate(iso(3), 'Three days ago');
+  const old = await withSlate(iso(9), 'Ancient');
+
+  const mock6 = mockFetch([[/history/, async () => history(2)]]);
+  let out6;
+  try {
+    const grader = await loadFn('grade-slips.js');
+    out6 = JSON.parse((await grader.handler({ queryStringParameters: {} })).body);
+  } finally { mock6.restore(); }
+
+  t.eq('retention window is 3 days', out6.retentionDays, 3);
+  t.ok('tonight\'s slip survives', !!read('saved-slips', fresh.id));
+  t.ok('a 3-day-old slip is still inside the window', !!read('saved-slips', edge.id), 'grace day keeps it');
+  t.eq('a long-expired slip is swept', read('saved-slips', old.id), null);
+  t.eq('and the sweep is reported', out6.pruned, 1);
 }

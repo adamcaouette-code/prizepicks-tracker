@@ -122,4 +122,15 @@ export default async function ({ t }) {
   t.ok('and LESS than the sum, proving the pieces really overlapped',
     tm.totalMs < Object.values(tm.pieces).reduce((a, b) => a + b, 0),
     `total ${tm.totalMs}ms vs sum ${Object.values(tm.pieces).reduce((a, b) => a + b, 0)}ms`);
+
+  // ---- every pick must carry its PrizePicks projection id -----------------
+  // It's the key every history lookup uses. Without it a pick can never be
+  // graded and a slip built from this board sits "ungradeable" forever — which
+  // is exactly what happened: the id was written into the pick-log rows but
+  // never onto the pick objects the page receives.
+  const board = done?.result?.board || [];
+  t.ok('the board returned picks', board.length > 0);
+  t.ok('every board pick carries a projectionId',
+    board.every((p) => typeof p.projectionId === 'string' && p.projectionId.length > 0),
+    JSON.stringify(board.map((p) => p.projectionId)));
 }
