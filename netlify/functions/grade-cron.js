@@ -8,7 +8,15 @@
 // Manual grading via /api/grade-picks and the dev console still works anytime;
 // this just makes it unnecessary.
 
-export const config = { schedule: '0 14 * * *' }; // 14:00 UTC daily (~6-7am Pacific)
+// Netlify cron is UTC and has no idea about daylight saving, so "3am Pacific" is
+// a different UTC hour depending on the season:
+//   10:00 UTC = 3am PDT (Mar-Nov)   11:00 UTC = 3am PST (Nov-Mar)
+// Firing at both hits 3am Pacific year-round; the off-season one lands at 2am or
+// 4am and simply finds nothing left to do. 14:00 UTC stays as a late backstop for
+// anything whose box score wasn't final at 3am. Grading is idempotent — a pass
+// with nothing to settle costs a blob list and exits — so extra runs are cheap
+// and none of this touches a model.
+export const config = { schedule: '0 10,11,14 * * *' };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
