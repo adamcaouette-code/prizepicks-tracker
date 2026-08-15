@@ -40,6 +40,14 @@ const sizingFor = (stake) => ({
     flex: entryFor('FLEX', -0.04, FLEX_MULT, stake),
   },
   hitDistribution: [0.1216, 0.4432, 0.4352],
+  // POWER pays 3x here, so all legs must land 33% of the time to break even;
+  // the distribution says 44%. Positive, and the page must be able to say why.
+  allHitProb: 0.4352, breakEvenAllHit: 0.333, breakEvenPerLeg: 0.577,
+  altTiers: {
+    goblin:   { mult: 2.0,  evPerDollar: -0.13, breakEvenPerLeg: 0.707 },
+    standard: { mult: 3.0,  evPerDollar: 0.306, breakEvenPerLeg: 0.577 },
+    demon:    { mult: 12.0, evPerDollar: 4.22,  breakEvenPerLeg: 0.289 },
+  },
   recommended: 'POWER', mixed: false,
 });
 
@@ -99,7 +107,14 @@ export default async function ({ t, url, browser }) {
   t.ok('all-hit row pays the POWER table on a $10 entry', rows.some(r => /2 of 2 hit/.test(r) && /\$30\.00/.test(r)), rows[0]);
   t.ok('...and states the multiplier', /3\.00x/.test(rows.join(' ')));
   t.ok('each outcome carries its likelihood from the hit distribution', /44% likely|12% likely/.test(rows.join(' ')));
-  t.ok('positive EV is stated as such', /\+12\.0% expected value/.test(await page.textContent('#trayMath')));
+  const math = await page.textContent('#trayMath');
+  t.ok('positive EV is stated as such', /\+12\.0% expected value/.test(math), math.slice(0, 120));
+  // "-51.6% EV" is jargon. The break-even comparison is the number that makes a
+  // verdict legible, and it must lead.
+  t.ok('the break-even is stated in plain terms',
+    /must land 33% of the time to break even/.test(math), math.slice(0, 200));
+  t.ok('...next to what the engine actually gives it', /puts it at 44%/.test(math), math.slice(0, 200));
+  t.ok('a positive slip is not scolded', !/telling you not to play/.test(math));
 
   // ---- switching entry re-prices without refetching ------------------------
   await page.click('#slipTray .etoggle[data-entry="flex"]');
@@ -112,8 +127,15 @@ export default async function ({ t, url, browser }) {
   // see the payout you'd be chasing.
   t.ok('a negative-EV entry still shows real dollars, not $0.00',
     !/\$0\.00 \(2\.50x\)/.test(flex) && /\$25\.00 \(2\.50x\)/.test(flex), flex.slice(0, 160));
-  t.ok('negative EV is called out as a reason not to play',
-    /-4\.0% expected value/.test(flex) && /telling you not to play/.test(flex), flex.slice(0, 160));
+  // Negative EV still says so — but blames the PAYOUT, not the picks, and points
+  // at the tier that would fix it. "There's never a 100% bet" is true; the
+  // question is only whether the payout covers the risk.
+  t.ok('negative EV is stated plainly', /-4\.0% expected value/.test(flex), flex.slice(0, 200));
+  t.ok('...and blames the payout rather than the picks',
+    /doesn’t cover the risk. Not a comment on the picks/.test(flex), flex.slice(0, 260));
+  t.ok('...and names the tier that would make these same legs work',
+    /as <?b?>?demon/i.test(flex) || /demon/.test(flex), flex.slice(0, 320));
+  t.ok('the preachy absolute is gone', !/telling you not to play/.test(flex));
   await page.click('#slipTray .etoggle[data-entry="power"]');
   await page.waitForFunction(() => /30\.00/.test(document.getElementById('trayMath').textContent));
 

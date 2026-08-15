@@ -126,6 +126,31 @@ function sizeParlay(legs, { bankroll, floor, maxStake }) {
 
   const { power: POWER, flex: FLEX, mixed } = tablesForSlip(legs);
   const out = { legs, hitDistribution: hitDistribution(probs), entries: {}, mixed };
+
+  // What the SAME legs would return on each pure tier. This is the difference
+  // between "don't play this" and "don't play this AS GOBLINS" — a 3-leg goblin
+  // Power pays 2.0x and so needs ~79% a leg to break even, which almost nothing
+  // clears; the identical legs as standard picks need ~59%. When a slip prices
+  // badly, the tier is usually the reason, not the picks, and that's actionable.
+  out.altTiers = {};
+  for (const tier of ['goblin', 'standard', 'demon']) {
+    const mult = POWER_PURE[tier]?.[n];
+    if (!mult) continue;
+    const allHit = probs.reduce((a, p) => a * p, 1);
+    out.altTiers[tier] = {
+      mult,
+      evPerDollar: Math.round((allHit * mult - 1) * 1000) / 1000,
+      breakEvenPerLeg: Math.round(Math.pow(1 / mult, 1 / n) * 1000) / 1000,
+    };
+  }
+  // The number that makes the verdict legible: how often all legs must land for
+  // the bet to be a wash. "-51.6% EV" is jargon; "you need 50%, you have 24%" is not.
+  const powerMult = POWER[n];
+  if (powerMult) {
+    out.breakEvenAllHit = Math.round((1 / powerMult) * 1000) / 1000;
+    out.breakEvenPerLeg = Math.round(Math.pow(1 / powerMult, 1 / n) * 1000) / 1000;
+  }
+  out.allHitProb = Math.round(probs.reduce((a, p) => a * p, 1) * 1000) / 1000;
   let best = null, bestG = -Infinity;
   for (const entry of ['power', 'flex']) {
     if (entry === 'flex' && (n < 3 || !FLEX)) continue;
