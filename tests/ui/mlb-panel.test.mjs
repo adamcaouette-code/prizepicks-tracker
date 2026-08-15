@@ -61,9 +61,36 @@ export default async function ({ t, url, browser }) {
     /10-Day Injured List/.test(flag) && /not expected to play/.test(flag), flag.trim());
   t.eq('only the injured card is marked', await page.$$eval('#searchResults .injflag', f => f.length), 1);
 
-  const injBox = await page.textContent('#searchResults .injbox');
-  t.ok('a slate injury report is shown above the board', /INJURY REPORT/.test(injBox));
-  t.ok('...naming the player and the reason', /Hurt Guy/.test(injBox) && /10-Day Injured List/.test(injBox));
+  // The always-open slate-wide list is gone: it ran to ~90 names a team off the
+  // full org roster, which you had to scroll past to reach the picks.
+  t.eq('no wall-of-text injury report above the board',
+    await page.$$eval('#searchResults .injbox', b => b.length), 0);
+
+  // Per card, on demand, and only about THIS player and HIS team.
+  const injBtns = await page.$$('#searchResults .whybtn[data-panel="inj"]');
+  t.eq('every card offers its own injuries toggle', injBtns.length, 3);
+  t.eq('injury panels start closed',
+    await page.$$eval('#searchResults .why[data-panel="inj"]', ps => ps.map(x => x.hidden)), [true, true, true]);
+
+  await injBtns[1].click();   // the injured player's card
+  await page.waitForFunction(() => {
+    const ps = document.querySelectorAll('#searchResults .why[data-panel="inj"]');
+    return ps[1] && !ps[1].hidden;
+  });
+  const hurtPanel = await page.$$eval('#searchResults .why[data-panel="inj"]',
+    ps => ps[1].innerText.replace(/\s+/g, ' '));
+  t.ok('the panel leads with THIS player\'s own status',
+    /Hurt Guy.*10-Day Injured List.*not expected to play/.test(hurtPanel), hurtPanel.slice(0, 110));
+  t.ok('...and says nobody else on his team is out, when nobody is',
+    /No one else on CIN/.test(hurtPanel), hurtPanel.slice(0, 200));
+  t.ok('no other team appears anywhere in it', !/PIT|LAD|SFG/.test(hurtPanel), hurtPanel.slice(0, 200));
+
+  await injBtns[0].click();   // a healthy player on the same team
+  await page.waitForFunction(() => !document.querySelectorAll('#searchResults .why[data-panel="inj"]')[0].hidden);
+  const healthy = await page.$$eval('#searchResults .why[data-panel="inj"]', ps => ps[0].innerText.replace(/\s+/g, ' '));
+  t.ok('a healthy player is stated as having no designation',
+    /No injury designation/.test(healthy), healthy.slice(0, 90));
+  t.ok('...and his injured teammate IS listed', /Hurt Guy/.test(healthy) && /1 OUT/.test(healthy), healthy.slice(0, 160));
 
   // ---- headshots and logos just appear -----------------------------------
   const avatars = await page.$$eval('#searchResults .avatar img', els => els.map(e => e.getAttribute('src')));

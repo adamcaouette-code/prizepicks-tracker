@@ -106,6 +106,17 @@ function isOut(status) {
   return !!code && !ACTIVE_CODES.has(code);
 }
 
+// How much an absence bears on TONIGHT. Lower sorts first.
+function absenceRank(status) {
+  const d = String(status?.description || '');
+  if (/day-to-day|day to day/i.test(d)) return 0;
+  const days = d.match(/(\d+)\s*-?\s*day/i);
+  if (days) return Math.min(4, 1 + Math.floor(Number(days[1]) / 15));   // 7/10-day -> 1, 15 -> 2, 60 -> 4
+  if (/full season/i.test(d)) return 5;
+  if (/rehab/i.test(d)) return 3;
+  return 2;
+}
+
 async function teamMap() {
   return cached('teams-v1', TEAMS_TTL, async () => {
     const data = await api('/teams?sportId=1');
@@ -155,8 +166,14 @@ async function slate(dateStr) {
     // One roster call per PLAYING team — that single call yields the injury
     // report AND every personId (i.e. every headshot) for that team, so it is
     // deliberately the only fan-out here.
+    // 40Man, NOT fullRoster. fullRoster returns the whole organisation — minor
+    // leaguers, non-roster invitees, everyone parked on the 60-day since March —
+    // which produced ~90-name injury lists per team that nobody would read. The
+    // 40-man is the population that can actually appear in tonight's game, and
+    // going on the 60-day IL removes you from it, so the long-term absences drop
+    // out on their own.
     const ids = [...teamIds];
-    const rosters = await mapLimit(ids, 6, async (id) => ({ id, data: await api(`/teams/${id}/roster?rosterType=fullRoster`) }));
+    const rosters = await mapLimit(ids, 6, async (id) => ({ id, data: await api(`/teams/${id}/roster?rosterType=40Man`) }));
 
     const people = {};      // normKey(name) -> { id, teamId, position, out, status, headshot }
     const injuries = {};    // ABBR -> [{ name, position, status }]
@@ -172,10 +189,17 @@ async function slate(dateStr) {
           id: pid, teamId: id, position: r.position?.abbreviation || null,
           out, status: r.status?.description || null, headshot: headshotUrl(pid),
         };
-        if (out) (injuries[abbr] ||= []).push({ name, position: r.position?.abbreviation || null, status: r.status?.description || 'Not active' });
+        if (out) (injuries[abbr] ||= []).push({
+          name, position: r.position?.abbreviation || null,
+          status: r.status?.description || 'Not active',
+          rank: absenceRank(r.status),
+        });
       }
     }
-    for (const k in injuries) injuries[k].sort((a, b) => a.name.localeCompare(b.name));
+    // Most-relevant first: a day-to-day or 7-day absence changes tonight's
+    // lineup, a 60-day one was decided months ago. Alphabetical order buried the
+    // only names that mattered.
+    for (const k in injuries) injuries[k].sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
 
     return { date, games, people, injuries, teams: tm.byAbbr, counts: { games: games.length, teams: ids.length, people: Object.keys(people).length, injured: Object.values(injuries).reduce((a, v) => a + v.length, 0) } };
   });
@@ -300,4 +324,4 @@ export const handler = async (event) => {
   }
 };
 
-export { slate, player, teamMap, isOut, headshotUrl, teamLogoUrl, espnLogoUrl, normKey, PP_TO_MLB_ABBR };
+export { slate, player, teamMap, isOut, absenceRank, headshotUrl, teamLogoUrl, espnLogoUrl, normKey, PP_TO_MLB_ABBR };

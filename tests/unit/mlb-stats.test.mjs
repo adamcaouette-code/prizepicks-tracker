@@ -57,6 +57,8 @@ export default async function ({ t }) {
       { id: 5001, name: 'Elly De La Cruz', pos: 'SS', status: { code: 'A', description: 'Active' } },
       { id: 5002, name: 'Hurt Guy', pos: 'OF', status: { code: 'D10', description: '10-Day Injured List' } },
       { id: 5003, name: 'Mystery Code Guy', pos: 'C', status: { code: 'ZZ', description: 'Some New Injury Status' } },
+      { id: 5005, name: 'Day To Day Guy', pos: '1B', status: { code: 'DTD', description: 'Day-To-Day' } },
+      { id: 5006, name: 'Long Gone', pos: 'RP', status: { code: 'D60', description: '60-Day Injured List' } },
     ])],
     ['/teams/134/roster', async () => roster([
       { id: 5004, name: 'Paul Skenes', pos: 'P', status: { code: 'A', description: 'Active' } },
@@ -70,7 +72,9 @@ export default async function ({ t }) {
   t.eq('probable pitchers come along', out.games[0].away.probablePitcher.name, 'Paul Skenes');
   t.ok('each side carries its cap logo', /team-cap-on-dark\/113/.test(out.games[0].home.logo));
 
-  t.eq('every rostered player is resolvable by name', Object.keys(out.people).length, 4);
+  t.ok('the 40-man is requested, not the whole organisation — fullRoster returned ~90 names a team',
+    true);
+  t.eq('every rostered player is resolvable by name', Object.keys(out.people).length, 6);
   t.eq('an active player resolves to a personId', out.people[mod.normKey('Elly De La Cruz')].id, 5001);
   t.eq('...and therefore to a headshot', /people\/5001\/headshot/.test(out.people[mod.normKey('Elly De La Cruz')].headshot), true);
   t.eq('an active player is not flagged out', out.people[mod.normKey('Elly De La Cruz')].out, false);
@@ -79,7 +83,13 @@ export default async function ({ t }) {
     out.people[mod.normKey('Mystery Code Guy')].out, true);
 
   t.eq('the injury report is grouped by team', Object.keys(out.injuries).sort(), ['CIN']);
-  t.eq('...and lists both flagged players', out.injuries.CIN.map((x) => x.name).sort(), ['Hurt Guy', 'Mystery Code Guy']);
+  // Ordered by how much the absence bears on TONIGHT, not alphabetically —
+  // alphabetical buried the day-to-day names under the season-enders.
+  t.eq('day-to-day sorts first, 60-day last',
+    out.injuries.CIN.map((x) => x.name), ['Day To Day Guy', 'Hurt Guy', 'Mystery Code Guy', 'Long Gone']);
+  t.eq('a day-to-day absence outranks a 10-day', mod.absenceRank({ description: 'Day-To-Day' }) < mod.absenceRank({ description: '10-Day Injured List' }), true);
+  t.eq('a 10-day outranks a 60-day', mod.absenceRank({ description: '10-Day Injured List' }) < mod.absenceRank({ description: '60-Day Injured List' }), true);
+  t.eq('a full-season absence sorts last', mod.absenceRank({ description: 'Injured - Full Season' }), 5);
   t.eq('...carrying the reason, not just a flag', out.injuries.CIN.find((x) => x.name === 'Hurt Guy').status, '10-Day Injured List');
   t.eq('the healthy team has no entry', out.injuries.PIT, undefined);
 
@@ -97,6 +107,9 @@ export default async function ({ t }) {
   t.ok('every call goes to statsapi.mlb.com', urls.every((u) => /statsapi\.mlb\.com/.test(u)), urls.join(' '));
   t.ok('one roster call per playing team and no more',
     urls.filter((u) => /roster/.test(u)).length === 2, urls.filter((u) => /roster/.test(u)).join(' '));
+  t.ok('and it asks for the 40-man, not fullRoster',
+    urls.filter((u) => /roster/.test(u)).every((u) => /rosterType=40Man/.test(u)),
+    urls.find((u) => /roster/.test(u)));
   t.eq('the deep per-player endpoint is NOT touched while building a slate',
     urls.filter((u) => /\/stats\?stats=/.test(u)), []);
 
