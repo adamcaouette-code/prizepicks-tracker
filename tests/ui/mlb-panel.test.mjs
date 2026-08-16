@@ -101,6 +101,12 @@ export default async function ({ t, url, browser }) {
   // has already swapped it to the ESPN PNG by the time we look — which is the
   // fallback chain working, and worth asserting as such. The second card has no
   // fallback configured, so its src stays as authored and shows the intent.
+  // The onerror swap is asynchronous — wait for it rather than racing it, or this
+  // passes or fails depending on machine load.
+  await page.waitForFunction(() => {
+    const el = document.querySelectorAll('#searchResults .tlogo')[0];
+    return el && /espncdn/.test(el.getAttribute('src') || '');
+  }, null, { timeout: 15000 }).catch(() => {});
   const logos = await page.$$eval('#searchResults .tlogo', els => els.map(e => ({ src: e.getAttribute('src'), onerr: e.getAttribute('onerror') })));
   t.eq('cards with a resolved team carry a cap logo', logos.length, 2);
   t.ok('the authored mark is the CAP variant, not the primary wordmark',

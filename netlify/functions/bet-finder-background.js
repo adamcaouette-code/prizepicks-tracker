@@ -1134,6 +1134,46 @@ function playersOf(p) {
 // the side view lives in p.side / p.sideProb / p.sideVerdict.
 const sideVerdictFor = (q) => (q >= 0.62 ? 'play' : q >= 0.54 ? 'lean' : 'pass');
 
+// A prop on someone who is confirmed NOT to play does not settle at 0 — PrizePicks
+// VOIDS it (DNP) and refunds the leg. That distinction is the whole game here:
+// treated as a 0 it looks like a near-certain under, so the judge was handing out
+// 90%+ on pitcher unders precisely BECAUSE the pitcher wasn't starting. Those were
+// the best-looking numbers on the board and every one of them was worthless.
+//
+// So these are removed BEFORE the judge sees them: it saves the tokens, and more
+// importantly it stops a void from being scored as a win.
+//
+// Only CONFIRMED absences count. "No probable posted yet" is not a confirmation,
+// and a prop we can't verify stays on the board.
+function markVoids(candidates, mlb) {
+  const starters = {};   // team abbr -> Set of confirmed starter name keys
+  for (const g of mlb?.games || []) {
+    for (const side of [g.home, g.away]) {
+      const abbr = String(side?.abbr || '').toUpperCase();
+      if (!abbr || !side?.probablePitcher?.name) continue;
+      (starters[abbr] ||= new Set()).add(mlbNormKey(side.probablePitcher.name));
+    }
+  }
+
+  let inactive = 0, notStarting = 0;
+  for (const c of candidates) {
+    if (/ \+ /.test(c.player)) continue;                 // combo: no single player to confirm
+    if (c.injured) { c.voidReason = `${c.injured} — PrizePicks voids this, it does not settle at 0`; inactive++; continue; }
+
+    const isPitcherProp = mlbStatKind(c.stat) === 'PIT' || mlbRole(c.position) === 'PIT';
+    if (!isPitcherProp) continue;
+
+    const abbr = PP_TO_MLB_ABBR[String(c.team || '').toUpperCase()] || String(c.team || '').toUpperCase();
+    // Prefer MLB's own probable; fall back to the ESPN starter attachStarters found.
+    const confirmed = starters[abbr] || (c.selfSP?.name ? new Set([mlbNormKey(c.selfSP.name)]) : null);
+    if (!confirmed || !confirmed.size) continue;         // nothing posted — can't confirm, leave it
+    if (confirmed.has(mlbNormKey(c.player))) continue;   // he IS the starter
+    c.voidReason = 'not the confirmed starter — PrizePicks voids this, it does not settle at 0';
+    notStarting++;
+  }
+  return { inactive, notStarting, total: inactive + notStarting };
+}
+
 function attachSides(picks, mode = 'both') {
   for (const p of picks) {
     const over = clamp(p.prob);
@@ -1484,14 +1524,35 @@ export const handler = async (event) => {
         mlbStatus.mlb = { error: 'MLB Stats API unavailable — headshots and injury flags are off for this run.' };
       }
     }
+    // ---- Drop props that will VOID before spending a judgement on them -----
+    // A DNP is refunded, not scored 0. Rating them produced 90%+ "unders" on
+    // pitchers who weren't starting — the best numbers on the board, all of them
+    // worthless. Filtering here also keeps them out of the judge's token bill.
+    const voids = params.league === 'mlb' ? markVoids(candidates, mlbSlateData) : { inactive: 0, notStarting: 0, total: 0 };
+    const voided = candidates.filter((c) => c.voidReason);
+    const live = candidates.filter((c) => !c.voidReason);
+    if (mlbStatus) mlbStatus.voided = { ...voids, examples: voided.slice(0, 6).map((c) => `${c.player} · ${c.statDisplay || c.stat}`) };
+    if (!live.length) {
+      await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: 'Every candidate on this slate is a confirmed DNP — nothing to rate.' }, mlbStatus, params } });
+      return { statusCode: 202 };
+    }
+
     // ---- Gate passed: every piece settled. Hand the full puzzle to Claude. --
     phaseDone('gathering data');
 
     await tick('Claude researching lineups');
     const judgeStart = Date.now();
-    const picks = await judge(candidates, teamRecords, odds.teamWinProbs, params.league, oppDef);
+    const judged = await judge(live, teamRecords, odds.teamWinProbs, params.league, oppDef);
     pieceMs.judge = Date.now() - judgeStart;
-    if (!picks.length) throw new Error('Claude returned no parseable picks.');
+    if (!judged.length) throw new Error('Claude returned no parseable picks.');
+    // Keep only picks that tie back to a prop we actually sent. A name the model
+    // produced on its own has no projection id behind it, so it could never be
+    // graded or logged — and after the DNP filter above, an echoed-back voided
+    // prop would sneak straight past it.
+    const sentKeys = new Set(live.map((c) => `${c.player}|${c.stat}`));
+    const picks = judged.filter((p) => sentKeys.has(`${p.player}|${p.stat}`));
+    const invented = judged.length - picks.length;
+    if (!picks.length) throw new Error('Claude returned no picks that match the board.');
 
     // Decide each prop's side BEFORE selecting or filtering, so unders compete
     // with overs on equal terms instead of being discarded as weak overs.
@@ -1541,7 +1602,7 @@ export const handler = async (event) => {
       const day = new Date().toISOString().slice(0, 10);
       const stamp = new Date().toISOString();
       const idByKey = {};
-      for (const c of candidates) idByKey[`${c.player}|${c.stat}`] = c.id;
+      for (const c of live) idByKey[`${c.player}|${c.stat}`] = c.id;
       const logged = picks.map((p) => ({
         date: day, loggedAt: stamp, league: params.league,
         projectionId: idByKey[`${p.player}|${p.stat}`] || null,
@@ -1582,7 +1643,7 @@ export const handler = async (event) => {
       candidates: candidates.length,
       phases: phaseLog.slice(),
     };
-    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params } });
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });
@@ -1601,5 +1662,5 @@ export {
   fetchWinProbs, fetchOppDefense, normStat, normKey, americanToProb,
   recordCost, PRICES,
   filterToday, findCandidates, positionAllows, propIdentity,   // pure helpers, exported for tests
-  attachSides, selectLegs, sideVerdictFor,
+  attachSides, selectLegs, sideVerdictFor, markVoids,
 };

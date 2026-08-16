@@ -153,12 +153,21 @@ export default async function ({ t }) {
 
   // ---- MLB enrichment rode along without costing wall time ----------------
   const elly = board.find((p) => p.player === 'Elly De La Cruz');
-  const oneil = board.find((p) => p.player === 'Oneil Cruz');
   t.ok('a matched player gets a headshot automatically', /people\/5001\/headshot/.test(elly?.headshot || ''), elly?.headshot);
   t.ok('...and the team cap logo', /team-cap-on-dark\/113/.test(elly?.teamLogo || ''), elly?.teamLogo);
   t.ok('...and a personId for the lazy stats lookup', elly?.mlbId === 5001, String(elly?.mlbId));
   t.eq('a healthy player carries no injury flag', elly?.injured, undefined);
-  t.eq('an injured player IS flagged on the card', oneil?.injured, '10-Day Injured List');
+  // Oneil Cruz is on the 10-day IL in this fixture. A DNP is VOIDED by
+  // PrizePicks, not settled at 0, so his props are removed before the judge —
+  // he must not reach the board at all.
+  t.eq('an inactive player is gone from the board, not merely flagged',
+    board.filter((p) => p.player === 'Oneil Cruz').length, 0);
+  // The fixture posts several lines of his prop, so all of them are hidden.
+  t.ok('...and the run says how many it hid', done?.result?.voidedCount > 0, String(done?.result?.voidedCount));
+  t.eq('...counted as inactive rather than a starter call',
+    done?.result?.mlbStatus?.voided?.inactive, done?.result?.voidedCount);
+  t.eq('a pick the model returned that was never sent is dropped',
+    done?.result?.unmatchedPicks, 1);
   t.ok('the slate injury report rides back with the result',
     !!done?.result?.mlbInjuries?.PIT?.length, JSON.stringify(done?.result?.mlbInjuries));
   t.eq('the DEEP per-player endpoint was never called during the run',
