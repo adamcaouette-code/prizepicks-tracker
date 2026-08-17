@@ -93,7 +93,9 @@ export default async function ({ t }) {
   t.eq('no game on that date refuses', noGame, null);
   t.eq('an unresolvable player refuses', unknown, null);
 
-  // ---- end to end: PrizePicks 404s, the pick still grades -----------------
+  // ---- end to end: the MLB box score settles it, PrizePicks never asked ----
+  // MLB leads the chain now. PrizePicks stays wired as the last link, but it
+  // answers 404/403 in the real world, so a round trip to it is pure latency.
   reset();
   const today = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);   // long final
   seed('pick-log', today, [
@@ -101,9 +103,10 @@ export default async function ({ t }) {
       player: 'Elly De La Cruz', stat: 'Hits', line: 0.5, prob: 0.7, verdict: 'play',
       result: null, hit: null, gradedAt: null },
   ]);
+  let ppCalls = 0;
   const e2e = mockFetch([
     // PrizePicks has retired the projection — exactly the real failure.
-    [/api\.prizepicks\.com\/projections\/DEAD-1\/history/, async () => ({ status: 404, body: 'not found' })],
+    [/api\.prizepicks\.com\/projections\/DEAD-1\/history/, async () => { ppCalls++; return { status: 404, body: 'not found' }; }],
     [/\/sports\/1\/players/, async () => ({ people: [{ id: 5001, fullName: 'Elly De La Cruz' }] })],
     [/people\/5001\/stats.*group=hitting/, async () => log('hitting', [{ date: today, stat: { hits: 2 } }])],
   ]);
@@ -116,8 +119,9 @@ export default async function ({ t }) {
   const graded = (read('pick-log', today) || [])[0];
   t.eq('a pick whose PrizePicks projection is gone still grades', graded.hit, true);
   t.eq('...with the real box-score value', graded.result, 2);
-  t.eq('...marked as settled by the fallback', graded.gradedVia, 'mlb');
-  t.eq('the run reports how many the fallback rescued', out.gradedViaMlbFallback, 1);
+  t.eq('...marked as settled by the MLB box score', graded.gradedVia, 'mlb');
+  t.eq('the run reports which source settled it', out.gradedBySource?.mlb, 1);
+  t.eq('PrizePicks was never called — MLB leads the chain', ppCalls, 0);
   t.eq('...and it counts toward the calibration sample', out.totalGraded, 1);
 
   // ---- attempts are per DAY, not per call --------------------------------

@@ -13,8 +13,9 @@
 //   /api/grade-slips?dry=1      report, don't save
 
 import { getStore } from '@netlify/blobs';
-import { fetchHistory, gradeOne, isCombo, FINAL_AFTER_MS } from './grade-picks.js';
+import { fetchHistory, gradeOne, isCombo, FINAL_AFTER_MS, gradersFor } from './grade-picks.js';
 import { gradeFromMlb } from './mlb-grade.js';
+import { gradeFromEspn } from './espn-grade.js';
 
 // Counted PER CALENDAR DAY, not per call: the cron drains in many passes and
 // every visit to My Slips grades too, so per-call counting burned the whole
@@ -138,16 +139,17 @@ export const handler = async (event) => {
         if (final && (leg.gradeAttempts || 0) >= MAX_ATTEMPTS) { leg.ungradeable = 'gave up'; touched = true; continue; }
         if (Date.now() - start > BUDGET_MS) { timedOut = true; break; }
 
-        // MLB first — api.prizepicks.com 403s every request, so for MLB it is a
-        // guaranteed wasted call. PrizePicks is only consulted when MLB can't
-        // resolve the stat, or for other leagues where it is all we have.
-        const isMlb = String(slip.league || 'mlb').toLowerCase() === 'mlb';
-        let graded = isMlb
-          ? await gradeFromMlb({ player: leg.player, mlbId: leg.mlbId, date: slip.slateDate, stat: leg.stat, line: leg.line })
-          : null;
-        if (!graded) {
-          const history = await fetchHistory(leg.projectionId);
-          graded = gradeOne({ date: slip.slateDate, line: leg.line, loggedAt: slip.createdAt }, history);
+        // Same source chain the pick log uses: the sport's own box score first,
+        // PrizePicks last because it 403s everything we send it.
+        let graded = null;
+        for (const src of gradersFor(slip.league || 'mlb')) {
+          if (src === 'mlb') graded = await gradeFromMlb({ player: leg.player, mlbId: leg.mlbId, date: slip.slateDate, stat: leg.stat, line: leg.line });
+          else if (src === 'espn') graded = await gradeFromEspn({ league: slip.league, player: leg.player, date: slip.slateDate, stat: leg.stat, line: leg.line });
+          else {
+            const history = await fetchHistory(leg.projectionId);
+            graded = gradeOne({ date: slip.slateDate, line: leg.line, loggedAt: slip.createdAt }, history);
+          }
+          if (graded) break;
         }
         if (!graded) {
           if (final && leg.lastAttemptDay !== attemptDay) {

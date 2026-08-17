@@ -17,6 +17,19 @@ import { getStore } from '@netlify/blobs';
 // just go missing, it quietly biases the calibration sample toward whatever was
 // still reachable. MLB's game logs are permanent.
 import { gradeFromMlb } from './mlb-grade.js';
+import { gradeFromEspn, SLUGS as ESPN_LEAGUES } from './espn-grade.js';
+
+// The order sources are tried, per league. The sport's own data leads because
+// it is authoritative and permanent; PrizePicks is LAST because it currently
+// answers 403 to everything we send it — measured, not assumed — so putting it
+// first would spend a guaranteed-failing round trip on every pick. It stays in
+// the chain only so grading resumes by itself if they ever unblock us.
+export function gradersFor(league) {
+  const lg = String(league || '').toLowerCase();
+  if (lg === 'mlb') return ['mlb', 'prizepicks'];
+  if (ESPN_LEAGUES[lg]) return ['espn', 'prizepicks'];
+  return ['prizepicks'];          // tennis, esports, soccer: no free box score wired yet
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -141,11 +154,13 @@ export const handler = async (event) => {
         // 403 — so for MLB it is a guaranteed wasted round trip. MLB's box score
         // is permanent, free and authoritative, so it leads and PrizePicks is
         // only consulted if MLB can't resolve the stat.
-        const isMlb = String(pick.league || '').toLowerCase() === 'mlb';
-        let g = isMlb
-          ? await gradeFromMlb({ player: pick.player, mlbId: pick.mlbId, date: pick.date, stat: pick.stat, line: pick.line })
-          : null;
-        if (!g) g = gradeOne(pick, await fetchHistory(pick.projectionId));
+        let g = null;
+        for (const src of gradersFor(pick.league)) {
+          if (src === 'mlb') g = await gradeFromMlb({ player: pick.player, mlbId: pick.mlbId, date: pick.date, stat: pick.stat, line: pick.line });
+          else if (src === 'espn') g = await gradeFromEspn({ league: pick.league, player: pick.player, date: pick.date, stat: pick.stat, line: pick.line });
+          else g = gradeOne(pick, await fetchHistory(pick.projectionId));
+          if (g) break;
+        }
         return { pick, g };
       }));
       for (const { pick, g } of results) {
@@ -190,7 +205,7 @@ export const handler = async (event) => {
         givenUp: picks.filter((p) => ungraded(p) && !p.ungradeable && p.projectionId && (p.gradeAttempts || 0) >= MAX_ATTEMPTS).length,
         pendingSingles: picks.filter((p) => ungraded(p) && !p.ungradeable).length,
         totalGraded: done.length, hits, misses: done.length - hits,
-        gradedViaMlbFallback: done.filter((p) => p.gradedVia === 'mlb').length,
+        gradedBySource: done.reduce((acc, p) => { const k = p.gradedVia || 'prizepicks'; acc[k] = (acc[k] || 0) + 1; return acc; }, {}),
         hitRate: done.length ? Math.round((hits / done.length) * 100) / 100 : null,
       }, null, 2),
     };
