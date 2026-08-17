@@ -21,8 +21,7 @@ const API = 'https://statsapi.mlb.com/api/v1';
 const INDEX_TTL = 7 * 24 * 60 * 60 * 1000;
 const LOG_TTL = 6 * 60 * 60 * 1000;
 
-const normKey = (s) => String(s || '').toLowerCase().normalize('NFD')
-  .replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+import { normKey, buildIndex, matchPlayer } from './player-match.js';
 
 const store = () => {
   try { return getStore({ name: 'mlb-cache', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN }); }
@@ -54,12 +53,15 @@ async function cached(key, ttl, fn) {
 async function playerIndex(season) {
   return cached(`players-${season}`, INDEX_TTL, async () => {
     const d = await api(`/sports/1/players?season=${season}`);
-    const byName = {};
+    // Indexed for fuzzy-but-safe matching: PrizePicks and MLB disagree about
+    // suffixes ("Luis Robert" vs "Luis Robert Jr.") and short forms ("Nate Lowe"
+    // vs "Nathaniel Lowe"), and an exact-only match silently drops both.
+    const rows = [];
     for (const p of d?.people || []) {
       if (!p.id || !p.fullName) continue;
-      byName[normKey(p.fullName)] = p.id;
+      rows.push([p.fullName, p.id]);
     }
-    return byName;
+    return buildIndex(rows);
   });
 }
 
@@ -85,6 +87,18 @@ const HIT = {
   hitterks: (s) => s.strikeOuts,
   hitsrunsrbis: (s) => num(s.hits) + num(s.runs) + num(s.rbi),
   atbats: (s) => s.atBats,
+  // Props PrizePicks posts that had no mapping, so they never graded.
+  runsrbis: (s) => num(s.runs) + num(s.rbi),
+  rbisruns: (s) => num(s.runs) + num(s.rbi),
+  batterstrikeouts: (s) => s.strikeOuts,
+  strikeoutsbatting: (s) => s.strikeOuts,
+  hitsruns: (s) => num(s.hits) + num(s.runs),
+  hitswalks: (s) => num(s.hits) + num(s.baseOnBalls),
+  walksbatting: (s) => s.baseOnBalls,
+  hitterwalks: (s) => s.baseOnBalls,
+  extrabasehits: (s) => num(s.doubles) + num(s.triples) + num(s.homeRuns),
+  hbp: (s) => s.hitByPitch,
+  hitbypitch: (s) => s.hitByPitch,
 };
 const PIT = {
   pitcherstrikeouts: (s) => s.strikeOuts,
@@ -99,6 +113,16 @@ const PIT = {
   outsrecorded: (s) => s.outs,
   pitchesthrown: (s) => s.numberOfPitches ?? s.pitchesThrown,
   battersfaced: (s) => s.battersFaced,
+  // Same again on the pitching side.
+  pitcherwalks: (s) => s.baseOnBalls,
+  walksissued: (s) => s.baseOnBalls,
+  hitsallowedwalksallowed: (s) => num(s.hits) + num(s.baseOnBalls),
+  inningspitched: (s) => (s.outs != null ? num(s.outs) / 3 : null),
+  pitcherouts: (s) => s.outs,
+  strikeoutspitching: (s) => s.strikeOuts,
+  totalstrikeouts: (s) => s.strikeOuts,
+  homerunsallowed: (s) => s.homeRuns,
+  pitcherearnedruns: (s) => s.earnedRuns,
 };
 
 const num = (v) => { const n = Number(v); return isFinite(n) ? n : 0; };
@@ -132,9 +156,12 @@ export async function gradeFromMlb({ player, mlbId, date, stat, line }) {
 
   const season = String(date).slice(0, 4);
   let id = mlbId;
+  let how = mlbId ? 'id' : null;
   if (!id) {
     const idx = await playerIndex(season);
-    id = idx?.[normKey(player)];
+    const m = matchPlayer(idx, player);
+    id = m?.value;
+    how = m?.how;
   }
   if (!id) return null;
 
@@ -155,7 +182,9 @@ export async function gradeFromMlb({ player, mlbId, date, stat, line }) {
 
   const value = Number(mapped.read(pick.stat));
   if (!isFinite(value)) return null;
-  return { result: value, hit: value > Number(line), source: 'mlb' };
+  // `matchedVia` records how the name was resolved, so a loose match stays
+  // visible in the pick log rather than blending in with the exact ones.
+  return { result: value, hit: value > Number(line), source: 'mlb', matchedVia: how || 'exact' };
 }
 
 /**
@@ -179,7 +208,7 @@ export async function formFor({ player, mlbId, stat, season, before, n = 5 }) {
   let id = mlbId;
   if (!id) {
     const idx = await playerIndex(yr);
-    id = idx?.[normKey(player)];
+    id = matchPlayer(idx, player)?.value;
   }
   if (!id) return null;
 

@@ -13,7 +13,7 @@
 //   /api/grade-slips?dry=1      report, don't save
 
 import { getStore } from '@netlify/blobs';
-import { fetchHistory, gradeOne, isCombo, FINAL_AFTER_MS, gradersFor } from './grade-picks.js';
+import { fetchHistory, gradeOne, isCombo, FINAL_AFTER_MS, gradersFor, GRADER_ERA } from './grade-picks.js';
 import { gradeFromMlb } from './mlb-grade.js';
 import { gradeFromEspn } from './espn-grade.js';
 
@@ -121,18 +121,34 @@ export const handler = async (event) => {
 
       // Before the slate is final, wipe any attempts (and any premature "gave
       // up") so a slip can never be benched over games that hadn't finished.
+      // Legs written off before MLB/ESPN grading existed were judged against a
+      // world that has changed. Restore them once, when the era moves.
+      for (const leg of slip.legs) {
+        if (leg.hit === true || leg.hit === false) continue;
+        if (leg.graderEra !== GRADER_ERA) {
+          if (leg.gradeAttempts) { leg.gradeAttempts = 0; revived++; }
+          if (leg.ungradeable && leg.ungradeable !== 'combo') delete leg.ungradeable;
+          leg.graderEra = GRADER_ERA;
+          touched = true;
+        }
+      }
+
       if (!final || retry) {
         for (const leg of slip.legs) {
           if (leg.hit === true || leg.hit === false) continue;
           if (leg.gradeAttempts) { leg.gradeAttempts = 0; touched = true; revived++; }
           if (leg.ungradeable === 'gave up') { delete leg.ungradeable; touched = true; }
-          if (retry && leg.ungradeable && leg.projectionId && !isCombo(leg)) { delete leg.ungradeable; touched = true; }
+          if (retry && leg.ungradeable && !isCombo(leg)) { delete leg.ungradeable; touched = true; }
         }
       }
 
       for (const leg of slip.legs) {
         if (leg.hit === true || leg.hit === false || leg.ungradeable) continue;
-        if (!leg.projectionId) { leg.ungradeable = 'no projection id'; touched = true; continue; }
+        // A projection id is only needed by the PrizePicks grader. MLB and ESPN
+        // settle a leg from player + date + stat, so writing one off for a
+        // missing id discarded legs those sources could grade outright.
+        const ppOnly = gradersFor(slip.league || 'mlb').every((src) => src === 'prizepicks');
+        if (!leg.projectionId && ppOnly) { leg.ungradeable = 'no projection id'; touched = true; continue; }
         if (isCombo(leg)) { leg.ungradeable = 'combo'; touched = true; continue; }
         // Only tombstone once the slate is FINAL. A miss before that is "the box
         // score isn't up yet", which is not the leg's fault.
@@ -145,7 +161,7 @@ export const handler = async (event) => {
         for (const src of gradersFor(slip.league || 'mlb')) {
           if (src === 'mlb') graded = await gradeFromMlb({ player: leg.player, mlbId: leg.mlbId, date: slip.slateDate, stat: leg.stat, line: leg.line });
           else if (src === 'espn') graded = await gradeFromEspn({ league: slip.league, player: leg.player, date: slip.slateDate, stat: leg.stat, line: leg.line });
-          else {
+          else if (leg.projectionId) {
             const history = await fetchHistory(leg.projectionId);
             graded = gradeOne({ date: slip.slateDate, line: leg.line, loggedAt: slip.createdAt }, history);
           }

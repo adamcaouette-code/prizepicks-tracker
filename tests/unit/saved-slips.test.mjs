@@ -128,9 +128,26 @@ export default async function ({ t }) {
     await grader.handler({ queryStringParameters: {} });
   } finally { mock3.restore(); }
   const g3 = read('saved-slips', s3.id);
-  t.eq('...and is marked ungradeable rather than guessed', g3.legs[0].ungradeable, 'no projection id');
-  t.eq('the slip says so instead of claiming a result', g3.status, 'ungradeable');
-  t.eq('...and counts how many legs it could not look up', g3.ungradeableLegs, 2);
+  // A missing projection id is no longer an instant write-off: MLB and ESPN
+  // settle a leg from player + date + stat and never needed the id. So the leg
+  // stays open while the box-score sources are given a real chance, and the slip
+  // reports pending rather than inventing a result.
+  t.eq('a missing id is no longer an instant write-off', g3.legs[0].ungradeable, undefined);
+  t.eq('the slip claims no result it does not have', g3.status, 'pending');
+
+  // Once the box score has genuinely had its attempts and still cannot find the
+  // player, THEN it is declared ungradeable — honestly, and only then.
+  for (const leg of g3.legs) { leg.gradeAttempts = 9; leg.lastAttemptDay = '2020-01-01'; leg.graderEra = 'espn+mlb-2026-08'; }
+  seed('saved-slips', s3.id, g3);
+  const mock3b = mockFetch([]);
+  try {
+    const grader = await loadFn('grade-slips.js');
+    await grader.handler({ queryStringParameters: {} });
+  } finally { mock3b.restore(); }
+  const g3b = read('saved-slips', s3.id);
+  t.eq('a leg the box score could never find is finally marked ungradeable', g3b.legs[0].ungradeable, 'gave up');
+  t.eq('...and the slip says so instead of claiming a result', g3b.status, 'ungradeable');
+  t.eq('...and counts how many legs it could not look up', g3b.ungradeableLegs, 2);
 
   // ---------- one leg gradeable, one not -----------------------------------
   // A missing id must never poison the legs that CAN be settled, and when the
@@ -153,7 +170,7 @@ export default async function ({ t }) {
   } finally { mock4.restore(); }
   const g4 = read('saved-slips', decided.id);
   t.eq('the gradeable leg still settles despite its neighbour', g4.legs[0].hit, false);
-  t.eq('the unknown leg is flagged, not guessed', g4.legs[1].ungradeable, 'no projection id');
+  t.eq('the unknown leg is never guessed at', g4.legs[1].hit, null);
   t.eq('a confirmed miss loses a Power card even with an unknown leg', g4.status, 'lost');
 
   reset();
@@ -171,7 +188,7 @@ export default async function ({ t }) {
   } finally { mock5.restore(); }
   const g5 = read('saved-slips', undecided.id);
   t.eq('the known leg is recorded as a hit', g5.legs[0].hit, true);
-  t.eq('but a card that hinges on the unknown leg is NOT called a win', g5.status, 'ungradeable');
+  t.eq('but a card that hinges on the unknown leg is NOT called a win', g5.status, 'pending');
   t.eq('...and no payout is invented for it', g5.payout, null);
 
   // ---------- retention -----------------------------------------------------

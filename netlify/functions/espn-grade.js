@@ -35,8 +35,7 @@ const SLUGS = {
   college_basketball: 'basketball/mens-college-basketball',
 };
 
-const normKey = (s) => String(s || '').toLowerCase().normalize('NFD')
-  .replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+import { normKey, buildIndex, matchPlayer } from './player-match.js';
 
 const store = () => {
   try { return getStore({ name: 'espn-cache', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN }); }
@@ -107,6 +106,26 @@ function readStat(row, keyName, part) {
 
 const N = (v) => (isFinite(Number(v)) ? Number(v) : 0);
 
+// A combo stat built as N(a) + N(b) hides its own breakage: if ESPN stops
+// sending `rebounds`, N(null) is 0 and Pts+Rebs+Asts quietly grades as Pts+Asts
+// — a confident WRONG result, which is the one outcome worse than not grading.
+//
+// The fix needs to tell two cases apart:
+//   key missing from the whole day's box score  -> the mapping is broken, refuse
+//   key present that day but not on this row    -> the player genuinely had none
+//                                                  of it (a RB with no catches),
+//                                                  so it is a real zero
+// dayIndex records the union of every key it saw, which makes that distinction
+// available here.
+function sum(row, keys) {
+  let total = 0;
+  for (const k of keys) {
+    if (row.schema && !row.schema.has(k)) return null;   // never sent: refuse
+    total += N(readStat(row, k));
+  }
+  return total;
+}
+
 // PrizePicks stat -> how to read it from an ESPN row. Only exact mappings; a
 // guess would write a false result into the calibration log, which is worse than
 // leaving a pick ungraded.
@@ -124,13 +143,13 @@ const MAPS = {
     fgmade: (r) => readStat(r, 'fieldGoalsMade-fieldGoalsAttempted', 0),
     fieldgoalsmade: (r) => readStat(r, 'fieldGoalsMade-fieldGoalsAttempted', 0),
     freethrowsmade: (r) => readStat(r, 'freeThrowsMade-freeThrowsAttempted', 0),
-    ptsrebsasts: (r) => N(readStat(r, 'points')) + N(readStat(r, 'rebounds')) + N(readStat(r, 'assists')),
-    pra: (r) => N(readStat(r, 'points')) + N(readStat(r, 'rebounds')) + N(readStat(r, 'assists')),
-    ptsrebs: (r) => N(readStat(r, 'points')) + N(readStat(r, 'rebounds')),
-    ptsasts: (r) => N(readStat(r, 'points')) + N(readStat(r, 'assists')),
-    rebsasts: (r) => N(readStat(r, 'rebounds')) + N(readStat(r, 'assists')),
+    ptsrebsasts: (r) => sum(r, ['points', 'rebounds', 'assists']),
+    pra: (r) => sum(r, ['points', 'rebounds', 'assists']),
+    ptsrebs: (r) => sum(r, ['points', 'rebounds']),
+    ptsasts: (r) => sum(r, ['points', 'assists']),
+    rebsasts: (r) => sum(r, ['rebounds', 'assists']),
     blockedshots: (r) => readStat(r, 'blocks'),
-    blksstls: (r) => N(readStat(r, 'blocks')) + N(readStat(r, 'steals')),
+    blksstls: (r) => sum(r, ['blocks', 'steals']),
     // Straight off the box score — the probe found these sitting unread while
     // the props for them were going ungraded. Direct key reads, no derivation.
     offensiverebounds: (r) => readStat(r, 'offensiveRebounds'),
@@ -162,20 +181,52 @@ const MAPS = {
     receivingyards: (r) => readStat(r, 'receivingYards'),
     recyards: (r) => readStat(r, 'receivingYards'),
     receivingtds: (r) => readStat(r, 'receivingTouchdowns'),
-    rushrecyards: (r) => N(readStat(r, 'rushingYards')) + N(readStat(r, 'receivingYards')),
-    rushingreceivingyards: (r) => N(readStat(r, 'rushingYards')) + N(readStat(r, 'receivingYards')),
+    rushrecyards: (r) => sum(r, ['rushingYards', 'receivingYards']),
+    rushingreceivingyards: (r) => sum(r, ['rushingYards', 'receivingYards']),
     sacks: (r) => readStat(r, 'sacks'),
     tackles: (r) => readStat(r, 'totalTackles'),
+    // Props PrizePicks posts that had no mapping and so never graded. An
+    // unmapped stat is a guaranteed miss; a mapping against a key ESPN does not
+    // send simply refuses (readStat returns null), and ?mode=probe names it.
+    passrushyards: (r) => sum(r, ['passingYards', 'rushingYards']),
+    passingrushingyards: (r) => sum(r, ['passingYards', 'rushingYards']),
+    rushrectds: (r) => sum(r, ['rushingTouchdowns', 'receivingTouchdowns']),
+    receivingtargets: (r) => readStat(r, 'receivingTargets'),
+    targets: (r) => readStat(r, 'receivingTargets'),
+    longestrush: (r) => readStat(r, 'longRushing'),
+    longrush: (r) => readStat(r, 'longRushing'),
+    longestreception: (r) => readStat(r, 'longReception'),
+    longreception: (r) => readStat(r, 'longReception'),
+    solotackles: (r) => readStat(r, 'soloTackles'),
+    tacklesassists: (r) => readStat(r, 'totalTackles'),
+    tacklesforloss: (r) => readStat(r, 'tacklesForLoss'),
+    passesdefended: (r) => readStat(r, 'passesDefended'),
+    fumbleslost: (r) => readStat(r, 'fumblesLost'),
+    kickingpoints: (r) => readStat(r, 'totalKickingPoints'),
+    fgmade: (r) => readStat(r, 'fieldGoalsMade/fieldGoalAttempts', 0),
+    fieldgoalsmade: (r) => readStat(r, 'fieldGoalsMade/fieldGoalAttempts', 0),
+    extrapointsmade: (r) => readStat(r, 'extraPointsMade/extraPointAttempts', 0),
+    punts: (r) => readStat(r, 'punts'),
   },
   hockey: {
     goals: (r) => readStat(r, 'goals'),
     assists: (r) => readStat(r, 'assists'),
-    points: (r) => N(readStat(r, 'goals')) + N(readStat(r, 'assists')),
+    points: (r) => sum(r, ['goals', 'assists']),
     shotsongoal: (r) => readStat(r, 'shotsTotal'),
     shots: (r) => readStat(r, 'shotsTotal'),
     goaliesaves: (r) => readStat(r, 'saves'),
     saves: (r) => readStat(r, 'saves'),
     blockedshots: (r) => readStat(r, 'blockedShots'),
+    hits: (r) => readStat(r, 'hits'),
+    penaltyminutes: (r) => readStat(r, 'penaltyMinutes'),
+    pim: (r) => readStat(r, 'penaltyMinutes'),
+    powerplaypoints: (r) => readStat(r, 'powerPlayPoints'),
+    faceoffswon: (r) => readStat(r, 'faceoffsWon'),
+    timeonice: (r) => readStat(r, 'timeOnIce'),
+    goalsagainst: (r) => readStat(r, 'goalsAgainst'),
+    shotsagainst: (r) => readStat(r, 'shotsAgainst'),
+    goalsassists: (r) => sum(r, ['goals', 'assists']),
+    shotsongoal: (r) => readStat(r, 'shotsTotal'),
   },
 };
 
@@ -199,7 +250,7 @@ async function dayIndex(league, date) {
   // A settled slate never changes, so it caches for hours. A slate with games
   // still running gets a short TTL so the rest of them land promptly.
   const ttl = (d) => (d?.unfinished ? LIVE_TTL : DAY_TTL);
-  return cached(`box-${league}-${date}`, ttl, async () => {
+  const idx = await cached(`box-${league}-${date}`, ttl, async () => {
     const sb = await api(`${SITE}/${slug}/scoreboard?dates=${ymd}`);
     const all = (sb?.events || []).filter((e) => e?.id);
     // Only completed games. An in-progress game would otherwise be indexed with
@@ -210,6 +261,7 @@ async function dayIndex(league, date) {
     if (!events.length) return { players: {}, games: 0, unfinished };
 
     const players = {};
+    const allKeys = new Set();
     await mapLimit(events, 4, async (id) => {
       const sum = await api(`${SITE}/${slug}/summary?event=${id}`);
       for (const team of sum?.boxscore?.players || []) {
@@ -217,6 +269,7 @@ async function dayIndex(league, date) {
           const names = group.keys || group.labels || [];
           const index = {};
           names.forEach((k, i) => { index[k] = i; });
+          for (const k of names) allKeys.add(k);
           for (const a of group.athletes || []) {
             const name = a?.athlete?.displayName || a?.athlete?.fullName;
             if (!name) continue;
@@ -235,8 +288,14 @@ async function dayIndex(league, date) {
         }
       }
     });
-    return { players, games: events.length, unfinished };
+    // Blobs serialise, so the schema is stored as an array and rehydrated below.
+    return { players, games: events.length, unfinished, schema: [...allKeys] };
   });
+  if (idx?.players && idx.schema) {
+    const schema = new Set(idx.schema);
+    for (const row of Object.values(idx.players)) row.schema = schema;
+  }
+  return idx;
 }
 
 /**
@@ -255,11 +314,15 @@ export async function gradeFromEspn({ league, player, date, stat, line }) {
   const shift = (n) => new Date(Date.parse(`${date}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
   for (const d of [date, shift(1), shift(-1)]) {
     const idx = await dayIndex(league, d);
-    const row = idx?.players?.[normKey(player)];
-    if (!row) continue;
-    const value = read(row);
+    if (!idx?.players) continue;
+    // Exact name first, then the safe widening steps — ESPN and PrizePicks
+    // disagree about suffixes and short first names often enough that an
+    // exact-only match drops a real share of otherwise gradeable picks.
+    const m = matchPlayer(buildIndex(Object.values(idx.players).map((r) => [r.name, r])), player);
+    if (!m) continue;
+    const value = read(m.value);
     if (value == null || !isFinite(Number(value))) continue;
-    return { result: Number(value), hit: Number(value) > Number(line), source: 'espn' };
+    return { result: Number(value), hit: Number(value) > Number(line), source: 'espn', matchedVia: m.how };
   }
   return null;
 }

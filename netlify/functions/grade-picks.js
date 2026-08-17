@@ -38,6 +38,10 @@ const CONCURRENCY = 3;
 // Attempts are counted PER CALENDAR DAY, not per call — see below. Three days of
 // failing is a real give-up; three calls is not.
 const MAX_ATTEMPTS = 3;
+// Bump this whenever a new grading SOURCE is added. Picks that gave up under an
+// older era get their attempts restored once, so a backlog abandoned when
+// PrizePicks was the only option is retried against the sources that now exist.
+export const GRADER_ERA = 'espn+mlb-2026-08';
 const FINAL_AFTER_MS = 36 * 3600 * 1000; // a day is "final" 36h after its date
 
 const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
@@ -138,7 +142,27 @@ export const handler = async (event) => {
       }
     }
 
-    const gradeable = (p) => ungraded(p) && !p.ungradeable && p.projectionId && (dayFinal ? (p.gradeAttempts || 0) < MAX_ATTEMPTS : true);
+    // A projection id is only needed by the PrizePicks grader. MLB and ESPN key
+    // off player + date + stat, so demanding an id here excluded picks those
+    // sources could settle perfectly well — including every pick logged without
+    // one. Require it only when PrizePicks is the sole source for the league.
+    // A pick benched when PrizePicks was the only source was benched against a
+    // world that no longer exists — MLB and ESPN grading landed afterwards. Give
+    // every such pick its attempts back, once, when the era changes. Without
+    // this the entire pre-existing backlog stays permanently ungraded no matter
+    // how good the new sources are.
+    let revived = 0;
+    for (const p of picks) {
+      if (ungraded(p) && !p.ungradeable && p.graderEra !== GRADER_ERA) {
+        if (p.gradeAttempts) { p.gradeAttempts = 0; revived++; }
+        p.graderEra = GRADER_ERA;
+      }
+    }
+
+    const needsPpId = (p) => gradersFor(p.league).every((src) => src === 'prizepicks');
+    const gradeable = (p) => ungraded(p) && !p.ungradeable
+      && (p.projectionId || !needsPpId(p))
+      && (dayFinal ? (p.gradeAttempts || 0) < MAX_ATTEMPTS : true);
     const todo = picks.filter(gradeable);
 
     const start = Date.now();
@@ -165,7 +189,16 @@ export const handler = async (event) => {
       }));
       for (const { pick, g } of results) {
         processed++;
-        if (g) { pick.result = g.result; pick.hit = g.hit; pick.gradedAt = new Date().toISOString(); pick.gradedVia = g.source || 'prizepicks'; graded++; }
+        if (g) {
+          pick.result = g.result; pick.hit = g.hit;
+          pick.gradedAt = new Date().toISOString();
+          pick.gradedVia = g.source || 'prizepicks';
+          // How the player name was resolved. An exact match needs no scrutiny;
+          // a suffix or initial match is right far more often than not but stays
+          // labelled so it can be audited rather than assumed.
+          if (g.matchedVia && g.matchedVia !== 'exact') pick.matchedVia = g.matchedVia;
+          graded++;
+        }
         else {
           // ONE attempt per day, however many times the grader runs. grade-cron
           // drains with up to 15 passes per firing, and this used to increment on
@@ -185,7 +218,7 @@ export const handler = async (event) => {
     }
 
     const remaining = todo.length - processed;
-    if (!dry && (processed > 0 || combosMarked > 0 || reset > 0 || repaired > 0)) await store.setJSON(date, picks);
+    if (!dry && (processed > 0 || combosMarked > 0 || reset > 0 || repaired > 0 || revived > 0)) await store.setJSON(date, picks);
 
     const done = picks.filter((p) => p.hit === true || p.hit === false);
     const hits = done.filter((p) => p.hit === true).length;
@@ -195,6 +228,7 @@ export const handler = async (event) => {
       body: JSON.stringify({
         date, dry, retry, dayFinal,
         newlyGraded: graded,
+        revived,
         stillPending,
         remaining,
         timedOut,
