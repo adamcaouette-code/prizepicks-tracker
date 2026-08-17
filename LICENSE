@@ -1,0 +1,45 @@
+Copyright (c) 2026 Adam Caouette
+All Rights Reserved.
+
+This software and associated documentation files (the "Software"), including
+but not limited to the AtomBets / PrizePicks Tracker application, its source
+code, user interface, data aggregation logic, and all related materials, are
+the proprietary and confidential property of Adam Caouette ("Owner").
+
+No license, right, or interest in the Software is granted to any person or
+entity except as expressly stated below.
+
+1. NO PERMISSION GRANTED
+   Except as set forth in Section 2, no part of the Software may be copied,
+   reproduced, modified, merged, published, distributed, sublicensed, sold,
+   transferred, publicly displayed, or used to create derivative works,
+   in whole or in part, in any form or by any means, without the prior
+   written permission of the Owner.
+
+2. VIEWING FOR EVALUATION ONLY
+   Access to this repository (whether public or shared privately) is
+   granted solely for the purpose of evaluating the Software, including
+   for potential acquisition, investment, or licensing discussions with
+   the Owner. Any such access does not constitute a license to use, copy,
+   deploy, or exploit the Software for any other purpose.
+
+3. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE OWNER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+   LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+
+4. THIRD-PARTY DATA AND TRADEMARKS
+   This Software interacts with third-party data sources and services
+   (including but not limited to PrizePicks, DraftKings, ESPN, Kalshi,
+   and The Odds API). All trademarks, service marks, and data belong to
+   their respective owners. This license does not grant any rights to
+   such third-party marks or data beyond what those parties independently
+   permit.
+
+5. CONTACT
+   For licensing, acquisition, or commercial use inquiries, contact:
+   Adam Caouette — adam.caouette@icloud.com
+
+All rights not expressly granted herein are reserved by the Owner.
