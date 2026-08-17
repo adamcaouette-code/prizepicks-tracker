@@ -130,6 +130,47 @@ export default async function ({ t }) {
   t.eq('PrizePicks was never called — it is last in the chain and ESPN answered', ppCalls, 0);
   t.eq('the run reports which sources did the grading', out.gradedBySource?.espn, 1);
 
+  // ---- the REAL WNBA box score, captured from a live probe ----------------
+  // Copied verbatim from /api/espn-grade?mode=probe&league=wnba on a played
+  // game (Lynx/Storm, 2026-08-15). Note the key ORDER is nothing like the
+  // fixture above — points sits at index 1, not 13. Lookups go by key name, so
+  // order is irrelevant; this pins that, because a positional assumption would
+  // have read minutes as points and graded confidently off the wrong column.
+  const REAL_KEYS = ['minutes', 'points', 'fieldGoalsMade-fieldGoalsAttempted',
+    'threePointFieldGoalsMade-threePointFieldGoalsAttempted', 'freeThrowsMade-freeThrowsAttempted',
+    'rebounds', 'assists', 'turnovers', 'steals', 'blocks',
+    'offensiveRebounds', 'defensiveRebounds', 'fouls', 'plusMinus'];
+  //                    MIN  PTS  FG      3PT     FT    REB AST TO STL BLK OREB DREB PF  +/-
+  const carleton = ['29', '14', '5-13', '4-10', '0-0', '9', '2', '0', '0', '0', '2', '7', '3', '-7'];
+  reset();
+  const realBox = mockFetch([
+    [/scoreboard/, async () => ({ events: [ev('401857144', '2026-08-15T23:00Z')] })],
+    [/summary/, async () => ({ boxscore: { players: [{ statistics: [{ keys: REAL_KEYS,
+      athletes: [{ athlete: { displayName: 'Bridget Carleton' }, stats: carleton }] }] }] } })],
+  ]);
+  const real = (stat, ln) => mod.gradeFromEspn({ league: 'wnba', player: 'Bridget Carleton', date: '2026-08-15', stat, line: ln });
+  let rPts, rMin, rThree, rOreb, rDreb, rFouls, rPra, rFga;
+  try {
+    rPts = await real('Points', 10.5);
+    rMin = await real('Minutes', 25.5);
+    rThree = await real('3-PT Made', 3.5);
+    rOreb = await real('Offensive Rebounds', 1.5);
+    rDreb = await real('Defensive Rebounds', 5.5);
+    rFouls = await real('Personal Fouls', 2.5);
+    rPra = await real('Pts+Rebs+Asts', 24.5);
+    rFga = await real('FG Attempted', 12.5);
+  } finally { realBox.restore(); }
+
+  t.eq('points read by NAME, not position — index 1 here, 13 in the other shape', rPts?.result, 14);
+  t.eq('...and minutes is not mistaken for it', rMin?.result, 29);
+  t.eq('a made-attempted pair still splits on real data', rThree?.result, 4);
+  t.eq('offensive rebounds now grade', rOreb?.result, 2);
+  t.eq('defensive rebounds now grade', rDreb?.result, 7);
+  t.eq('personal fouls now grade', rFouls?.result, 3);
+  t.eq('the attempted half of a pair is readable too', rFga?.result, 13);
+  t.eq('a combo adds up off the real row', rPra?.result, 25);   // 14 + 9 + 2
+  t.eq('...and grades the over', rPra?.hit, true);
+
   // ---- the probe checks the mapping instead of asking a human to eyeball it --
   // ESPN's key names are the one thing that can't be verified from a build
   // environment, and a mapped stat whose key is absent grades NOTHING while

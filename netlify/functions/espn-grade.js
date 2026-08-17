@@ -131,6 +131,20 @@ const MAPS = {
     rebsasts: (r) => N(readStat(r, 'rebounds')) + N(readStat(r, 'assists')),
     blockedshots: (r) => readStat(r, 'blocks'),
     blksstls: (r) => N(readStat(r, 'blocks')) + N(readStat(r, 'steals')),
+    // Straight off the box score — the probe found these sitting unread while
+    // the props for them were going ungraded. Direct key reads, no derivation.
+    offensiverebounds: (r) => readStat(r, 'offensiveRebounds'),
+    defensiverebounds: (r) => readStat(r, 'defensiveRebounds'),
+    personalfouls: (r) => readStat(r, 'fouls'),
+    fouls: (r) => readStat(r, 'fouls'),
+    minutes: (r) => readStat(r, 'minutes'),
+    minutesplayed: (r) => readStat(r, 'minutes'),
+    // The attempted halves of the pairs we already split for the made halves.
+    fgattempted: (r) => readStat(r, 'fieldGoalsMade-fieldGoalsAttempted', 1),
+    fieldgoalsattempted: (r) => readStat(r, 'fieldGoalsMade-fieldGoalsAttempted', 1),
+    threepointersattempted: (r) => readStat(r, 'threePointFieldGoalsMade-threePointFieldGoalsAttempted', 1),
+    '3ptattempted': (r) => readStat(r, 'threePointFieldGoalsMade-threePointFieldGoalsAttempted', 1),
+    freethrowsattempted: (r) => readStat(r, 'freeThrowsMade-freeThrowsAttempted', 1),
   },
   football: {
     passyards: (r) => readStat(r, 'passingYards'),
