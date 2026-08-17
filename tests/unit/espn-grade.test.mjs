@@ -121,4 +121,71 @@ export default async function ({ t }) {
   t.eq('...recorded as ESPN-sourced', row.gradedVia, 'espn');
   t.eq('PrizePicks was never called — it is last in the chain and ESPN answered', ppCalls, 0);
   t.eq('the run reports which sources did the grading', out.gradedBySource?.espn, 1);
+
+  // ---- the probe checks the mapping instead of asking a human to eyeball it --
+  // ESPN's key names are the one thing that can't be verified from a build
+  // environment, and a mapped stat whose key is absent grades NOTHING while
+  // everything around it looks healthy. So the probe does the diff itself.
+  t.ok('every mapped stat declares the keys it depends on',
+    mod.keysNeeded('basketball').points.includes('points'));
+  t.ok('a combo stat declares ALL its parts, so a half-broken combo is catchable',
+    ['points', 'rebounds', 'assists'].every((k) => mod.keysNeeded('basketball').pra.includes(k)));
+  t.ok('a made-attempted stat declares the paired key it splits',
+    mod.keysNeeded('basketball').fgmade.includes('fieldGoalsMade-fieldGoalsAttempted'));
+
+  reset();
+  const good = mockFetch([
+    [/scoreboard/, async () => ({ events: [{ id: '77', date: '2026-08-14T23:00Z' }] })],
+    [/summary/, async () => nbaBox('Some Guard', line)],
+  ]);
+  let okProbe;
+  try {
+    okProbe = JSON.parse((await mod.handler({ queryStringParameters: { mode: 'probe', league: 'nba', date: '2026-08-14' } })).body);
+  } finally { good.restore(); }
+  t.ok('a healthy mapping is reported as verified, not left to interpretation',
+    /verified/.test(okProbe.verdict), okProbe.verdict);
+  t.eq('...with nothing listed as broken', okProbe.brokenStats, undefined);
+  t.ok('...and names the stats it confirmed', okProbe.verifiedStats.includes('points'));
+
+  // ESPN renames a key: the probe must SAY so rather than report a clean bill.
+  reset();
+  const renamed = NBA_KEYS.map((k) => (k === 'points' ? 'pts' : k));
+  const drift = mockFetch([
+    [/scoreboard/, async () => ({ events: [{ id: '78', date: '2026-08-14T23:00Z' }] })],
+    [/summary/, async () => ({ boxscore: { players: [{ statistics: [{ name: 'starters', keys: renamed,
+      athletes: [{ athlete: { displayName: 'Some Guard' }, stats: line }] }] }] } })],
+  ]);
+  let bad;
+  try {
+    bad = JSON.parse((await mod.handler({ queryStringParameters: { mode: 'probe', league: 'nba', date: '2026-08-14' } })).body);
+  } finally { drift.restore(); }
+  t.ok('a renamed ESPN key is caught and called out', /grade NOTHING/.test(bad.verdict), bad.verdict);
+  t.ok('...naming the stat that broke', !!bad.brokenStats?.points);
+  t.ok('...and the exact key ESPN stopped sending', bad.brokenStats.points.missing.includes('points'));
+  t.ok('...including combos that silently lost a part', !!bad.brokenStats?.pra);
+  t.ok('...while stats that still work are not flagged', bad.verifiedStats.includes('assists'));
+  t.ok('...and the key ESPN sent instead is surfaced as a candidate',
+    bad.unmappedEspnKeys.includes('pts'));
+
+  // ---- the offseason is a calendar fact, not a failure --------------------
+  // Probing NBA in August returns zero games. Widening the window finds the
+  // most recent real slate instead of reporting an empty result.
+  reset();
+  let ranged = false;
+  const off = mockFetch([
+    [/scoreboard/, async (url) => {
+      if (/dates=\d{8}-\d{8}/.test(url)) { ranged = true; return { events: [
+        { id: '10', date: '2026-05-01T23:00Z' }, { id: '11', date: '2026-06-19T23:00Z' }] }; }
+      return { events: [] };   // nothing on the requested August day
+    }],
+    [/summary/, async () => nbaBox('Some Guard', line)],
+  ]);
+  let season;
+  try {
+    season = JSON.parse((await mod.handler({ queryStringParameters: { mode: 'probe', league: 'nba', date: '2026-08-17' } })).body);
+  } finally { off.restore(); }
+  t.ok('an empty day widens the search rather than giving up', ranged);
+  t.eq('...landing on the most recent slate, not the oldest in the window', season.gameUsed?.date, '2026-06-19');
+  t.ok('...and says plainly why the date moved', /offseason|most recent/.test(season.note || ''), season.note);
+  t.ok('...then still verifies the mapping off that game', /verified/.test(season.verdict));
 }

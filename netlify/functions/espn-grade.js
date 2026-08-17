@@ -223,6 +223,46 @@ export async function gradeFromEspn({ league, player, date, stat, line }) {
   return null;
 }
 
+// ---- which ESPN keys the mapping actually depends on -------------------------
+// Rather than eyeballing `keys` against the table by hand, run every mapper
+// against a row whose index records the lookups. Each mapper then reports the
+// exact key names it needs, and those can be diffed against what ESPN really
+// returned. Combos read several keys, so this catches a stat that half-works.
+export function keysNeeded(sport) {
+  const table = MAPS[sport];
+  if (!table) return {};
+  const out = {};
+  for (const [stat, fn] of Object.entries(table)) {
+    const seen = [];
+    const row = {
+      stats: [],
+      index: new Proxy({}, { get: (_t, k) => { if (typeof k === 'string') seen.push(k); return undefined; } }),
+    };
+    try { fn(row); } catch {}
+    out[stat] = [...new Set(seen)];
+  }
+  return out;
+}
+
+// The most recent day this league actually played. ESPN accepts a date RANGE,
+// so an offseason probe widens the window instead of returning nothing useful —
+// asking an August scoreboard for NBA games is a calendar problem, not a bug.
+async function latestGameDay(slug, from) {
+  const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, '');
+  const end = new Date(Date.parse(`${from}T00:00:00Z`));
+  for (const back of [0, 45, 180, 400]) {
+    const start = new Date(end.getTime() - back * 86400000);
+    const range = back === 0 ? ymd(end) : `${ymd(start)}-${ymd(end)}`;
+    const sb = await api(`${SITE}/${slug}/scoreboard?dates=${range}`);
+    const events = (sb?.events || []).filter((e) => e?.id);
+    if (!events.length) continue;
+    events.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    const hit = events[0];
+    return { id: hit.id, date: String(hit.date || '').slice(0, 10), searched: range, count: events.length };
+  }
+  return null;
+}
+
 export { resolveStat, dayIndex, SLUGS };
 
 export const handler = async (event) => {
@@ -231,21 +271,49 @@ export const handler = async (event) => {
     if (q.mode === 'probe') {
       // Raw stat KEYS a real game returns, which is the thing most likely to
       // differ from what the mapping above assumes.
-      const league = q.league || 'nba';
+      const league = String(q.league || 'nba').toLowerCase();
       const slug = SLUGS[league];
       if (!slug) return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ error: `no ESPN slug for ${league}`, leagues: Object.keys(SLUGS) }) };
-      const ymd = String(q.date || new Date(Date.now() - 86400000).toISOString().slice(0, 10)).replace(/-/g, '');
-      const sb = await api(`${SITE}/${slug}/scoreboard?dates=${ymd}`);
-      const first = sb?.events?.[0]?.id;
-      const sum = first ? await api(`${SITE}/${slug}/summary?event=${first}`) : null;
+
+      const from = q.date || new Date().toISOString().slice(0, 10);
+      const found = await latestGameDay(slug, from);
+      if (!found) {
+        return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
+          league, searchedBack: '400 days', games: 0,
+          verdict: 'ESPN returned no games for this league in the last 400 days — that is a league/slug problem, not an offseason one',
+        }, null, 2) };
+      }
+
+      const sum = await api(`${SITE}/${slug}/summary?event=${found.id}`);
       const groups = (sum?.boxscore?.players || []).flatMap((t) => (t.statistics || []).map((g) => ({
         group: g.name || g.type || null, keys: g.keys || null, labels: g.labels || null,
         sampleAthlete: g.athletes?.[0]?.athlete?.displayName || null,
         sampleStats: g.athletes?.[0]?.stats || null,
       })));
+
+      // The actual check: every key the mapping reaches for, against every key
+      // ESPN really sent. A mapped stat missing its key grades NOTHING, silently.
+      const actual = new Set(groups.flatMap((g) => g.keys || g.labels || []));
+      const needs = keysNeeded(sportOf(league));
+      const broken = {}, working = [];
+      for (const [stat, keys] of Object.entries(needs)) {
+        const missing = keys.filter((k) => !actual.has(k));
+        if (missing.length) broken[stat] = { missing, needs: keys };
+        else working.push(stat);
+      }
+      const nBroken = Object.keys(broken).length;
+
       return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
-        league, date: q.date, games: sb?.events?.length || 0, groups,
-        note: 'compare `keys` against the mapping in espn-grade.js',
+        league,
+        gameUsed: { date: found.date, eventId: found.id },
+        ...(found.date !== from ? { note: `no games on ${from} — used the most recent slate instead (offseason or dark day)` } : {}),
+        verdict: !actual.size ? 'ESPN served the game but no stat keys — the box score shape has changed'
+          : nBroken === 0 ? `mapping verified against a real box score: all ${working.length} mapped stats resolve`
+          : `${nBroken} of ${working.length + nBroken} mapped stats reference keys ESPN did not send — those grade NOTHING until fixed`,
+        brokenStats: nBroken ? broken : undefined,
+        verifiedStats: working,
+        unmappedEspnKeys: [...actual].filter((k) => !Object.values(needs).flat().includes(k)),
+        groups,
       }, null, 2) };
     }
     if (!q.player) {
