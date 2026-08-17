@@ -57,12 +57,16 @@ const SLUGS = {
   bundesliga: 'soccer/ger.1',
   ligue_1: 'soccer/fra.1',
 
+  world_cup: 'soccer/fifa.world',
+  fifa_world_cup: 'soccer/fifa.world',
+
   tennis: 'tennis/atp',
   atp: 'tennis/atp',
   wta: 'tennis/wta',
 };
 
 import { normKey, buildIndex, matchPlayer } from './player-match.js';
+import { fantasyKind, basketballFantasy } from './fantasy-score.js';
 
 const store = () => {
   try { return getStore({ name: 'espn-cache', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN }); }
@@ -191,6 +195,15 @@ const MAPS = {
     threepointersattempted: (r) => readStat(r, 'threePointFieldGoalsMade-threePointFieldGoalsAttempted', 1),
     '3ptattempted': (r) => readStat(r, 'threePointFieldGoalsMade-threePointFieldGoalsAttempted', 1),
     freethrowsattempted: (r) => readStat(r, 'freeThrowsMade-freeThrowsAttempted', 1),
+    // Weighted formula, not a column. Every component must be present — a
+    // missing turnover count would silently inflate the score.
+    fantasyscore: (r) => (r.schema && ['points', 'rebounds', 'assists', 'steals', 'blocks', 'turnovers'].some((k) => !r.schema.has(k))
+      ? null
+      : basketballFantasy({
+        points: readStat(r, 'points'), rebounds: readStat(r, 'rebounds'),
+        assists: readStat(r, 'assists'), steals: readStat(r, 'steals'),
+        blocks: readStat(r, 'blocks'), turnovers: readStat(r, 'turnovers'),
+      })),
   },
   football: {
     passyards: (r) => readStat(r, 'passingYards'),

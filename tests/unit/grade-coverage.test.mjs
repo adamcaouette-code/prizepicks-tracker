@@ -116,7 +116,7 @@ export default async function ({ t }) {
     'Pitcher Walks', 'Home Runs Allowed', 'Innings Pitched', 'Hits+Runs']) {
     t.ok(`MLB "${stat}" now resolves`, !!mlb.resolveStat(stat));
   }
-  t.eq('a stat with no honest mapping still refuses', espn.resolveStat('nba', 'Fantasy Score'), null);
+  t.eq('a stat with no honest mapping still refuses', espn.resolveStat('nba', 'Dunks'), null);
 
   // ---- 4. picks excluded for having no projection id ----------------------
   // The gate required a PrizePicks id before ANY grader ran, but MLB and ESPN
@@ -182,4 +182,46 @@ export default async function ({ t }) {
     audit.isPeriodProp({ league: 'nba1h', stat: 'Points' }));
   t.ok('...and a normal prop is not mistaken for one',
     !audit.isPeriodProp({ league: 'nba', stat: 'Points' }));
+
+  // ---- 7. Fantasy Score: the single biggest hole ------------------------
+  // 367 of 1060 logged picks — 35% of everything — were Fantasy Score props
+  // that no mapping could touch. It is a weighted FORMULA, not a column, so a
+  // wrong weight grades hundreds of picks confidently wrong.
+  const fs = await loadFn('fantasy-score.js');
+  t.eq('basketball fantasy score follows the standard weights',
+    fs.basketballFantasy({ points: 30, rebounds: 10, assists: 5, steals: 2, blocks: 1, turnovers: 3 }), 55.5);
+  t.eq('...turnovers subtract',
+    fs.basketballFantasy({ points: 10, rebounds: 0, assists: 0, steals: 0, blocks: 0, turnovers: 4 }), 6);
+  t.eq('a missing component REFUSES rather than treating it as zero',
+    fs.basketballFantasy({ points: 30, rebounds: 10, assists: 5, steals: 2, blocks: 1 }), null);
+  t.eq('...because that would silently inflate every score',
+    fs.basketballFantasy({ points: 30, rebounds: null, assists: 5, steals: 2, blocks: 1, turnovers: 3 }), null);
+
+  t.eq('a hitter prop routes to the hitter formula', fs.fantasyKind('mlb', 'Hitter Fantasy Score'), 'mlb-hitter');
+  t.eq('a pitcher prop routes to the pitcher formula', fs.fantasyKind('mlb', 'Pitcher Fantasy Score'), 'mlb-pitcher');
+  t.eq('a basketball prop routes to basketball', fs.fantasyKind('wnba', 'Fantasy Score'), 'basketball');
+  t.eq('tennis fantasy has no formula wired and says so', fs.fantasyKind('tennis', 'Fantasy Score'), null);
+  t.eq('a non-fantasy stat is not swept in', fs.fantasyKind('mlb', 'Hits'), null);
+
+  // The gate: MLB weights are unverified, so they must not grade anything yet.
+  t.eq('MLB fantasy is OFF until the weights are checked', fs.MLB_VERIFIED, false);
+  reset();
+  const mlbFs = mockFetch([
+    [/\/sports\/1\/players/, async () => ({ people: [{ id: 900, fullName: 'Some Hitter' }] })],
+    [/people\/900\/stats/, async () => ({ stats: [{ splits: [{ date: '2026-08-14', stat: {
+      hits: 2, doubles: 1, triples: 0, homeRuns: 1, runs: 2, rbi: 3, baseOnBalls: 1 } }] }] })],
+  ]);
+  let gated, allowed;
+  try {
+    gated = await mlb.gradeFromMlb({ player: 'Some Hitter', date: '2026-08-14', stat: 'Hitter Fantasy Score', line: 20.5 });
+    allowed = await mlb.gradeFromMlb({ player: 'Some Hitter', date: '2026-08-14', stat: 'Hitter Fantasy Score', line: 20.5, allowUnverifiedFantasy: true });
+  } finally { mlbFs.restore(); }
+  t.eq('an unverified MLB fantasy prop grades NOTHING', gated, null);
+  t.ok('...while the checker can still see what the formula would produce', allowed?.result != null,
+    `computed ${allowed?.result}`);
+
+  // ---- 8. the rest of the audit's list ------------------------------------
+  t.ok('MLB "Plate Appearances" now resolves', !!mlb.resolveStat('Plate Appearances'));
+  t.ok('the World Cup routes to ESPN soccer', !!espn.SLUGS.world_cup);
+  t.eq('esports still has no source, honestly reported', espn.resolveStat('lol', 'Kills'), null);
 }

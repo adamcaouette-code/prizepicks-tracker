@@ -22,6 +22,7 @@ const INDEX_TTL = 7 * 24 * 60 * 60 * 1000;
 const LOG_TTL = 6 * 60 * 60 * 1000;
 
 import { normKey, buildIndex, matchPlayer } from './player-match.js';
+import { fantasyKind, mlbHitterFantasy, mlbPitcherFantasy, MLB_VERIFIED } from './fantasy-score.js';
 
 const store = () => {
   try { return getStore({ name: 'mlb-cache', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN }); }
@@ -87,6 +88,8 @@ const HIT = {
   hitterks: (s) => s.strikeOuts,
   hitsrunsrbis: (s) => num(s.hits) + num(s.runs) + num(s.rbi),
   atbats: (s) => s.atBats,
+  plateappearances: (s) => s.plateAppearances,
+  pa: (s) => s.plateAppearances,
   // Props PrizePicks posts that had no mapping, so they never graded.
   runsrbis: (s) => num(s.runs) + num(s.rbi),
   rbisruns: (s) => num(s.runs) + num(s.rbi),
@@ -149,10 +152,21 @@ async function gameLog(personId, season, group) {
  * grade-picks' convention so callers flip it for an under exactly as before.
  * Returns null (never a guess) when anything is unresolvable.
  */
-export async function gradeFromMlb({ player, mlbId, date, stat, line }) {
+export async function gradeFromMlb({ player, mlbId, date, stat, line, allowUnverifiedFantasy = false }) {
   if (!date || line == null) return null;
-  const mapped = resolveStat(stat);
+
+  // Fantasy Score is a weighted formula rather than a column, so it resolves
+  // through its own table. It stays disabled until the weights are checked
+  // against the lines — see fantasy-score.js. Grading 335 picks on unverified
+  // weights would be worse than leaving them ungraded.
+  const fantasy = fantasyKind('mlb', stat);
+  const mapped = fantasy
+    ? { group: fantasy === 'mlb-pitcher' ? 'pitching' : 'hitting', fantasy }
+    : resolveStat(stat);
   if (!mapped) return null;                       // unmapped stat: leave it ungraded
+  // fantasy-check passes allowUnverifiedFantasy so it can SEE what the formula
+  // produces without those numbers ever reaching the pick log.
+  if (fantasy && !MLB_VERIFIED && !allowUnverifiedFantasy) return null;
 
   const season = String(date).slice(0, 4);
   let id = mlbId;
@@ -180,7 +194,10 @@ export async function gradeFromMlb({ player, mlbId, date, stat, line }) {
   const pick = exact.length === 1 ? exact[0] : (games.length === 1 ? games[0] : null);
   if (!pick) return null;
 
-  const value = Number(mapped.read(pick.stat));
+  const raw = mapped.fantasy
+    ? (mapped.fantasy === 'mlb-pitcher' ? mlbPitcherFantasy(pick.stat) : mlbHitterFantasy(pick.stat))
+    : mapped.read(pick.stat);
+  const value = Number(raw);
   if (!isFinite(value)) return null;
   // `matchedVia` records how the name was resolved, so a loose match stays
   // visible in the pick log rather than blending in with the exact ones.

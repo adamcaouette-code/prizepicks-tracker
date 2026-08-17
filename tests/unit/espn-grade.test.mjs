@@ -40,7 +40,7 @@ export default async function ({ t }) {
   t.ok('a football stat resolves', !!mod.resolveStat('nfl', 'Rush Yards'));
   t.ok('a hockey stat resolves', !!mod.resolveStat('nhl', 'Goalie Saves'));
   t.eq('a league with no ESPN coverage resolves nothing', mod.resolveStat('esports', 'Maps Won'), null);
-  t.eq('an unmapped stat resolves nothing rather than guessing', mod.resolveStat('nba', 'Fantasy Score'), null);
+  t.eq('an unmapped stat resolves nothing rather than guessing', mod.resolveStat('nba', 'Dunks'), null);
 
   // ---- reading a real box score ------------------------------------------
   //                 min   FG     3PT    FT    OR DR REB AST STL BLK TO PF +/- PTS
@@ -88,7 +88,7 @@ export default async function ({ t }) {
   let absent, unmapped, uncovered;
   try {
     absent = await mod.gradeFromEspn({ league: 'nba', player: 'Did Not Play', date: '2026-08-14', stat: 'Points', line: 5.5 });
-    unmapped = await mod.gradeFromEspn({ league: 'nba', player: 'Someone Else', date: '2026-08-14', stat: 'Fantasy Score', line: 30.5 });
+    unmapped = await mod.gradeFromEspn({ league: 'nba', player: 'Someone Else', date: '2026-08-14', stat: 'Dunks', line: 30.5 });
     uncovered = await mod.gradeFromEspn({ league: 'esports', player: 'Someone Else', date: '2026-08-14', stat: 'Maps Won', line: 20.5 });
   } finally { refuse.restore(); }
   t.eq('a player who never appears refuses', absent, null);
