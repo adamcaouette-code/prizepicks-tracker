@@ -294,7 +294,6 @@ const MAPS = {
     goalsagainst: (r) => readStat(r, 'goalsAgainst'),
     shotsagainst: (r) => readStat(r, 'shotsAgainst'),
     goalsassists: (r) => sum(r, ['goals', 'assists']),
-    shotsongoal: (r) => readStat(r, 'shotsTotal'),
   },
 };
 
