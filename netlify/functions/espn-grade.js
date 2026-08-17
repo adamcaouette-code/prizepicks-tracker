@@ -21,6 +21,7 @@ import { getStore } from '@netlify/blobs';
 
 const SITE = 'https://site.api.espn.com/apis/site/v2/sports';
 const DAY_TTL = 6 * 60 * 60 * 1000;
+const LIVE_TTL = 10 * 60 * 1000;   // a slate still in progress; recheck soon
 const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
 const SLUGS = {
@@ -49,16 +50,34 @@ async function api(url) {
   } catch { return null; }
 }
 
+// `ttl` may be a function of the data. A day whose games are still running must
+// not be pinned for six hours — that would freeze a partial slate and leave every
+// pick on it pending long after the games ended.
 async function cached(key, ttl, fn) {
   const s = store();
+  const ttlOf = (d) => (typeof ttl === 'function' ? ttl(d) : ttl);
   if (s) {
-    try { const hit = await s.get(key, { type: 'json' }); if (hit && hit.at && Date.now() - hit.at < ttl) return hit.data; }
-    catch {}
+    try {
+      const hit = await s.get(key, { type: 'json' });
+      if (hit && hit.at && Date.now() - hit.at < ttlOf(hit.data)) return hit.data;
+    } catch {}
   }
   const data = await fn();
-  if (s && data) { try { await s.setJSON(key, { at: Date.now(), data }); } catch {} }
+  if (s && data && ttlOf(data) > 0) { try { await s.setJSON(key, { at: Date.now(), data }); } catch {} }
   return data;
 }
+
+// A game that hasn't finished has no final stat line — and ESPN happily serves
+// a PARTIAL box score for one in progress. Grading off that records a
+// points-at-halftime as the result, which is a wrong grade written into
+// calibration: worse than leaving the pick pending. Nothing is read from a
+// game until ESPN says it is complete.
+const isFinished = (ev) => {
+  const t = ev?.status?.type || ev?.competitions?.[0]?.status?.type || {};
+  if (t.completed === true) return true;
+  if (t.completed === false) return false;
+  return t.state === 'post' || /FINAL/i.test(String(t.name || ''));
+};
 
 async function mapLimit(items, limit, fn) {
   const out = new Array(items.length);
@@ -163,10 +182,18 @@ async function dayIndex(league, date) {
   const slug = SLUGS[String(league).toLowerCase()];
   if (!slug) return null;
   const ymd = String(date).replace(/-/g, '');
-  return cached(`box-${league}-${date}`, DAY_TTL, async () => {
+  // A settled slate never changes, so it caches for hours. A slate with games
+  // still running gets a short TTL so the rest of them land promptly.
+  const ttl = (d) => (d?.unfinished ? LIVE_TTL : DAY_TTL);
+  return cached(`box-${league}-${date}`, ttl, async () => {
     const sb = await api(`${SITE}/${slug}/scoreboard?dates=${ymd}`);
-    const events = (sb?.events || []).map((e) => e.id).filter(Boolean);
-    if (!events.length) return { players: {}, games: 0 };
+    const all = (sb?.events || []).filter((e) => e?.id);
+    // Only completed games. An in-progress game would otherwise be indexed with
+    // its partial line and graded as final. Unfinished ones are simply left out,
+    // so the pick stays pending and gets graded on a later pass.
+    const events = all.filter(isFinished).map((e) => e.id);
+    const unfinished = all.length - events.length;
+    if (!events.length) return { players: {}, games: 0, unfinished };
 
     const players = {};
     await mapLimit(events, 4, async (id) => {
@@ -194,7 +221,7 @@ async function dayIndex(league, date) {
         }
       }
     });
-    return { players, games: events.length };
+    return { players, games: events.length, unfinished };
   });
 }
 
@@ -254,7 +281,10 @@ async function latestGameDay(slug, from) {
     const start = new Date(end.getTime() - back * 86400000);
     const range = back === 0 ? ymd(end) : `${ymd(start)}-${ymd(end)}`;
     const sb = await api(`${SITE}/${slug}/scoreboard?dates=${range}`);
-    const events = (sb?.events || []).filter((e) => e?.id);
+    // Only games that have FINISHED. ESPN's scoreboard includes scheduled and
+    // in-progress games, and the newest event on a range query is very often
+    // tonight's tip-off — which carries no box score at all.
+    const events = (sb?.events || []).filter((e) => e?.id && isFinished(e));
     if (!events.length) continue;
     events.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
     const hit = events[0];
@@ -303,12 +333,22 @@ export const handler = async (event) => {
       }
       const nBroken = Object.keys(broken).length;
 
+      // An empty box score proves nothing about the mapping — every key looks
+      // "missing" because there are no keys at all. Say that, rather than
+      // reporting every mapped stat as broken and sending someone chasing it.
+      if (!actual.size) {
+        return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
+          league, gameUsed: { date: found.date, eventId: found.id },
+          verdict: 'INCONCLUSIVE — ESPN served this game with no box score at all, so the mapping could not be checked. Most likely the game has not been played yet or was postponed.',
+          nextStep: 'probe a date that is definitely in the past: /api/espn-grade?mode=probe&league=' + league + '&date=YYYY-MM-DD',
+        }, null, 2) };
+      }
+
       return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
         league,
         gameUsed: { date: found.date, eventId: found.id },
-        ...(found.date !== from ? { note: `no games on ${from} — used the most recent slate instead (offseason or dark day)` } : {}),
-        verdict: !actual.size ? 'ESPN served the game but no stat keys — the box score shape has changed'
-          : nBroken === 0 ? `mapping verified against a real box score: all ${working.length} mapped stats resolve`
+        ...(found.date !== from ? { note: `no finished games on ${from} — used the most recent completed slate instead` } : {}),
+        verdict: nBroken === 0 ? `mapping verified against a real box score: all ${working.length} mapped stats resolve`
           : `${nBroken} of ${working.length + nBroken} mapped stats reference keys ESPN did not send — those grade NOTHING until fixed`,
         brokenStats: nBroken ? broken : undefined,
         verifiedStats: working,

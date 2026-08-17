@@ -23,6 +23,14 @@ const nbaBox = (name, stats) => ({
     athletes: [{ athlete: { displayName: name }, stats }] }] }] },
 });
 
+// Every real ESPN event carries a status. A game that hasn't finished has no
+// final stat line, so nothing is read from one — see the in-progress section
+// below for why that matters more than it sounds.
+const FINAL = { status: { type: { completed: true, state: 'post', name: 'STATUS_FINAL' } } };
+const LIVE = { status: { type: { completed: false, state: 'in', name: 'STATUS_IN_PROGRESS' } } };
+const SCHEDULED = { status: { type: { completed: false, state: 'pre', name: 'STATUS_SCHEDULED' } } };
+const ev = (id, date = '2026-08-14T23:00Z', st = FINAL) => ({ id, date, ...st });
+
 export default async function ({ t }) {
   reset();
   const mod = await loadFn('espn-grade.js');
@@ -38,7 +46,7 @@ export default async function ({ t }) {
   //                 min   FG     3PT    FT    OR DR REB AST STL BLK TO PF +/- PTS
   const line = ['32', '9-17', '4-9', '5-6', '1', '6', '7', '5', '2', '1', '3', '2', '+8', '27'];
   const mock = mockFetch([
-    [/scoreboard/, async () => ({ events: [{ id: '401' }] })],
+    [/scoreboard/, async () => ({ events: [ev('401')] })],
     [/summary/, async () => nbaBox('Some Guard', line)],
   ]);
   let pts, threes, pra, fg;
@@ -63,7 +71,7 @@ export default async function ({ t }) {
   // A miss is a miss.
   reset();
   const missMock = mockFetch([
-    [/scoreboard/, async () => ({ events: [{ id: '402' }] })],
+    [/scoreboard/, async () => ({ events: [ev('402')] })],
     [/summary/, async () => nbaBox('Cold Wing', ['20', '2-11', '0-5', '0-0', '0', '2', '2', '1', '0', '0', '1', '2', '-6', '4'])],
   ]);
   let miss;
@@ -74,7 +82,7 @@ export default async function ({ t }) {
   // ---- where it must refuse ----------------------------------------------
   reset();
   const refuse = mockFetch([
-    [/scoreboard/, async () => ({ events: [{ id: '403' }] })],
+    [/scoreboard/, async () => ({ events: [ev('403')] })],
     [/summary/, async () => nbaBox('Someone Else', line)],
   ]);
   let absent, unmapped, uncovered;
@@ -107,7 +115,7 @@ export default async function ({ t }) {
   let ppCalls = 0;
   const e2e = mockFetch([
     [/api\.prizepicks\.com/, async () => { ppCalls++; return { status: 403, body: 'forbidden' }; }],
-    [/scoreboard/, async () => ({ events: [{ id: '900' }] })],
+    [/scoreboard/, async () => ({ events: [ev('900')] })],
     [/summary/, async () => nbaBox('Sonia Citron', ['30', '7-13', '2-4', '3-3', '1', '4', '5', '4', '2', '0', '2', '1', '+5', '19'])],
   ]);
   let out;
@@ -135,7 +143,7 @@ export default async function ({ t }) {
 
   reset();
   const good = mockFetch([
-    [/scoreboard/, async () => ({ events: [{ id: '77', date: '2026-08-14T23:00Z' }] })],
+    [/scoreboard/, async () => ({ events: [ev('77')] })],
     [/summary/, async () => nbaBox('Some Guard', line)],
   ]);
   let okProbe;
@@ -151,7 +159,7 @@ export default async function ({ t }) {
   reset();
   const renamed = NBA_KEYS.map((k) => (k === 'points' ? 'pts' : k));
   const drift = mockFetch([
-    [/scoreboard/, async () => ({ events: [{ id: '78', date: '2026-08-14T23:00Z' }] })],
+    [/scoreboard/, async () => ({ events: [ev('78')] })],
     [/summary/, async () => ({ boxscore: { players: [{ statistics: [{ name: 'starters', keys: renamed,
       athletes: [{ athlete: { displayName: 'Some Guard' }, stats: line }] }] }] } })],
   ]);
@@ -167,6 +175,61 @@ export default async function ({ t }) {
   t.ok('...and the key ESPN sent instead is surfaced as a candidate',
     bad.unmappedEspnKeys.includes('pts'));
 
+  // ---- a game in progress must NEVER be graded ---------------------------
+  // ESPN serves a partial box score for a live game. Reading it records
+  // points-at-halftime as the final result — a WRONG grade in calibration,
+  // which is strictly worse than leaving the pick pending for another pass.
+  reset();
+  const halftime = mockFetch([
+    [/scoreboard/, async () => ({ events: [{ id: '500', date: '2026-08-14T23:00Z', ...LIVE }] })],
+    // 11 points at the half — over a 20.5 line this reads as a MISS if graded now.
+    [/summary/, async () => nbaBox('Live Guard', ['14', '4-8', '1-3', '2-2', '0', '3', '3', '2', '1', '0', '1', '2', '+4', '11'])],
+  ]);
+  let live;
+  try { live = await mod.gradeFromEspn({ league: 'nba', player: 'Live Guard', date: '2026-08-14', stat: 'Points', line: 20.5 }); } finally { halftime.restore(); }
+  t.eq('a game still in progress does not grade — a partial line is not a result', live, null);
+
+  reset();
+  const notYet = mockFetch([
+    [/scoreboard/, async () => ({ events: [{ id: '501', date: '2026-08-14T23:00Z', ...SCHEDULED }] })],
+    [/summary/, async () => nbaBox('Future Guard', line)],
+  ]);
+  let sched;
+  try { sched = await mod.gradeFromEspn({ league: 'nba', player: 'Future Guard', date: '2026-08-14', stat: 'Points', line: 20.5 }); } finally { notYet.restore(); }
+  t.eq('a scheduled game does not grade', sched, null);
+
+  // The same slate once it finishes: the pick grades on a later pass, so
+  // refusing above costs nothing but a delay.
+  reset();
+  const done = mockFetch([
+    [/scoreboard/, async () => ({ events: [{ id: '502', date: '2026-08-14T23:00Z', ...FINAL }] })],
+    [/summary/, async () => nbaBox('Live Guard', ['34', '9-17', '4-9', '5-6', '1', '6', '7', '5', '2', '1', '3', '2', '+8', '27'])],
+  ]);
+  let settled;
+  try { settled = await mod.gradeFromEspn({ league: 'nba', player: 'Live Guard', date: '2026-08-14', stat: 'Points', line: 20.5 }); } finally { done.restore(); }
+  t.eq('...and grades once the game is final', settled?.hit, true);
+  t.eq('...on the FINAL number, not the halftime one', settled?.result, 27);
+
+  // A mixed slate: finished games are usable immediately, live ones excluded.
+  reset();
+  const mixed = mockFetch([
+    [/scoreboard/, async () => ({ events: [
+      { id: '600', date: '2026-08-14T20:00Z', ...FINAL },
+      { id: '601', date: '2026-08-14T23:00Z', ...LIVE }] })],
+    [/summary\?event=600/, async () => nbaBox('Early Game', ['30', '8-14', '3-6', '4-4', '2', '5', '7', '6', '1', '1', '2', '3', '+9', '23'])],
+    [/summary\?event=601/, async () => nbaBox('Late Game', ['12', '3-7', '1-2', '0-0', '0', '2', '2', '1', '0', '0', '0', '1', '-2', '7'])],
+  ]);
+  let early, late, idx;
+  try {
+    early = await mod.gradeFromEspn({ league: 'nba', player: 'Early Game', date: '2026-08-14', stat: 'Points', line: 19.5 });
+    late = await mod.gradeFromEspn({ league: 'nba', player: 'Late Game', date: '2026-08-14', stat: 'Points', line: 15.5 });
+    idx = await mod.dayIndex('nba', '2026-08-14');
+  } finally { mixed.restore(); }
+  t.eq('a finished game on a mixed slate grades right away', early?.result, 23);
+  t.eq('...while the game still running on the same slate does not', late, null);
+  t.eq('the index counts only completed games', idx.games, 1);
+  t.eq('...and reports how many are still running', idx.unfinished, 1);
+
   // ---- the offseason is a calendar fact, not a failure --------------------
   // Probing NBA in August returns zero games. Widening the window finds the
   // most recent real slate instead of reporting an empty result.
@@ -175,7 +238,7 @@ export default async function ({ t }) {
   const off = mockFetch([
     [/scoreboard/, async (url) => {
       if (/dates=\d{8}-\d{8}/.test(url)) { ranged = true; return { events: [
-        { id: '10', date: '2026-05-01T23:00Z' }, { id: '11', date: '2026-06-19T23:00Z' }] }; }
+        { id: '10', date: '2026-05-01T23:00Z', ...FINAL }, { id: '11', date: '2026-06-19T23:00Z', ...FINAL }] }; }
       return { events: [] };   // nothing on the requested August day
     }],
     [/summary/, async () => nbaBox('Some Guard', line)],
@@ -186,6 +249,39 @@ export default async function ({ t }) {
   } finally { off.restore(); }
   t.ok('an empty day widens the search rather than giving up', ranged);
   t.eq('...landing on the most recent slate, not the oldest in the window', season.gameUsed?.date, '2026-06-19');
-  t.ok('...and says plainly why the date moved', /offseason|most recent/.test(season.note || ''), season.note);
+  t.ok('...and says plainly why the date moved', /most recent/.test(season.note || ''), season.note);
   t.ok('...then still verifies the mapping off that game', /verified/.test(season.verdict));
+
+  // ---- the probe must not blame the mapping for tonight's unplayed game ----
+  // The real failure: the newest event on the scoreboard was TOMORROW's tip-off,
+  // so the summary carried no box score and all 19 stats looked broken at once.
+  reset();
+  const tonight = mockFetch([
+    [/scoreboard/, async () => ({ events: [
+      { id: '20', date: '2026-08-16T23:00Z', ...FINAL },
+      { id: '21', date: '2026-08-18T23:00Z', ...SCHEDULED }] })],
+    [/summary\?event=21/, async () => ({ boxscore: { players: [] } })],
+    [/summary\?event=20/, async () => nbaBox('Some Guard', line)],
+  ]);
+  let skipped;
+  try {
+    skipped = JSON.parse((await mod.handler({ queryStringParameters: { mode: 'probe', league: 'nba', date: '2026-08-17' } })).body);
+  } finally { tonight.restore(); }
+  t.eq('the probe skips an unplayed game for the most recent FINISHED one', skipped.gameUsed?.eventId, '20');
+  t.ok('...and so reaches a real verdict', /verified/.test(skipped.verdict), skipped.verdict);
+
+  // If every candidate is empty anyway, say the check was inconclusive rather
+  // than reporting the whole mapping as broken.
+  reset();
+  const empty = mockFetch([
+    [/scoreboard/, async () => ({ events: [{ id: '30', date: '2026-08-16T23:00Z', ...FINAL }] })],
+    [/summary/, async () => ({ boxscore: { players: [] } })],
+  ]);
+  let none;
+  try {
+    none = JSON.parse((await mod.handler({ queryStringParameters: { mode: 'probe', league: 'nba', date: '2026-08-17' } })).body);
+  } finally { empty.restore(); }
+  t.ok('an empty box score is INCONCLUSIVE, not 19 broken stats', /INCONCLUSIVE/.test(none.verdict));
+  t.eq('...and nothing is listed as broken on no evidence', none.brokenStats, undefined);
+  t.ok('...with a concrete next step', /mode=probe/.test(none.nextStep || ''));
 }
