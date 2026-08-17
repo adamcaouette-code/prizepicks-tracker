@@ -30,7 +30,9 @@ function dedupe(picks) {
   return [...m.values()];
 }
 
-function aggregate(rawPicks) {
+// `perLeague` is off for the recursive call so a league's own summary doesn't
+// try to split itself again.
+function aggregate(rawPicks, { perLeague = true } = {}) {
   const picks = dedupe(rawPicks);
   const graded = picks.filter(isGraded);
 
@@ -100,6 +102,22 @@ function aggregate(rawPicks) {
   out.bands = Object.values(bandMap)
     .sort((a, b) => a.lo - b.lo)
     .map((b) => ({ band: `${b.lo}-${b.lo + 10}%`, n: b.n, predicted: b.predSum / b.n, actual: b.hits / b.n }));
+
+  // A FULL, independent calibration per league — its own Brier, bands, record
+  // and coverage, not just a hit count. Pooling them hides the thing you most
+  // want to know: a rater can be sharp on baseball and hopeless on tennis, and
+  // one blended number says neither.
+  //
+  // The cost is honest and worth stating: splitting the sample means each league
+  // needs its own ~50 graded picks before its number means anything, so most
+  // leagues read EARLY for a while. That is the truth about the data, not a
+  // regression.
+  if (perLeague) {
+    out.leagues = {};
+    for (const lg of [...new Set(picks.map((p) => p.league || 'unknown'))].sort()) {
+      out.leagues[lg] = aggregate(picks.filter((p) => (p.league || 'unknown') === lg), { perLeague: false });
+    }
+  }
   return out;
 }
 
@@ -139,6 +157,24 @@ function renderHTML(a) {
   const breakdown = (obj) => Object.entries(obj).map(([k, v]) =>
     `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${pct(v.hits / v.n)}</td></tr>`).join('') ||
     '<tr><td colspan="3" class="mut">—</td></tr>';
+
+  // Per-league, each with its own Brier and its own small-sample warning. Sorted
+  // by sample size so the league you actually have data on leads.
+  const leagueRows = Object.entries(a.leagues || {})
+    .filter(([, v]) => v.graded > 0)
+    .sort((x, y) => y[1].graded - x[1].graded)
+    .map(([lg, v]) => {
+      const pl = v.playsLeans || { n: 0, hits: 0 };
+      const rec = pl.n ? `${pl.hits}–${pl.n - pl.hits}` : '—';
+      const win = pl.n ? pct(pl.hits / pl.n) : '—';
+      const br = v.brier != null ? v.brier.toFixed(3) : '—';
+      const brCol = v.brier == null ? 'var(--dim)' : v.brier <= 0.21 ? 'var(--grn)' : v.brier <= 0.25 ? 'var(--amb)' : 'var(--red)';
+      const flag = v.graded < 50
+        ? `<span style="color:var(--amb)">early · n=${v.graded}</span>`
+        : `<span style="color:var(--faint)">n=${v.graded}</span>`;
+      return `<tr><td>${esc(lg.toUpperCase())}</td><td>${v.graded}</td><td>${rec}</td><td>${win}</td>
+        <td style="color:${brCol}">${br}</td><td>${flag}</td></tr>`;
+    }).join('') || '<tr><td colspan="6" class="mut">No league has a graded pick yet.</td></tr>';
 
   const engineRows = Object.entries(a.bySource || {}).map(([k, v]) =>
     `<tr><td>${esc(k === 'slip' ? 'slip judge' : k + ' engine')}</td><td>${v.n}</td><td>${pct(v.hits / v.n)}</td><td>${(v.brierSum / v.n).toFixed(3)}</td></tr>`).join('') ||
@@ -215,7 +251,11 @@ function renderHTML(a) {
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
 
   <h2>By league</h2>
-  <div class="wrap"><table><thead><tr><th>league</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byLeague)}</tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>league</th><th>graded</th><th>record</th><th>win rate</th><th>brier</th><th></th></tr></thead><tbody>${leagueRows}</tbody></table></div>
+  <div class="callout">Each league is scored on its own. A rater can be sharp on baseball and hopeless on
+    tennis, and one blended number says neither — but splitting the sample means every league needs its own
+    ~50 graded picks before it means anything, so most will read EARLY for a while. Lower Brier is better;
+    0.25 is what you'd score by guessing 50% on everything.</div>
 
   <h2>Pending (gradeable) by day</h2>
   <div class="wrap"><table><thead><tr><th>date</th><th>pending</th></tr></thead><tbody>${pendRows}</tbody></table></div>
