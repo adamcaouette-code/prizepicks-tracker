@@ -13,6 +13,13 @@ import { createRequire } from 'node:module';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.resolve(HERE, '../../public');
 
+// Read from the real source so the stub cannot drift from the app and make the
+// footer show a spurious mismatch in tests.
+const VERSION_FOR_TESTS = (
+  fs.readFileSync(path.resolve(HERE, '../../netlify/functions/version.js'), 'utf8')
+    .match(/VERSION = '([^']+)'/) || [, '0.0.0']
+)[1];
+
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
@@ -100,6 +107,16 @@ export async function openApp(browser, { url, routes = {}, viewport, timezoneId,
     unstubbed.push(new URL(request.url()).pathname);
     route.fulfill({ status: 599, contentType: 'application/json', body: '{"error":"unstubbed in test"}' });
   });
+  // The footer's deploy check calls /api/version on every page load. It is
+  // infrastructure rather than anything a feature test is about, so it is
+  // stubbed for every suite — registered before the test's own routes so a suite
+  // that cares about it can still override. Without this every UI suite would
+  // report an unstubbed call it never asked for.
+  await page.route('**/api/version', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ version: VERSION_FOR_TESTS, commit: 'testsha' }),
+  }));
+
   for (const [glob, handler] of Object.entries(routes)) {
     await page.route(glob, async (route, request) => {
       if (typeof handler === 'function') return handler(route, request);
