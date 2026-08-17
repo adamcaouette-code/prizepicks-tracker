@@ -124,6 +124,8 @@ export const handler = async () => {
     "async function runCron(){show('running grade-cron ...','this drains yesterday + the day before, then settles slips');var r=await call('/api/grade-cron');show('grade-cron',r.json||r);}",
     "async function retrySlips(){show('retrying given-up slip legs ...','clears tombstones, then regrades');var r=await call('/api/grade-slips?retry=1');show('grade-slips retry',r.json||r);}",
     "async function gradeSlips(){show('grading saved slips ...','working');var r=await call('/api/grade-slips');show('grade-slips',r.json||r);}",
+    "async function diagnose(){var d=document.getElementById('whyDate').value;if(!d)return show('diagnose','pick a date first');show('diagnosing '+d+' ...','checking every pending pick against PrizePicks');var r=await call('/api/grade-debug?date='+d+'&limit=40');show('why not grading — '+d,r.json||r);}",
+    "async function mlbGradeTest(){show('MLB grader ...','working');var r=await call('/api/mlb-grade');show('MLB grader — mapped stats',r.json||r);}",
     "async function grade(d){show('grading '+d+' ...','working');var res=await call('/api/grade-picks?date='+d);show('grade '+d,res.json||res);}",
     "async function debug(d){show('debug '+d+' ...','working');var res=await call('/api/grade-debug?date='+d+'&limit=6');show('debug '+d,res.json||res);}",
     "async function clean(d){show('cleaning '+d+' ...','working');var res=await call('/api/cleanup?date='+d);show('clean '+d+' (refresh page to update counts)',res.json||res);}",
@@ -196,6 +198,20 @@ export const handler = async () => {
   <p style="color:#667;max-width:680px">unique = distinct picks (+N = duplicate rows from re-runs). graded/pending/combos are per distinct pick. <b>drain</b> grades until pending is 0; <b>clean</b> removes duplicate rows; combos can't be graded and are skipped.</p>
 
   <div class="row"><button onclick="drainAll()">grade everything (all past days)</button><button onclick="cleanAll()">clean all days</button></div>
+
+  <h2>Why isn't it grading?</h2>
+  <p style="color:#667;max-width:680px;margin:0 0 8px">
+    <b>diagnose</b> checks every pending pick for a date and reports the reason per pick
+    plus a tally. The one that matters is <b>http_error 404</b>: PrizePicks retires a
+    projection once it leaves the board, so its id can never be graded from them again.
+    MLB picks now fall back to MLB's own box score, which is permanent — <b>gradedVia</b>
+    on a row says which source settled it.
+  </p>
+  <div class="row">
+    <input type="date" id="whyDate">
+    <button onclick="diagnose()">diagnose that date</button>
+    <button onclick="mlbGradeTest()">test the MLB grader</button>
+  </div>
 
   <h2>Grade / debug any date</h2>
   <div class="row">

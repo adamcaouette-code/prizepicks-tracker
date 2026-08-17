@@ -1609,6 +1609,7 @@ export const handler = async (event) => {
         player: p.player, stat: p.stat, line: p.line,
         prob: p.prob, verdict: p.verdict, oddsType: p.oddsType,
         recentAvg: p.recentAvg ?? null,
+        mlbId: p.mlbId ?? null,   // lets the MLB fallback grader skip a name lookup
         image: p.image || null, team: p.team || null, matchup: p.matchupLabel || p.matchup || null, // for the top-picks feed UI
         result: null, hit: null, gradedAt: null,   // filled by the grader later
       }));

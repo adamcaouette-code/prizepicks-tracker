@@ -14,10 +14,12 @@
 
 import { getStore } from '@netlify/blobs';
 import { fetchHistory, gradeOne, isCombo, FINAL_AFTER_MS } from './grade-picks.js';
+import { gradeFromMlb } from './mlb-grade.js';
 
-// Higher than the pick log's 3. Slips are graded by the cron AND on every visit
-// to My Slips, so attempts are consumed far faster here.
-const MAX_ATTEMPTS = 8;
+// Counted PER CALENDAR DAY, not per call: the cron drains in many passes and
+// every visit to My Slips grades too, so per-call counting burned the whole
+// budget in seconds.
+const MAX_ATTEMPTS = 4;
 
 // A slate is only FINAL once every game on it has certainly ended and the box
 // scores have landed. Before that a failed lookup means "not yet", not "never" —
@@ -87,6 +89,7 @@ export const handler = async (event) => {
   // rescue for legs benched by the bug above.
   const retry = q.retry === '1';
   const start = Date.now();
+  const attemptDay = new Date().toISOString().slice(0, 10);
 
   try {
     const store = getStore({ name: 'saved-slips', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
@@ -138,13 +141,25 @@ export const handler = async (event) => {
         const history = await fetchHistory(leg.projectionId);
         // gradeOne keys the game off `date` + `loggedAt`; give it the slate date
         // the slip recorded, not today.
-        const graded = gradeOne({ date: slip.slateDate, line: leg.line, loggedAt: slip.createdAt }, history);
-        if (!graded) { if (final) leg.gradeAttempts = (leg.gradeAttempts || 0) + 1; touched = true; continue; }
+        let graded = gradeOne({ date: slip.slateDate, line: leg.line, loggedAt: slip.createdAt }, history);
+        // Same fallback the pick log uses: a retired PrizePicks projection is a
+        // permanent 404, but MLB's box score is not going anywhere.
+        if (!graded && String(slip.league || 'mlb').toLowerCase() === 'mlb') {
+          graded = await gradeFromMlb({ player: leg.player, mlbId: leg.mlbId, date: slip.slateDate, stat: leg.stat, line: leg.line });
+        }
+        if (!graded) {
+          if (final && leg.lastAttemptDay !== attemptDay) {
+            leg.gradeAttempts = (leg.gradeAttempts || 0) + 1;
+            leg.lastAttemptDay = attemptDay;
+          }
+          touched = true; continue;
+        }
 
         leg.result = graded.result;
         // graded.hit is "did the OVER hit" — flip it for a leg taken under.
         leg.hit = leg.pick === 'under' ? !graded.hit : graded.hit;
         leg.gradedAt = new Date().toISOString();
+        leg.gradedVia = graded.source || 'prizepicks';
         legsGraded++; touched = true;
       }
 

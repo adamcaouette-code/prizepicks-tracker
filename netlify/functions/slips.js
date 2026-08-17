@@ -67,6 +67,7 @@ function normalizeLeg(l = {}) {
     matchup: clean(l.matchup, 60) || null,
     start: l.start || null,
     prob: isFinite(Number(l.prob)) ? Number(l.prob) : null,   // the engine's read AT SAVE TIME
+    mlbId: Number.isInteger(l.mlbId) ? l.mlbId : null,        // for the MLB fallback grader
     image: typeof l.image === 'string' && /^https?:\/\//.test(l.image) ? l.image : null,
     // filled by grade-slips.js once the game settles
     result: null, hit: null, gradedAt: null, gradeAttempts: 0,
