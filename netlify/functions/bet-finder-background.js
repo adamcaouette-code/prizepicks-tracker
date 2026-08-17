@@ -10,6 +10,7 @@
 import { getStore } from '@netlify/blobs';
 // Raw MLB data (injuries, personIds, logos). No model involved — see mlb-stats.js.
 import { slate as mlbSlate, normKey as mlbNormKey, PP_TO_MLB_ABBR } from './mlb-stats.js';
+import { attachMlbForm } from './mlb-grade.js';
 
 const MODEL = process.env.JUDGE_MODEL || 'claude-opus-4-8';
 const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap web searches so runs don't blow past the timeout
@@ -1470,7 +1471,21 @@ export const handler = async (event) => {
     // instead of blocking the run.
     await tick('gathering data (records, odds, form, starters)');
 
-    const historyP = guard(track('history', attachHistory(candidates))); // piece 3: recent form (mutates candidates)
+    // Recent form. PrizePicks' history endpoint now answers 403 to every request,
+    // which silently emptied `last5` — the signal the judge weights most heavily
+    // and the input to both statistical anchors. MLB's game log replaces it for
+    // MLB; other leagues still try PrizePicks, which is all they have.
+    const historyP = guard(track('history', (async () => {
+      if (params.league === 'mlb') {
+        const mlb = await mlbP;                    // in flight since t=0, usually cached
+        // `before` = the slate date, so a re-run after the games can't feed
+        // tonight's own result back in as "recent form".
+        const attached = await attachMlbForm(candidates, mlb?.people, { before: mlb?.date });
+        if (attached) return attached;
+        return attachHistory(candidates);          // fall back if MLB gave nothing
+      }
+      return attachHistory(candidates);
+    })()));
 
     const [recordsR, oddsR, historyR, startersR, defenseR, mlbR] =
       await Promise.allSettled([recordsP, oddsP, historyP, startersP, defenseP, mlbP]);
@@ -1491,7 +1506,11 @@ export const handler = async (event) => {
     if (params.league === 'mlb') {
       const sp = startersR.status === 'fulfilled' && startersR.value ? startersR.value : { teamMap: {}, status: { games: 0, starters: 0, message: 'starters fetch failed' } };
       const attached = attachStarters(candidates, sp.teamMap);
-      mlbStatus = { ...sp.status, attached, checklist };
+      mlbStatus = { ...sp.status, attached, checklist,
+        // How many candidates actually carry recent form. If this is 0 the judge
+        // is reading profiles, not production, and every probability is softer
+        // than it looks.
+        recentForm: candidates.filter((c) => Array.isArray(c.last5) && c.last5.length).length };
 
       // ---- MLB Stats API enrichment (raw data, no model) ------------------
       // Three things per candidate, all from the single roster call already

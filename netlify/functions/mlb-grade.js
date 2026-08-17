@@ -158,6 +158,72 @@ export async function gradeFromMlb({ player, mlbId, date, stat, line }) {
   return { result: value, hit: value > Number(line), source: 'mlb' };
 }
 
+/**
+ * Recent form for ONE player and stat, straight from MLB's game log.
+ *
+ * This replaces PrizePicks' /projections/{id}/history, which now answers 403 to
+ * us for every request. That endpoint fed `last5` — the signal the judge prompt
+ * weights most heavily and the input to both statistical anchors — so while it
+ * has been blocked, every probability has been a profile guess with no recent
+ * production behind it. That is a much bigger accuracy problem than the grading
+ * gap it also caused.
+ *
+ * Returns { last5, avg, games } newest-last (the order the prompt expects), or
+ * null when the stat isn't mapped or the player can't be resolved.
+ */
+export async function formFor({ player, mlbId, stat, season, before, n = 5 }) {
+  const mapped = resolveStat(stat);
+  if (!mapped) return null;
+  const yr = season || String(new Date().getUTCFullYear());
+
+  let id = mlbId;
+  if (!id) {
+    const idx = await playerIndex(yr);
+    id = idx?.[normKey(player)];
+  }
+  if (!id) return null;
+
+  const log = await gameLog(id, yr, mapped.group);
+  if (!log || !log.length) return null;
+
+  // Only games BEFORE the slate being judged — otherwise a re-run after the game
+  // would feed tonight's result back in as "recent form" and inflate the read.
+  const usable = log
+    .filter((g) => !before || String(g.date) < String(before))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const recent = usable.slice(-n);
+  if (!recent.length) return null;
+
+  const values = recent.map((g) => Number(mapped.read(g.stat))).filter((v) => isFinite(v));
+  if (!values.length) return null;
+  return {
+    last5: values,
+    avg: Math.round((values.reduce((a, v) => a + v, 0) / values.length) * 100) / 100,
+    games: recent.map((g, i) => ({ v: values[i], date: g.date })),
+  };
+}
+
+/** Attaches MLB-sourced recent form to candidates in place. Never throws. */
+export async function attachMlbForm(candidates, people, { season, before, limit = 6 } = {}) {
+  let hit = 0;
+  const list = candidates.filter((c) => !/ \+ /.test(c.player || ''));
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, list.length) }, async () => {
+    while (i < list.length) {
+      const c = list[i++];
+      try {
+        const key = normKey(c.player);
+        const form = await formFor({
+          player: c.player, mlbId: c.mlbId || people?.[key]?.id,
+          stat: c.statDisplay || c.stat, season, before,
+        });
+        if (form) { c.last5 = form.last5; c.avg = form.avg; c.histGames = form.games; hit++; }
+      } catch { /* form is a bonus; a miss must never fail the run */ }
+    }
+  }));
+  return hit;
+}
+
 export { resolveStat, playerIndex };
 
 // Small HTTP wrapper so the mapping can be checked from the dev console.

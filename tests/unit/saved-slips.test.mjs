@@ -216,6 +216,9 @@ export default async function ({ t }) {
   const slips7 = await loadFn('slips.js');
   const guardMock = mockFetch([
     [/history/, async () => history(2)],
+    // MLB is consulted first now (PrizePicks 403s), so the box-score lookups
+    // belong in this trace too. Neither source is a model, which is the point.
+    [/statsapi\.mlb\.com/, async () => ({})],
     ['api.anthropic.com', async () => { throw new Error('the saved-slip path must never call a model'); }],
   ]);
   let calls;
@@ -237,8 +240,8 @@ export default async function ({ t }) {
 
   t.eq('saving + listing + grading makes ZERO model calls',
     calls.filter((u) => /anthropic|openai|\/v1\/messages/i.test(u)), []);
-  t.ok('every outbound call is a PrizePicks history lookup',
-    calls.every((u) => /prizepicks\.com/.test(u)), calls.join(' '));
+  t.ok('every outbound call is a plain sports-data lookup — MLB or PrizePicks',
+    calls.every((u) => /prizepicks\.com|statsapi\.mlb\.com/.test(u)), calls.join(' '));
 
   // ---------- the slate date must not drift into tomorrow ------------------
   // A slip saved at 9pm Eastern is ALREADY tomorrow in UTC. Using the UTC date as

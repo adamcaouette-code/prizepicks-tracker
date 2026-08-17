@@ -136,14 +136,16 @@ export const handler = async (event) => {
       if (Date.now() - start > BUDGET_MS) { timedOut = true; break; }
       const chunk = todo.slice(i, i + CONCURRENCY);
       const results = await Promise.all(chunk.map(async (pick) => {
-        let g = gradeOne(pick, await fetchHistory(pick.projectionId));
-        // PrizePicks couldn't answer. For MLB that is usually a retired
-        // projection id, which never recovers — so ask MLB's own box score
-        // instead. Same convention (hit = actual > line), so nothing downstream
-        // changes; the row just records which source settled it.
-        if (!g && String(pick.league || '').toLowerCase() === 'mlb') {
-          g = await gradeFromMlb({ player: pick.player, mlbId: pick.mlbId, date: pick.date, stat: pick.stat, line: pick.line });
-        }
+        // MLB FIRST. api.prizepicks.com answers 403 to every request we make —
+        // measured, not assumed: a 40-pick diagnostic came back 40/40 http_error
+        // 403 — so for MLB it is a guaranteed wasted round trip. MLB's box score
+        // is permanent, free and authoritative, so it leads and PrizePicks is
+        // only consulted if MLB can't resolve the stat.
+        const isMlb = String(pick.league || '').toLowerCase() === 'mlb';
+        let g = isMlb
+          ? await gradeFromMlb({ player: pick.player, mlbId: pick.mlbId, date: pick.date, stat: pick.stat, line: pick.line })
+          : null;
+        if (!g) g = gradeOne(pick, await fetchHistory(pick.projectionId));
         return { pick, g };
       }));
       for (const { pick, g } of results) {

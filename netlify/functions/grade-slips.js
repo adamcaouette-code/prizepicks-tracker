@@ -138,14 +138,16 @@ export const handler = async (event) => {
         if (final && (leg.gradeAttempts || 0) >= MAX_ATTEMPTS) { leg.ungradeable = 'gave up'; touched = true; continue; }
         if (Date.now() - start > BUDGET_MS) { timedOut = true; break; }
 
-        const history = await fetchHistory(leg.projectionId);
-        // gradeOne keys the game off `date` + `loggedAt`; give it the slate date
-        // the slip recorded, not today.
-        let graded = gradeOne({ date: slip.slateDate, line: leg.line, loggedAt: slip.createdAt }, history);
-        // Same fallback the pick log uses: a retired PrizePicks projection is a
-        // permanent 404, but MLB's box score is not going anywhere.
-        if (!graded && String(slip.league || 'mlb').toLowerCase() === 'mlb') {
-          graded = await gradeFromMlb({ player: leg.player, mlbId: leg.mlbId, date: slip.slateDate, stat: leg.stat, line: leg.line });
+        // MLB first — api.prizepicks.com 403s every request, so for MLB it is a
+        // guaranteed wasted call. PrizePicks is only consulted when MLB can't
+        // resolve the stat, or for other leagues where it is all we have.
+        const isMlb = String(slip.league || 'mlb').toLowerCase() === 'mlb';
+        let graded = isMlb
+          ? await gradeFromMlb({ player: leg.player, mlbId: leg.mlbId, date: slip.slateDate, stat: leg.stat, line: leg.line })
+          : null;
+        if (!graded) {
+          const history = await fetchHistory(leg.projectionId);
+          graded = gradeOne({ date: slip.slateDate, line: leg.line, loggedAt: slip.createdAt }, history);
         }
         if (!graded) {
           if (final && leg.lastAttemptDay !== attemptDay) {

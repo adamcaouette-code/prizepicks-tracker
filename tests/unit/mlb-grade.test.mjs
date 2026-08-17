@@ -159,4 +159,50 @@ export default async function ({ t }) {
     after = JSON.parse((await grader.handler({ queryStringParameters: { date: past } })).body);
   } finally { dead2.restore(); }
   t.eq('after three DAYS of failing it is finally given up on', after.givenUp, 1);
+
+  // ---- recent form, the bigger casualty of the 403 -----------------------
+  // fetchHistory fed `last5`, which the judge prompt weights most heavily and
+  // which both statistical anchors are computed from. With PrizePicks answering
+  // 403, last5 was null on every candidate — so every probability was a profile
+  // guess with no recent production behind it. MLB's game log restores it.
+  reset();
+  const formMock = mockFetch([
+    [/\/sports\/1\/players/, async () => ({ people: [{ id: 5001, fullName: 'Elly De La Cruz' }] })],
+    [/people\/5001\/stats.*group=hitting/, async () => log('hitting', [
+      { date: '2026-08-09', stat: { hits: 1 } },
+      { date: '2026-08-10', stat: { hits: 0 } },
+      { date: '2026-08-11', stat: { hits: 2 } },
+      { date: '2026-08-12', stat: { hits: 1 } },
+      { date: '2026-08-13', stat: { hits: 3 } },
+      { date: '2026-08-14', stat: { hits: 4 } },   // the slate being judged
+    ])],
+  ]);
+  let form;
+  try {
+    form = await mod.formFor({ player: 'Elly De La Cruz', stat: 'Hits', season: '2026', before: '2026-08-14' });
+  } finally { formMock.restore(); }
+  t.eq('recent form comes back from MLB', form?.last5, [1, 0, 2, 1, 3]);
+  t.eq('...oldest first, the order the prompt expects', form?.last5[0], 1);
+  t.eq('...with the average the anchors use', form?.avg, 1.4);
+  t.ok('the slate being judged is EXCLUDED — otherwise a re-run feeds tonight\'s own result back in as form',
+    !form.last5.includes(4), JSON.stringify(form.last5));
+
+  // Attaching across a board.
+  reset();
+  const boardMock = mockFetch([
+    [/\/sports\/1\/players/, async () => ({ people: [{ id: 5001, fullName: 'Elly De La Cruz' }] })],
+    [/people\/5001\/stats/, async () => log('hitting', [
+      { date: '2026-08-12', stat: { hits: 2 } }, { date: '2026-08-13', stat: { hits: 1 } },
+    ])],
+  ]);
+  const cands = [
+    { player: 'Elly De La Cruz', stat: 'Hits', statDisplay: 'Hits' },
+    { player: 'A Guy + B Guy', stat: 'Hits', statDisplay: 'Hits' },   // combo: skipped
+  ];
+  let hits;
+  try { hits = await mod.attachMlbForm(cands, {}, { season: '2026', before: '2026-08-14' }); } finally { boardMock.restore(); }
+  t.eq('form attaches to the candidates that resolve', hits, 1);
+  t.eq('...populating last5 in place', cands[0].last5, [2, 1]);
+  t.eq('...and avg', cands[0].avg, 1.5);
+  t.eq('a combo prop is skipped, not guessed at', cands[1].last5, undefined);
 }
