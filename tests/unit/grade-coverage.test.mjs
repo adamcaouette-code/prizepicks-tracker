@@ -165,14 +165,14 @@ export default async function ({ t }) {
     { league: 'nba', stat: 'Points', player: 'A', hit: true, gradedVia: 'espn' },
     { league: 'nba', stat: 'Points', player: 'B', hit: false, gradedVia: 'espn', matchedVia: 'suffix' },
     { league: 'nba', stat: 'Nonsense Stat', player: 'C', hit: null },
-    { league: 'tennis', stat: 'Total Games Won', player: 'D', hit: null },
+    { league: 'esports', stat: 'Maps Won', player: 'D', hit: null },
     { league: 'mlb', stat: 'Hits', player: 'E + F', hit: null },
     { league: 'mlb', stat: 'Hits', player: 'G', hit: null },
   ]);
   t.eq('graded picks are counted', a.graded, 2);
   t.ok('an unmapped stat is named exactly, ready to paste into the table',
     !!a.unmappedStats['nba :: Nonsense Stat']);
-  t.ok('a league with no source is named', !!a.unroutedLeagues.tennis);
+  t.ok('a league with no source is named', !!a.unroutedLeagues.esports);
   t.ok('a combo is separated out as expected, not reported as a defect',
     Object.keys(a.reasons).some((k) => /combo/.test(k)));
   t.ok('a pick whose mapping is fine is not blamed on the mapping',

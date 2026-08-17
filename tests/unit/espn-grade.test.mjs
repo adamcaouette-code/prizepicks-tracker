@@ -39,7 +39,7 @@ export default async function ({ t }) {
   t.ok('a basketball stat resolves', !!mod.resolveStat('nba', 'Points'));
   t.ok('a football stat resolves', !!mod.resolveStat('nfl', 'Rush Yards'));
   t.ok('a hockey stat resolves', !!mod.resolveStat('nhl', 'Goalie Saves'));
-  t.eq('a league with no ESPN coverage resolves nothing', mod.resolveStat('tennis', 'Total Games Won'), null);
+  t.eq('a league with no ESPN coverage resolves nothing', mod.resolveStat('esports', 'Maps Won'), null);
   t.eq('an unmapped stat resolves nothing rather than guessing', mod.resolveStat('nba', 'Fantasy Score'), null);
 
   // ---- reading a real box score ------------------------------------------
@@ -89,7 +89,7 @@ export default async function ({ t }) {
   try {
     absent = await mod.gradeFromEspn({ league: 'nba', player: 'Did Not Play', date: '2026-08-14', stat: 'Points', line: 5.5 });
     unmapped = await mod.gradeFromEspn({ league: 'nba', player: 'Someone Else', date: '2026-08-14', stat: 'Fantasy Score', line: 30.5 });
-    uncovered = await mod.gradeFromEspn({ league: 'tennis', player: 'Someone Else', date: '2026-08-14', stat: 'Total Games Won', line: 20.5 });
+    uncovered = await mod.gradeFromEspn({ league: 'esports', player: 'Someone Else', date: '2026-08-14', stat: 'Maps Won', line: 20.5 });
   } finally { refuse.restore(); }
   t.eq('a player who never appears refuses', absent, null);
   t.eq('an unmapped stat refuses', unmapped, null);
@@ -102,7 +102,9 @@ export default async function ({ t }) {
   t.eq('...and WNBA too', gp.gradersFor('wnba')[0], 'espn');
   t.ok('PrizePicks is always LAST, never first — it 403s everything',
     gp.gradersFor('mlb').slice(-1)[0] === 'prizepicks' && gp.gradersFor('nfl').slice(-1)[0] === 'prizepicks');
-  t.eq('a league with no box-score source has only PrizePicks', gp.gradersFor('tennis'), ['prizepicks']);
+  t.eq('a league with no box-score source has only PrizePicks', gp.gradersFor('esports'), ['prizepicks']);
+  t.eq('tennis and soccer now route to ESPN', gp.gradersFor('tennis')[0], 'espn');
+  t.eq('...soccer too', gp.gradersFor('epl')[0], 'espn');
 
   // ---- end to end: a WNBA pick grades without PrizePicks ------------------
   reset();

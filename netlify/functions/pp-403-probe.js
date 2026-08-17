@@ -165,11 +165,17 @@ export const handler = async (event) => {
       findings.push('No results endpoint found on partner-api — every candidate tried returned an error. That host appears to serve upcoming projections only.');
     }
 
-    if (settledSample) {
-      findings.push('A SETTLED projection is present in the live feed — inspect settledSample.attributes below for a score/result field. If one exists, grading is free from the endpoint the app already calls successfully.');
+    // The attribute list settles this on its own. Whether a settled projection
+    // happens to be in the feed right now is a timing question; whether the
+    // schema has anywhere to PUT a result is not, and that is the real answer.
+    const RESULT_FIELDS = /score|result|actual|final|outcome|settled|grade/i;
+    const resultField = (attributeKeys || []).find((k) => RESULT_FIELDS.test(k) && k !== 'flash_sale_line_score' && k !== 'is_live_scored');
+    if (resultField) {
+      findings.push(`A projection carries "${resultField}" — inspect it on a settled projection; grading may be free from the endpoint the app already calls.`);
     } else if (attributeKeys) {
-      findings.push('No settled projection in the current feed, so whether a final one carries its result is still unknown. Re-run this shortly after games finish — that is when the answer appears.');
+      findings.push('DEAD END, and not a timing issue: the projection schema has NO result, score or actual field at all, so a settled projection would have nowhere to report one. Combined with settled projections leaving the feed entirely, PrizePicks cannot supply results through any endpoint we can reach.');
     }
+    if (settledSample) findings.push('A settled projection is in the feed — see settledSample.attributes.');
 
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
       projectionIdUsed: id,

@@ -33,6 +33,33 @@ const SLUGS = {
   college_football: 'football/college-football',
   cbb: 'basketball/mens-college-basketball',
   college_basketball: 'basketball/mens-college-basketball',
+
+  // Soccer and tennis. PrizePicks posts these and nothing could grade them, so
+  // every pick on them was logged and abandoned. ESPN covers both for free
+  // under the same scoreboard/summary shape the rest of this file already uses.
+  //
+  // Soccer is per-competition on ESPN, so each competition needs its own slug.
+  // The tags on the left are what leagueTagOf() produces from the PrizePicks
+  // league NAME, which is why several spellings map to one slug.
+  soccer: 'soccer/eng.1',
+  epl: 'soccer/eng.1',
+  premier_league: 'soccer/eng.1',
+  eng_1: 'soccer/eng.1',
+  ucl: 'soccer/uefa.champions',
+  champions_league: 'soccer/uefa.champions',
+  uefa_champions_league: 'soccer/uefa.champions',
+  europa_league: 'soccer/uefa.europa',
+  mls: 'soccer/usa.1',
+  liga_mx: 'soccer/mex.1',
+  la_liga: 'soccer/esp.1',
+  laliga: 'soccer/esp.1',
+  serie_a: 'soccer/ita.1',
+  bundesliga: 'soccer/ger.1',
+  ligue_1: 'soccer/fra.1',
+
+  tennis: 'tennis/atp',
+  atp: 'tennis/atp',
+  wta: 'tennis/wta',
 };
 
 import { normKey, buildIndex, matchPlayer } from './player-match.js';
@@ -207,6 +234,34 @@ const MAPS = {
     fieldgoalsmade: (r) => readStat(r, 'fieldGoalsMade/fieldGoalAttempts', 0),
     extrapointsmade: (r) => readStat(r, 'extraPointsMade/extraPointAttempts', 0),
     punts: (r) => readStat(r, 'punts'),
+  },
+  // SHAPE UNVERIFIED. Written from ESPN's documented soccer/tennis summary
+  // shape, never checked against a real response — exactly the position the
+  // basketball map was in before a live probe corrected it. Run
+  // ?mode=probe&league=epl (or =tennis) and fix whatever it reports; an entry
+  // referencing a key ESPN does not send simply refuses, so a wrong guess here
+  // costs a missing grade, never a false one.
+  soccer: {
+    goals: (r) => readStat(r, 'goals'),
+    assists: (r) => readStat(r, 'assists'),
+    goalsassists: (r) => sum(r, ['goals', 'assists']),
+    shots: (r) => readStat(r, 'totalShots'),
+    shotsontarget: (r) => readStat(r, 'shotsOnTarget'),
+    shotsontgt: (r) => readStat(r, 'shotsOnTarget'),
+    goaliesaves: (r) => readStat(r, 'saves'),
+    saves: (r) => readStat(r, 'saves'),
+    foulscommitted: (r) => readStat(r, 'foulsCommitted'),
+    foulsdrawn: (r) => readStat(r, 'foulsSuffered'),
+    tackles: (r) => readStat(r, 'totalTackles'),
+    passesattempted: (r) => readStat(r, 'totalPasses'),
+    offsides: (r) => readStat(r, 'offsides'),
+  },
+  tennis: {
+    aces: (r) => readStat(r, 'aces'),
+    doublefaults: (r) => readStat(r, 'doubleFaults'),
+    breakpointswon: (r) => readStat(r, 'breakPointsWon'),
+    gameswon: (r) => readStat(r, 'gamesWon'),
+    totalgameswon: (r) => readStat(r, 'gamesWon'),
   },
   hockey: {
     goals: (r) => readStat(r, 'goals'),
