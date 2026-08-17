@@ -285,4 +285,68 @@ export default async function ({ t }) {
   const fixed = read('saved-slips', drifted.id);
   t.eq('a slip dated a day ahead of its games still settles', fixed.status, 'won');
   t.eq('...with the real result recorded', fixed.legs[0].result, 2);
+
+  // ---------- attempts must not burn before the games finish ---------------
+  // This is the "it gave up on grading those slips" bug. grade-picks only counts
+  // a failed lookup once the day is FINAL and resets premature ones; grade-slips
+  // copied the tombstone but not the guard — and settle-on-open calls it on every
+  // visit to My Slips. Three page-opens while tonight's games were in progress
+  // permanently benched the legs before a box score existed.
+  reset();
+  const slipsA = await loadFn('slips.js');
+  const graderA = await loadFn('grade-slips.js');
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const mkPending = async (slateDate, name) => {
+    const r = await slipsA.handler({ httpMethod: 'POST', queryStringParameters: {}, body: JSON.stringify({
+      name, entry: 'power', stake: 10,
+      legs: [LEG({ id: 'T1', player: 'A', stat: 'Hits', line: 0.5, pick: 'over' }),
+             LEG({ id: 'T2', player: 'B', stat: 'Hits', line: 0.5, pick: 'over' })] }) });
+    const slip = JSON.parse(r.body).slip;
+    slip.slateDate = slateDate;
+    seed('saved-slips', slip.id, slip);
+    return slip;
+  };
+
+  // Tonight's slate: history has nothing yet, exactly like a game in progress.
+  const tonight = await mkPending(todayISO, 'Tonight');
+  const noData = mockFetch([[/history/, async () => ({ games: [] })]]);
+  try {
+    for (let i = 0; i < 5; i++) await graderA.handler({ queryStringParameters: {} });   // five page-opens
+  } finally { noData.restore(); }
+  const after = read('saved-slips', tonight.id);
+  t.eq('five failed passes before the slate is final bench nothing',
+    after.legs.filter((l) => l.ungradeable).length, 0);
+  t.eq('...and burn no attempts', after.legs.map((l) => l.gradeAttempts || 0), [0, 0]);
+  t.eq('the slip is still pending, not ungradeable', after.status, 'pending');
+
+  // And once results DO land, it settles normally.
+  const late = mockFetch([[/history/, async () => ({ games: [{ stat_value: 2, game_start_time: todayISO + 'T23:30:00Z' }] })]]);
+  try { await graderA.handler({ queryStringParameters: {} }); } finally { late.restore(); }
+  t.eq('once the box score lands it grades', read('saved-slips', tonight.id).status, 'won');
+
+  // ---------- a genuinely stuck leg can be rescued --------------------------
+  reset();
+  const slipsB = await loadFn('slips.js');
+  const graderB = await loadFn('grade-slips.js');
+  const rB = await slipsB.handler({ httpMethod: 'POST', queryStringParameters: {}, body: JSON.stringify({
+    name: 'Stuck', entry: 'power', stake: 10,
+    legs: [LEG({ id: 'S1', player: 'A', stat: 'Hits', line: 0.5, pick: 'over' }),
+           LEG({ id: 'S2', player: 'B', stat: 'Hits', line: 0.5, pick: 'over' })],
+    sizing: { label: 'POWER', multipliers: [{ hits: 2, mult: 3 }], payouts: [{ hits: 2, pays: 30 }] } }) });
+  const stuck = JSON.parse(rB.body).slip;
+  // Two days back: past the 36h finality mark, still inside the 3-day retention
+  // window. Older than that and the sweep deletes it before grading runs.
+  const twoDaysAgo = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+  const benched = read('saved-slips', stuck.id);
+  benched.slateDate = twoDaysAgo;
+  benched.legs.forEach((l) => { l.ungradeable = 'gave up'; l.gradeAttempts = 9; });
+  seed('saved-slips', stuck.id, benched);
+
+  const rescue = mockFetch([[/history/, async () => ({ games: [{ stat_value: 2, game_start_time: twoDaysAgo + 'T23:30:00Z' }] })]]);
+  let rep;
+  try { rep = JSON.parse((await graderB.handler({ queryStringParameters: { retry: '1' } })).body); } finally { rescue.restore(); }
+  const rescued = read('saved-slips', stuck.id);
+  t.ok('retry clears recoverable tombstones', rep.revived > 0, String(rep.revived));
+  t.eq('...and the legs actually grade on the retry', rescued.legs.map((l) => l.hit), [true, true]);
+  t.eq('...settling the slip', rescued.status, 'won');
 }

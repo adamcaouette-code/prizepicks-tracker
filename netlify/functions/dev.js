@@ -122,6 +122,7 @@ export const handler = async () => {
     "async function mlbSlate(){show('MLB slate ...','working');var r=await call('/api/mlb-stats?mode=slate'+mlbDate());show('MLB slate',r.json||r);}",
     "async function mlbPlayer(){var id=document.getElementById('mlbPlayer').value.trim();if(!id)return show('MLB player','enter a personId');show('MLB player '+id+' ...','working');var r=await call('/api/mlb-stats?mode=player&id='+encodeURIComponent(id));show('MLB player '+id,r.json||r);}",
     "async function runCron(){show('running grade-cron ...','this drains yesterday + the day before, then settles slips');var r=await call('/api/grade-cron');show('grade-cron',r.json||r);}",
+    "async function retrySlips(){show('retrying given-up slip legs ...','clears tombstones, then regrades');var r=await call('/api/grade-slips?retry=1');show('grade-slips retry',r.json||r);}",
     "async function gradeSlips(){show('grading saved slips ...','working');var r=await call('/api/grade-slips');show('grade-slips',r.json||r);}",
     "async function grade(d){show('grading '+d+' ...','working');var res=await call('/api/grade-picks?date='+d);show('grade '+d,res.json||res);}",
     "async function debug(d){show('debug '+d+' ...','working');var res=await call('/api/grade-debug?date='+d+'&limit=6');show('debug '+d,res.json||res);}",
@@ -171,7 +172,12 @@ export const handler = async () => {
   </p>
   <table><thead><tr><th>fired</th><th>picks graded</th><th>slip legs</th><th>slips settled</th></tr></thead>
   <tbody>${beatRows}</tbody></table>
-  <div class="row"><button onclick="runCron()">run grading now</button><button onclick="gradeSlips()">grade saved slips only</button></div>
+  <div class="row"><button onclick="runCron()">run grading now</button><button onclick="gradeSlips()">grade saved slips only</button><button onclick="retrySlips()">retry given-up slip legs</button></div>
+  <p style="color:#667;max-width:680px;margin:8px 0 0">
+    <b>retry</b> clears every recoverable "gave up" tombstone and tries again. Legs are
+    only ever tombstoned once a slate is FINAL (36h); before that a failed lookup just
+    means the box score isn't posted yet. Use <b>drain</b> per date below for the pick log.
+  </p>
 
   <h2>Run timings (newest first)</h2>
   <p style="color:#667;max-width:680px;margin:0 0 8px">

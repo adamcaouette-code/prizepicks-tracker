@@ -13,7 +13,21 @@
 //   /api/grade-slips?dry=1      report, don't save
 
 import { getStore } from '@netlify/blobs';
-import { fetchHistory, gradeOne, isCombo, MAX_ATTEMPTS } from './grade-picks.js';
+import { fetchHistory, gradeOne, isCombo, FINAL_AFTER_MS } from './grade-picks.js';
+
+// Higher than the pick log's 3. Slips are graded by the cron AND on every visit
+// to My Slips, so attempts are consumed far faster here.
+const MAX_ATTEMPTS = 8;
+
+// A slate is only FINAL once every game on it has certainly ended and the box
+// scores have landed. Before that a failed lookup means "not yet", not "never" —
+// counting those as attempts is what burned through the budget and tombstoned
+// legs as "gave up" before their games had even been played.
+const isFinal = (slip, now = Date.now()) => {
+  const basis = slip.slateDate || String(slip.createdAt || '').slice(0, 10);
+  const t = Date.parse(`${basis}T00:00:00Z`);
+  return isFinite(t) ? (now - t) >= FINAL_AFTER_MS : false;
+};
 
 const BUDGET_MS = 8000;
 const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
@@ -69,6 +83,9 @@ function isExpired(slip, now = Date.now()) {
 export const handler = async (event) => {
   const q = event.queryStringParameters || {};
   const dry = q.dry === '1';
+  // ?retry=1 clears every recoverable tombstone and tries again — the manual
+  // rescue for legs benched by the bug above.
+  const retry = q.retry === '1';
   const start = Date.now();
 
   try {
@@ -78,7 +95,7 @@ export const handler = async (event) => {
     if (q.id) keys = keys.filter((k) => k === q.id);
 
     const report = [];
-    let legsGraded = 0, slipsSettled = 0, timedOut = false, pruned = 0;
+    let legsGraded = 0, slipsSettled = 0, timedOut = false, pruned = 0, revived = 0;
 
     for (const key of keys) {
       if (Date.now() - start > BUDGET_MS) { timedOut = true; break; }
@@ -95,19 +112,34 @@ export const handler = async (event) => {
       }
       if (slip.status && !['pending', 'ungradeable'].includes(slip.status)) continue;   // already final
 
+      const final = isFinal(slip);
       let touched = false;
+
+      // Before the slate is final, wipe any attempts (and any premature "gave
+      // up") so a slip can never be benched over games that hadn't finished.
+      if (!final || retry) {
+        for (const leg of slip.legs) {
+          if (leg.hit === true || leg.hit === false) continue;
+          if (leg.gradeAttempts) { leg.gradeAttempts = 0; touched = true; revived++; }
+          if (leg.ungradeable === 'gave up') { delete leg.ungradeable; touched = true; }
+          if (retry && leg.ungradeable && leg.projectionId && !isCombo(leg)) { delete leg.ungradeable; touched = true; }
+        }
+      }
+
       for (const leg of slip.legs) {
         if (leg.hit === true || leg.hit === false || leg.ungradeable) continue;
         if (!leg.projectionId) { leg.ungradeable = 'no projection id'; touched = true; continue; }
         if (isCombo(leg)) { leg.ungradeable = 'combo'; touched = true; continue; }
-        if ((leg.gradeAttempts || 0) >= MAX_ATTEMPTS) { leg.ungradeable = 'gave up'; touched = true; continue; }
+        // Only tombstone once the slate is FINAL. A miss before that is "the box
+        // score isn't up yet", which is not the leg's fault.
+        if (final && (leg.gradeAttempts || 0) >= MAX_ATTEMPTS) { leg.ungradeable = 'gave up'; touched = true; continue; }
         if (Date.now() - start > BUDGET_MS) { timedOut = true; break; }
 
         const history = await fetchHistory(leg.projectionId);
         // gradeOne keys the game off `date` + `loggedAt`; give it the slate date
         // the slip recorded, not today.
         const graded = gradeOne({ date: slip.slateDate, line: leg.line, loggedAt: slip.createdAt }, history);
-        if (!graded) { leg.gradeAttempts = (leg.gradeAttempts || 0) + 1; touched = true; continue; }
+        if (!graded) { if (final) leg.gradeAttempts = (leg.gradeAttempts || 0) + 1; touched = true; continue; }
 
         leg.result = graded.result;
         // graded.hit is "did the OVER hit" — flip it for a leg taken under.
@@ -147,7 +179,7 @@ export const handler = async (event) => {
       report.push({ id: slip.id, name: slip.name, status: slip.status, hits: sum.hits, misses: sum.misses, payout: slip.payout });
     }
 
-    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ dry, timedOut, slips: keys.length, legsGraded, slipsSettled, pruned, retentionDays: RETENTION_DAYS, report }, null, 2) };
+    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ dry, retry, timedOut, slips: keys.length, legsGraded, slipsSettled, pruned, revived, maxAttempts: MAX_ATTEMPTS, retentionDays: RETENTION_DAYS, report }, null, 2) };
   } catch (err) {
     return { statusCode: 500, headers: HEADERS, body: JSON.stringify({ error: String(err.message || err) }) };
   }

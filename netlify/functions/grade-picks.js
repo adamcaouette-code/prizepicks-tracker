@@ -77,6 +77,10 @@ export const handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
   const q = event.queryStringParameters || {};
   const dry = q.dry === '1';
+  // ?retry=1 clears tombstones for this date and tries again. A pick given up on
+  // is excluded from calibration, so a stuck one quietly shrinks the sample the
+  // Brier score is computed from.
+  const retry = q.retry === '1';
   const date = q.date || new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const dayFinal = (Date.now() - Date.parse(`${date}T00:00:00Z`)) >= FINAL_AFTER_MS;
 
@@ -99,7 +103,7 @@ export const handler = async (event) => {
     // If the day isn't final yet, clear any premature tombstones so unfinished games
     // aren't permanently benched — they'll grade once the day is final.
     let reset = 0;
-    if (!dayFinal) {
+    if (!dayFinal || retry) {
       for (const p of picks) { if (ungraded(p) && !p.ungradeable && p.gradeAttempts) { p.gradeAttempts = 0; reset++; } }
     }
 
@@ -130,7 +134,7 @@ export const handler = async (event) => {
       statusCode: 200,
       headers,
       body: JSON.stringify({
-        date, dry, dayFinal,
+        date, dry, retry, dayFinal,
         newlyGraded: graded,
         stillPending,
         remaining,

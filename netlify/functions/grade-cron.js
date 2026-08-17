@@ -38,7 +38,12 @@ async function heartbeat(payload) {
 export const handler = async () => {
   const base = process.env.URL || process.env.DEPLOY_PRIME_URL || 'https://atombets.netlify.app';
   const day = (offset) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
-  const targets = [day(1), day(2)];
+  // Four days back, not two. A day that didn't fully drain in its first 48h was
+  // previously never revisited, so those picks stayed pending forever — and a
+  // pick that never grades is a pick silently missing from the calibration
+  // sample. A day with nothing left returns immediately, so the extra passes
+  // cost a blob read each.
+  const targets = [day(1), day(2), day(3), day(4)];
 
   const ran = [];
   for (const d of targets) {
