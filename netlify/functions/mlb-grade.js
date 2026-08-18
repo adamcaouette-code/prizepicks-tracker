@@ -52,18 +52,27 @@ async function cached(key, ttl, fn) {
 // Every player in the league, name -> personId. One call, cached a week; this is
 // what lets us grade a pick logged before mlbId was carried on it.
 async function playerIndex(season) {
-  return cached(`players-${season}`, INDEX_TTL, async () => {
+  // CACHE THE PLAIN ROWS, NOT THE INDEX.
+  //
+  // buildIndex returns Maps and a Set, and this cache writes through JSON to a
+  // Netlify blob. A Map serializes to {} — so the first (cold) call worked and
+  // every cached call afterwards blew up with "index.exact.get is not a
+  // function". Rows are a plain array, survive the round trip intact, and
+  // rebuilding the index from them is microseconds; the network call was always
+  // the expensive part.
+  const rows = await cached(`player-rows-${season}`, INDEX_TTL, async () => {
     const d = await api(`/sports/1/players?season=${season}`);
-    // Indexed for fuzzy-but-safe matching: PrizePicks and MLB disagree about
-    // suffixes ("Luis Robert" vs "Luis Robert Jr.") and short forms ("Nate Lowe"
-    // vs "Nathaniel Lowe"), and an exact-only match silently drops both.
-    const rows = [];
+    const out = [];
     for (const p of d?.people || []) {
       if (!p.id || !p.fullName) continue;
-      rows.push([p.fullName, p.id]);
+      out.push([p.fullName, p.id]);
     }
-    return buildIndex(rows);
+    return out;
   });
+  // Indexed for fuzzy-but-safe matching: PrizePicks and MLB disagree about
+  // suffixes ("Luis Robert" vs "Luis Robert Jr.") and short forms ("Nate Lowe"
+  // vs "Nathaniel Lowe"), and an exact-only match silently drops both.
+  return Array.isArray(rows) ? buildIndex(rows) : null;
 }
 
 // ---- PrizePicks stat name -> a number from an MLB game-log split -------------

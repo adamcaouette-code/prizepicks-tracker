@@ -12,11 +12,18 @@ import { reset, read, seed } from '../helpers/blobs.mjs';
 const LEG = (over) => ({
   projectionId: over.id, player: over.player, stat: over.stat, line: over.line,
   pick: over.pick, oddsType: 'standard', team: 'CIN', matchup: 'CIN vs PIT',
-  start: '2026-08-14T19:30:00.000-04:00', prob: 0.6, image: null,
+  start: START, prob: 0.6, image: null,
 });
 
 // PrizePicks history: one settled game per projection.
-const history = (value) => ({ games: [{ stat_value: value, game_start_time: '2026-08-14T23:30:00Z' }] });
+// The slate these fixtures play on. It MUST be relative to today: retention
+// sweeps a settled slip 4 days after its slate date, so a hardcoded date turns
+// into a time bomb that passes until the calendar catches up and then deletes
+// the fixture mid-test. Two days back is old enough to be final (36h) and far
+// enough from the 4-day sweep to never race it.
+const SLATE = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+const START = `${SLATE}T19:30:00.000-04:00`;
+const history = (value) => ({ games: [{ stat_value: value, game_start_time: `${SLATE}T23:30:00Z` }] });
 
 export default async function ({ t }) {
   // ---------- save / list / rename / delete --------------------------------
@@ -42,7 +49,7 @@ export default async function ({ t }) {
   t.eq('the name is trimmed and collapsed', saved.name, 'Friday night card');
   t.eq('stake is kept', saved.stake, 10);
   t.eq('status starts pending', saved.status, 'pending');
-  t.eq('slateDate comes from when the legs PLAY, not when you saved', saved.slateDate, '2026-08-14');
+  t.eq('slateDate comes from when the legs PLAY, not when you saved', saved.slateDate, SLATE);
   t.eq('legs start ungraded', saved.legs.map((l) => l.hit), [null, null]);
 
   const listed = JSON.parse((await list()).body).slips;
@@ -117,8 +124,8 @@ export default async function ({ t }) {
   const r3 = await slips3.handler({ httpMethod: 'POST', queryStringParameters: {}, body: JSON.stringify({
     entry: 'power', stake: 10,
     legs: [
-      { player: 'No Id', stat: 'Hits', line: 0.5, pick: 'over', start: '2026-08-14T19:30:00.000-04:00' },
-      { player: 'Also No Id', stat: 'Hits', line: 0.5, pick: 'over', start: '2026-08-14T19:30:00.000-04:00' },
+      { player: 'No Id', stat: 'Hits', line: 0.5, pick: 'over', start: START },
+      { player: 'Also No Id', stat: 'Hits', line: 0.5, pick: 'over', start: START },
     ] }) });
   const s3 = JSON.parse(r3.body).slip;
   t.eq('a leg with no projection id saves with a null id', s3.legs[0].projectionId, null);
@@ -158,7 +165,7 @@ export default async function ({ t }) {
     body: JSON.stringify({ name, entry: 'power', stake: 10,
       legs: [
         LEG({ id: 'G', player: 'Has Id', stat: 'Hits', line: 0.5, pick }),
-        { player: 'No Id', stat: 'Hits', line: 0.5, pick: 'over', start: '2026-08-14T19:30:00.000-04:00' },
+        { player: 'No Id', stat: 'Hits', line: 0.5, pick: 'over', start: START },
       ],
       sizing: { label: 'POWER', payouts: [{ hits: 2, pays: 30 }] } }) })).body).slip;
 
@@ -179,7 +186,7 @@ export default async function ({ t }) {
     body: JSON.stringify({ name: 'Cannot be decided', entry: 'power', stake: 10,
       legs: [
         LEG({ id: 'H', player: 'Has Id', stat: 'Hits', line: 0.5, pick: 'over' }),
-        { player: 'No Id', stat: 'Hits', line: 0.5, pick: 'over', start: '2026-08-14T19:30:00.000-04:00' },
+        { player: 'No Id', stat: 'Hits', line: 0.5, pick: 'over', start: START },
       ] }) })).body).slip;
   const mock5 = mockFetch([['projections/H/history', async () => history(2)]]);   // that leg HIT
   try {
@@ -272,6 +279,8 @@ export default async function ({ t }) {
     slips8.slateDateFor([], NINE_PM_ET), '2026-08-14');
   t.eq('a midday save is unambiguous either way',
     slips8.slateDateFor([], new Date('2026-08-14T18:00:00Z')), '2026-08-14');
+  // These slateDateFor cases pass an explicit `now`, so their dates ARE the
+  // point of the test and stay fixed — nothing here is stored or swept.
   t.eq('a leg with a real start time always wins over the clock',
     slips8.slateDateFor([{ start: '2026-08-14T19:30:00.000-04:00' }], NINE_PM_ET), '2026-08-14');
   t.eq('the EARLIEST leg decides the slate',
@@ -297,7 +306,7 @@ export default async function ({ t }) {
   bad.slateDate = '2026-08-15';
   seed('saved-slips', drifted.id, bad);
 
-  const driftMock = mockFetch([[/history/, async () => ({ games: [{ stat_value: 2, game_start_time: '2026-08-14T23:30:00Z' }] })]]);
+  const driftMock = mockFetch([[/history/, async () => ({ games: [{ stat_value: 2, game_start_time: `${SLATE}T23:30:00Z` }] })]]);
   try {
     const grader = await loadFn('grade-slips.js');
     await grader.handler({ queryStringParameters: {} });
