@@ -21,7 +21,7 @@
 // string in its footer, and tests/unit/version.test.mjs fails if the two drift —
 // otherwise the page and the functions can report different versions and the
 // whole point of having a version is lost.
-export const VERSION = '2.1.0';
+export const VERSION = '2.2.0';
 
 const HEADERS = {
   'Content-Type': 'application/json',
@@ -47,7 +47,7 @@ export const handler = async () => ({
     // expect is missing from a fresh deploy, the bundle did not include it.
     endpoints: [
       'version', 'grade-audit', 'fantasy-check', 'grade-picks', 'grade-slips',
-      'grade-backfill-background', 'grade-backfill-status', 'espn-grade',
+      'grade-backfill-background', 'grade-backfill-status', 'fantasy-check-background', 'espn-grade',
       'mlb-grade', 'pp-403-probe', 'calibration', 'slips',
     ],
   }, null, 2),

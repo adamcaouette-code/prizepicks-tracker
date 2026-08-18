@@ -161,7 +161,7 @@ async function gameLog(personId, season, group) {
  * grade-picks' convention so callers flip it for an under exactly as before.
  * Returns null (never a guess) when anything is unresolvable.
  */
-export async function gradeFromMlb({ player, mlbId, date, stat, line, allowUnverifiedFantasy = false }) {
+export async function gradeFromMlb({ player, mlbId, date, stat, line, allowUnverifiedFantasy = false, debug = false }) {
   if (!date || line == null) return null;
 
   // Fantasy Score is a weighted formula rather than a column, so it resolves
@@ -210,7 +210,12 @@ export async function gradeFromMlb({ player, mlbId, date, stat, line, allowUnver
   if (!isFinite(value)) return null;
   // `matchedVia` records how the name was resolved, so a loose match stays
   // visible in the pick log rather than blending in with the exact ones.
-  return { result: value, hit: value > Number(line), source: 'mlb', matchedVia: how || 'exact' };
+  // `line` is the raw box-score line for the game that settled it. Only attached
+  // when asked for: fantasy-check needs it to tell a genuine 0-for-4 from a
+  // lookup that found the wrong game, and a computed 0 looks identical either way
+  // without it.
+  return { result: value, hit: value > Number(line), source: 'mlb', matchedVia: how || 'exact',
+    ...(debug ? { statLine: pick.stat, gameDate: pick.date } : {}) };
 }
 
 /**

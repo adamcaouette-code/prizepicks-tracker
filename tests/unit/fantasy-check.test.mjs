@@ -1,138 +1,122 @@
 // The Fantasy Score weight check.
 //
-// This endpoint returned a BLANK PAGE in production — no JSON, no error. It was
-// doing one awaited network call per pick in a plain loop, which at ~400ms a
-// lookup runs past the ~10s a synchronous Netlify function gets, so the platform
-// killed it mid-flight with nothing in the body. A blank response is the worst
-// possible failure: there is nothing to debug from.
+// This endpoint failed three times in a row against the ~10s a synchronous
+// Netlify function gets: a blank page, then 15 of 40 sampled, then 6 of 40 with
+// the basketball control starved to null so no verdict was reachable at all.
+// Each MLB pick needs a season game log for a distinct player; no amount of
+// concurrency tuning fits a meaningful sample into ten seconds. So the work
+// moved to a background function and the sync endpoint just reads the result.
 //
-// So the rule this file pins is simple: it must ALWAYS answer, and it must say
-// when the answer is partial.
+// What this file pins is the reasoning, not the plumbing: the two corrections
+// that the live runs proved necessary, and the guard against reading a computed
+// zero as a real result.
 
 import { loadFn, mockFetch } from '../helpers/fn.mjs';
-import { reset, seed } from '../helpers/blobs.mjs';
+import { reset, read, seed } from '../helpers/blobs.mjs';
 
 const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+const D = day(3);
 
-const fantasyPick = (i, d) => ({
-  date: d, loggedAt: d + 'T18:00:00Z', league: 'mlb', source: 'board',
+const hitter = (i, over = {}) => ({
+  date: D, loggedAt: D + 'T18:00:00Z', league: 'mlb', source: 'board',
   projectionId: `F${i}`, player: `Hitter ${i}`, stat: 'Hitter Fantasy Score',
   line: 8.5, prob: 0.6, verdict: 'play', oddsType: 'standard',
-  result: null, hit: null, gradedAt: null,
+  result: null, hit: null, gradedAt: null, ...over,
+});
+const baller = (i, over = {}) => hitter(i, {
+  league: 'wnba', stat: 'Fantasy Score', player: `Wing ${i}`, line: 30, ...over,
 });
 
+const NBA_KEYS = ['minutes', 'points', 'rebounds', 'assists', 'steals', 'blocks', 'turnovers'];
+const espnMock = (names) => [
+  [/scoreboard/, async () => ({ events: [{ id: '9', date: D + 'T23:00Z', status: { type: { completed: true, state: 'post' } } }] })],
+  [/summary/, async () => ({ boxscore: { players: [{ statistics: [{ keys: NBA_KEYS,
+    athletes: names.map((n) => ({ athlete: { displayName: n }, stats: ['30', '30', '5', '4', '1', '1', '2'] })) }] }] } })],
+];
+const mlbMock = (n, stat) => [
+  [/\/sports\/1\/players/, async () => ({ people: Array.from({ length: n }, (_, i) => ({ id: 700 + i, fullName: `Hitter ${i}` })) })],
+  [/people\/\d+\/stats/, async () => ({ stats: [{ splits: [{ date: D, stat }] }] })],
+];
+const GOOD_LINE = { hits: 2, doubles: 1, triples: 0, homeRuns: 0, runs: 1, rbi: 1, baseOnBalls: 1 };
+
+const runBg = async (routes, params = {}) => {
+  const bg = await loadFn('fantasy-check-background.js');
+  const m = mockFetch(routes);
+  try { await bg.handler({ queryStringParameters: params }); } finally { m.restore(); }
+  return read('run-stats', 'fantasy-check');
+};
+
 export default async function ({ t }) {
+  // ---- the reader answers before anything has run -------------------------
   reset();
-  const d = day(3);
-  seed('pick-log', d, Array.from({ length: 30 }, (_, i) => fantasyPick(i, d)));
+  const reader = await loadFn('fantasy-check.js');
+  const empty = JSON.parse((await reader.handler({})).body);
+  t.eq('with no result stored it says so rather than erroring', empty.state, 'never run');
+  t.ok('...and names the thing to run', /fantasy-check-background/.test(empty.next));
+  t.eq('MLB stays gated in every case', empty.mlbCurrentlyEnabled, false);
+  t.ok('the weights are shown even with no result', !!empty.weightsInUse?.mlbHitter?.singles);
 
-  const mod = await loadFn('fantasy-check.js');
-
-  // A slow upstream is the exact condition that killed it in production.
-  const slow = (body) => async () => { await new Promise((r) => setTimeout(r, 40)); return body; };
-  const mock = mockFetch([
-    [/\/sports\/1\/players/, slow({ people: Array.from({ length: 30 }, (_, i) => ({ id: 700 + i, fullName: `Hitter ${i}` })) })],
-    [/people\/\d+\/stats/, slow({ stats: [{ splits: [{ date: d, stat: {
-      hits: 2, doubles: 1, triples: 0, homeRuns: 0, runs: 1, rbi: 1, baseOnBalls: 1 } }] }] })],
-  ]);
-
-  let res, out;
-  try {
-    // A budget far shorter than the work needed, so the timeout path is what runs.
-    res = await mod.handler({ queryStringParameters: { budget: '60', limit: '30' } });
-    out = JSON.parse(res.body);
-  } finally { mock.restore(); }
-
-  t.eq('it answers at all rather than dying with an empty body', res.statusCode, 200);
-  t.ok('the body is real JSON', !!out && typeof out === 'object');
-  t.ok('it finds the fantasy props in the log', out.standardTierPicksUsed >= 30);
-  t.eq('...and says plainly that it ran out of budget', out.timedOut, true);
-  t.ok('...with a next step rather than just a flag', /limit=|faster pass/.test(out.timeoutNote || ''));
-  t.ok('it reports how many it actually attempted', typeof out.attempted === 'number' && out.attempted >= 1);
-  t.ok('...and how long it took', typeof out.elapsedMs === 'number');
-  t.ok('it stopped early instead of running the whole sample', out.attempted < 30, `attempted ${out.attempted}`);
-
-  // With room to work, it resolves the sample and reaches a verdict.
+  // ---- correction 1: tiers cannot be mixed --------------------------------
+  // A goblin line is set BELOW the median outcome by design, a demon above it.
+  // The first live run had 578 goblins against 142 standard, and mixing them
+  // manufactured a 2.35x "weight error" that was really just tier mix.
   reset();
-  seed('pick-log', d, Array.from({ length: 12 }, (_, i) => fantasyPick(i, d)));
-  const mod2 = await loadFn('fantasy-check.js');
-  const fast = mockFetch([
-    [/\/sports\/1\/players/, async () => ({ people: Array.from({ length: 12 }, (_, i) => ({ id: 700 + i, fullName: `Hitter ${i}` })) })],
-    [/people\/\d+\/stats/, async () => ({ stats: [{ splits: [{ date: d, stat: {
-      hits: 2, doubles: 1, triples: 0, homeRuns: 0, runs: 1, rbi: 1, baseOnBalls: 1 } }] }] })],
-  ]);
-  let full;
-  try { full = JSON.parse((await mod2.handler({ queryStringParameters: {} })).body); } finally { fast.restore(); }
+  const mixed = [
+    ...Array.from({ length: 12 }, (_, i) => hitter(i, { oddsType: 'standard', line: 8.5 })),
+    ...Array.from({ length: 30 }, (_, i) => hitter(100 + i, { oddsType: 'goblin', line: 2.5 })),
+    ...Array.from({ length: 10 }, (_, i) => hitter(200 + i, { oddsType: 'demon', line: 20 })),
+  ];
+  seed('pick-log', D, mixed);
+  const tiered = await runBg(mlbMock(400, GOOD_LINE));
 
-  t.eq('a sample that fits does not report a timeout', full.timedOut, false);
-  t.ok('every pick was attempted', full.attempted >= 12, `attempted ${full.attempted}`);
-  const v = full.verdicts?.['mlb-hitter'];
-  t.ok('the MLB hitter formula produces a verdict', !!v);
-  t.ok('...with a median computed score', typeof v.medianComputed === 'number');
-  t.ok('...compared against the median line', typeof v.medianLine === 'number');
-  t.ok('...as a ratio, which is what names the error', typeof v.lineRatio === 'number');
-  t.eq('MLB stays gated regardless of what the check finds', full.mlbCurrentlyEnabled, false);
-  t.ok('the weights it used are shown, so a wrong one can be corrected',
-    !!full.weightsInUse?.mlbHitter?.singles);
+  t.eq('only standard-tier picks feed the ratio', tiered.standardTierPicksAvailable['mlb-hitter'], 12);
+  t.eq('...while every tier is still counted, so the exclusion is visible', tiered.allTiersInLog.goblin, 30);
+  t.eq('...and the demons too', tiered.allTiersInLog.demon, 10);
+  t.eq('the median line is the STANDARD line, not dragged down by goblins',
+    tiered.verdicts['mlb-hitter'].medianLine, 8.5);
 
-  // The cached-Map regression that broke this endpoint in production: the second
-  // MLB lookup read a serialized index back and threw. Twelve picks means the
-  // cache is exercised many times over.
-  t.ok('repeated MLB lookups survive the cache round trip', full.attempted >= 12 && !full.error);
-
-  // ---- the two flaws the first real run exposed ---------------------------
-  // 1. TIER MIXING. A goblin line is set below the median outcome by design and
-  //    a demon above it, so mixing tiers makes the median line meaningless. The
-  //    first live run had four of eight hitter lines at 3.5 or under and
-  //    manufactured a 2.35x "weight error" that was really just tier mix.
+  // ---- correction 2: the control must not be starved ----------------------
+  // The previous run sampled every Nth pick GLOBALLY, ran out six picks in, and
+  // resolved nothing but MLB — so the control was null and no verdict was
+  // reachable. Sampling is per kind now.
   reset();
-  const mixed = [];
-  for (let i = 0; i < 6; i++) mixed.push({ ...fantasyPick(i, d), oddsType: 'standard', line: 8.5 });
-  for (let i = 6; i < 14; i++) mixed.push({ ...fantasyPick(i, d), oddsType: 'goblin', line: 2.5 });
-  seed('pick-log', d, mixed);
-  const mod3 = await loadFn('fantasy-check.js');
-  const tierMock = mockFetch([
-    [/\/sports\/1\/players/, async () => ({ people: Array.from({ length: 14 }, (_, i) => ({ id: 700 + i, fullName: `Hitter ${i}` })) })],
-    [/people\/\d+\/stats/, async () => ({ stats: [{ splits: [{ date: d, stat: {
-      hits: 2, doubles: 1, triples: 0, homeRuns: 0, runs: 1, rbi: 1, baseOnBalls: 1 } }] }] })],
+  seed('pick-log', D, [
+    ...Array.from({ length: 200 }, (_, i) => hitter(i)),      // MLB dominates
+    ...Array.from({ length: 12 }, (_, i) => baller(i)),        // control is a sliver
   ]);
-  let tiered;
-  try { tiered = JSON.parse((await mod3.handler({ queryStringParameters: {} })).body); } finally { tierMock.restore(); }
+  const strat = await runBg([...espnMock(Array.from({ length: 12 }, (_, i) => `Wing ${i}`)), ...mlbMock(200, GOOD_LINE)]);
 
-  t.eq('goblin picks are excluded from the ratio', tiered.standardTierPicksUsed, 6);
-  t.ok('...but every tier is still counted so the exclusion is visible',
-    tiered.allTiersInLog.goblin === 8 && tiered.allTiersInLog.standard === 6);
-  t.eq('...so the median line is the STANDARD line, not dragged down by goblins',
-    tiered.verdicts?.['mlb-hitter']?.medianLine, 8.5);
+  t.ok('the control resolves even when MLB dominates the log',
+    strat.verdicts.basketball?.n >= 10, `basketball n=${strat.verdicts.basketball?.n}`);
+  t.ok('...and is published as the baseline', typeof strat.controlRatio === 'number');
+  t.ok('...labelled a control, not judged as a result', /CONTROL/.test(strat.verdicts.basketball.verdict));
+  t.ok('MLB is measured RELATIVE to it, not against 1.0',
+    typeof strat.verdicts['mlb-hitter'].vsControl === 'number');
+  t.ok('...and reaches an actual verdict', /WEIGHTS LOOK RIGHT|TOO HIGH|TOO LOW/.test(strat.verdicts['mlb-hitter'].verdict),
+    strat.verdicts['mlb-hitter'].verdict);
 
-  // 2. SELECTION BIAS. The log holds props the engine CHOSE, mostly overs it
-  //    liked, so outcomes beat lines even with perfect weights. Basketball is
-  //    the control: its weights are standard, so its ratio IS the bias floor.
+  // ---- a computed zero is not quietly treated as a result -----------------
+  // Three of six sampled hitters computed to exactly 0 on one live run. That is
+  // possible — a real 0-for-4 — but at that rate it more likely means the lookup
+  // found a game the player never appeared in, and a ratio built on it is junk.
   reset();
-  const bball = (i) => ({ ...fantasyPick(i, d), league: 'wnba', stat: 'Fantasy Score', oddsType: 'standard', line: 30, player: `Wing ${i}` });
-  const both = [...Array.from({ length: 10 }, (_, i) => bball(i)),
-                ...Array.from({ length: 10 }, (_, i) => ({ ...fantasyPick(100 + i, d), oddsType: 'standard', line: 8.5 }))];
-  seed('pick-log', d, both);
-  const mod4 = await loadFn('fantasy-check.js');
-  const NBA_KEYS = ['minutes', 'points', 'rebounds', 'assists', 'steals', 'blocks', 'turnovers'];
-  const ctlMock = mockFetch([
-    [/scoreboard/, async () => ({ events: [{ id: '9', date: d + 'T23:00Z', status: { type: { completed: true, state: 'post' } } }] })],
-    [/summary/, async () => ({ boxscore: { players: [{ statistics: [{ keys: NBA_KEYS,
-      athletes: Array.from({ length: 10 }, (_, i) => ({ athlete: { displayName: `Wing ${i}` }, stats: ['30', '30', '5', '4', '1', '1', '2'] })) }] }] } })],
-    [/\/sports\/1\/players/, async () => ({ people: Array.from({ length: 10 }, (_, i) => ({ id: 800 + i, fullName: `Hitter ${100 + i}` })) })],
-    [/people\/\d+\/stats/, async () => ({ stats: [{ splits: [{ date: d, stat: {
-      hits: 2, doubles: 1, triples: 0, homeRuns: 0, runs: 1, rbi: 1, baseOnBalls: 1 } }] }] })],
-  ]);
-  let ctl;
-  try { ctl = JSON.parse((await mod4.handler({ queryStringParameters: {} })).body); } finally { ctlMock.restore(); }
+  seed('pick-log', D, Array.from({ length: 14 }, (_, i) => hitter(i)));
+  const zeroed = await runBg(mlbMock(14, { hits: 0, doubles: 0, triples: 0, homeRuns: 0, runs: 0, rbi: 0, baseOnBalls: 0 }));
 
-  t.ok('basketball resolves as the control', ctl.verdicts?.basketball?.n >= 8);
-  t.ok('...and is labelled as a control rather than judged',
-    /CONTROL/.test(ctl.verdicts.basketball.verdict), ctl.verdicts.basketball.verdict);
-  t.ok('...with its ratio published as the baseline', typeof ctl.controlRatio === 'number');
-  t.ok('an MLB verdict is measured RELATIVE to the control, not against 1.0',
-    typeof ctl.verdicts?.['mlb-hitter']?.vsControl === 'number',
-    JSON.stringify(ctl.verdicts?.['mlb-hitter']));
-  t.ok('the method states both corrections so the number is not read naively',
-    /goblin/.test(ctl.method) && /selection bias|only logs props it liked/.test(ctl.method));
+  t.ok('zero results are counted', zeroed.verdicts['mlb-hitter'].zeroResults >= 10);
+  t.ok('...and a high share is called SUSPECT rather than scored',
+    /SUSPECT/.test(zeroed.verdicts['mlb-hitter'].verdict), zeroed.verdicts['mlb-hitter'].verdict);
+  t.ok('...pointing at the raw stat line as the way to tell them apart',
+    /statLine/.test(zeroed.verdicts['mlb-hitter'].verdict));
+  t.ok('the raw box-score line is attached so a real 0-for-4 is distinguishable',
+    zeroed.sampleRows.some((r) => r.statLine && typeof r.statLine === 'object'));
+  t.ok('...along with the game date that settled it',
+    zeroed.sampleRows.some((r) => !!r.gameDate));
+
+  // ---- the reader serves what the background job stored -------------------
+  const served = JSON.parse((await (await loadFn('fantasy-check.js')).handler({})).body);
+  t.eq('the reader returns the stored run', served.state, 'done');
+  t.ok('...with its verdicts intact', !!served.verdicts['mlb-hitter']);
+  t.ok('...and still says MLB is gated', served.mlbCurrentlyEnabled === false);
+  t.ok('...and how to turn it on once the weights check out', /FANTASY_MLB_VERIFIED/.test(served.howToEnable));
 }
