@@ -45,7 +45,7 @@ export default async function ({ t }) {
 
   t.eq('it answers at all rather than dying with an empty body', res.statusCode, 200);
   t.ok('the body is real JSON', !!out && typeof out === 'object');
-  t.ok('it finds the fantasy props in the log', out.fantasyPicksInLog >= 30);
+  t.ok('it finds the fantasy props in the log', out.standardTierPicksUsed >= 30);
   t.eq('...and says plainly that it ran out of budget', out.timedOut, true);
   t.ok('...with a next step rather than just a flag', /limit=|faster pass/.test(out.timeoutNote || ''));
   t.ok('it reports how many it actually attempted', typeof out.attempted === 'number' && out.attempted >= 1);
@@ -79,4 +79,60 @@ export default async function ({ t }) {
   // MLB lookup read a serialized index back and threw. Twelve picks means the
   // cache is exercised many times over.
   t.ok('repeated MLB lookups survive the cache round trip', full.attempted >= 12 && !full.error);
+
+  // ---- the two flaws the first real run exposed ---------------------------
+  // 1. TIER MIXING. A goblin line is set below the median outcome by design and
+  //    a demon above it, so mixing tiers makes the median line meaningless. The
+  //    first live run had four of eight hitter lines at 3.5 or under and
+  //    manufactured a 2.35x "weight error" that was really just tier mix.
+  reset();
+  const mixed = [];
+  for (let i = 0; i < 6; i++) mixed.push({ ...fantasyPick(i, d), oddsType: 'standard', line: 8.5 });
+  for (let i = 6; i < 14; i++) mixed.push({ ...fantasyPick(i, d), oddsType: 'goblin', line: 2.5 });
+  seed('pick-log', d, mixed);
+  const mod3 = await loadFn('fantasy-check.js');
+  const tierMock = mockFetch([
+    [/\/sports\/1\/players/, async () => ({ people: Array.from({ length: 14 }, (_, i) => ({ id: 700 + i, fullName: `Hitter ${i}` })) })],
+    [/people\/\d+\/stats/, async () => ({ stats: [{ splits: [{ date: d, stat: {
+      hits: 2, doubles: 1, triples: 0, homeRuns: 0, runs: 1, rbi: 1, baseOnBalls: 1 } }] }] })],
+  ]);
+  let tiered;
+  try { tiered = JSON.parse((await mod3.handler({ queryStringParameters: {} })).body); } finally { tierMock.restore(); }
+
+  t.eq('goblin picks are excluded from the ratio', tiered.standardTierPicksUsed, 6);
+  t.ok('...but every tier is still counted so the exclusion is visible',
+    tiered.allTiersInLog.goblin === 8 && tiered.allTiersInLog.standard === 6);
+  t.eq('...so the median line is the STANDARD line, not dragged down by goblins',
+    tiered.verdicts?.['mlb-hitter']?.medianLine, 8.5);
+
+  // 2. SELECTION BIAS. The log holds props the engine CHOSE, mostly overs it
+  //    liked, so outcomes beat lines even with perfect weights. Basketball is
+  //    the control: its weights are standard, so its ratio IS the bias floor.
+  reset();
+  const bball = (i) => ({ ...fantasyPick(i, d), league: 'wnba', stat: 'Fantasy Score', oddsType: 'standard', line: 30, player: `Wing ${i}` });
+  const both = [...Array.from({ length: 10 }, (_, i) => bball(i)),
+                ...Array.from({ length: 10 }, (_, i) => ({ ...fantasyPick(100 + i, d), oddsType: 'standard', line: 8.5 }))];
+  seed('pick-log', d, both);
+  const mod4 = await loadFn('fantasy-check.js');
+  const NBA_KEYS = ['minutes', 'points', 'rebounds', 'assists', 'steals', 'blocks', 'turnovers'];
+  const ctlMock = mockFetch([
+    [/scoreboard/, async () => ({ events: [{ id: '9', date: d + 'T23:00Z', status: { type: { completed: true, state: 'post' } } }] })],
+    [/summary/, async () => ({ boxscore: { players: [{ statistics: [{ keys: NBA_KEYS,
+      athletes: Array.from({ length: 10 }, (_, i) => ({ athlete: { displayName: `Wing ${i}` }, stats: ['30', '30', '5', '4', '1', '1', '2'] })) }] }] } })],
+    [/\/sports\/1\/players/, async () => ({ people: Array.from({ length: 10 }, (_, i) => ({ id: 800 + i, fullName: `Hitter ${100 + i}` })) })],
+    [/people\/\d+\/stats/, async () => ({ stats: [{ splits: [{ date: d, stat: {
+      hits: 2, doubles: 1, triples: 0, homeRuns: 0, runs: 1, rbi: 1, baseOnBalls: 1 } }] }] })],
+  ]);
+  let ctl;
+  try { ctl = JSON.parse((await mod4.handler({ queryStringParameters: {} })).body); } finally { ctlMock.restore(); }
+
+  t.ok('basketball resolves as the control', ctl.verdicts?.basketball?.n >= 8);
+  t.ok('...and is labelled as a control rather than judged',
+    /CONTROL/.test(ctl.verdicts.basketball.verdict), ctl.verdicts.basketball.verdict);
+  t.ok('...with its ratio published as the baseline', typeof ctl.controlRatio === 'number');
+  t.ok('an MLB verdict is measured RELATIVE to the control, not against 1.0',
+    typeof ctl.verdicts?.['mlb-hitter']?.vsControl === 'number',
+    JSON.stringify(ctl.verdicts?.['mlb-hitter']));
+  t.ok('the method states both corrections so the number is not read naively',
+    /goblin/.test(ctl.method) && /selection bias|only logs props it liked/.test(ctl.method));
 }
