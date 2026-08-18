@@ -29,6 +29,12 @@ import { fantasyKind, BASKETBALL_WEIGHTS, MLB_HITTER_WEIGHTS, MLB_PITCHER_WEIGHT
 
 const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
+// A synchronous Netlify function is killed at ~10s with no response body at all.
+// Stop starting new lookups well before that so there is always time to
+// serialize an answer — a partial verdict is useful, a blank page is not.
+const BUDGET_MS = 6500;
+const CONCURRENCY = 5;
+
 const median = (xs) => {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -38,8 +44,14 @@ const median = (xs) => {
 
 export const handler = async (event) => {
   const q = event.queryStringParameters || {};
+  const started = Date.now();
+  // Overridable so a test can drive the budget path in milliseconds instead of
+  // seconds, and so a slow day can be given a deliberately short pass.
+  const budgetMs = Math.min(Number(q.budget) || BUDGET_MS, BUDGET_MS);
   const days = Math.min(Number(q.days) || 30, 120);
-  const limit = Math.min(Number(q.limit) || 40, 80);
+  // Default sample cut from 40: each one is a network round trip, and the
+  // verdict is a median — 15 resolved picks already pins a factor-of-two error.
+  const limit = Math.min(Number(q.limit) || 15, 40);
 
   try {
     const store = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
@@ -63,22 +75,43 @@ export const handler = async (event) => {
 
     const byKind = {};
     const rows = [];
-    for (const p of sample) {
-      // Compute the score WITHOUT the verified gate — that is the whole point of
-      // this endpoint: see what the formula produces before trusting it.
-      const g = p.kind === 'basketball'
-        ? await gradeFromEspn({ league: p.league, player: p.player, date: p.date, stat: p.stat, line: p.line })
-        // allowUnverifiedFantasy lets this endpoint SEE the formula's output
-        // while the grader itself still refuses to write it anywhere.
-        : await gradeFromMlb({ player: p.player, mlbId: p.mlbId, date: p.date, stat: p.stat, line: p.line, allowUnverifiedFantasy: true });
-      if (g == null || !isFinite(Number(g.result))) continue;
+    const score = async (p) => (p.kind === 'basketball'
+      ? gradeFromEspn({ league: p.league, player: p.player, date: p.date, stat: p.stat, line: p.line })
+      // allowUnverifiedFantasy lets this endpoint SEE the formula's output
+      // while the grader itself still refuses to write it anywhere.
+      : gradeFromMlb({ player: p.player, mlbId: p.mlbId, date: p.date, stat: p.stat, line: p.line, allowUnverifiedFantasy: true }));
 
+    const keep = (p, g) => {
+      if (g == null || !isFinite(Number(g.result))) return;
       const b = (byKind[p.kind] ||= { computed: [], lines: [], n: 0 });
       b.computed.push(Number(g.result));
       b.lines.push(Number(p.line));
       b.n++;
       if (rows.length < 12) rows.push({ player: p.player, stat: p.stat, date: p.date, line: p.line, computed: g.result });
-    }
+    };
+
+    // This used to run one await per pick in a plain for-loop. At ~400ms a
+    // lookup that is 16s for 40 picks, well past the ~10s a synchronous Netlify
+    // function gets, so it was killed mid-flight and returned an EMPTY body —
+    // no JSON, no error, nothing to debug from.
+    //
+    // Three things fix it: prime the caches with one serial call so parallel
+    // workers don't each fetch the same giant player list, run the rest with
+    // real concurrency, and stop starting work before the platform's limit so
+    // there is always time to answer with whatever was gathered.
+    if (sample.length) keep(sample[0], await score(sample[0]).catch(() => null));
+
+    let attempted = Math.min(1, sample.length);
+    let timedOut = false;
+    const queue = sample.slice(1);
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+      while (queue.length) {
+        if (Date.now() - started > budgetMs) { timedOut = true; return; }
+        const p = queue.shift();
+        attempted++;
+        keep(p, await score(p).catch(() => null));
+      }
+    }));
 
     const verdicts = {};
     for (const [kind, b] of Object.entries(byKind)) {
@@ -101,6 +134,10 @@ export const handler = async (event) => {
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
       fantasyPicksInLog: fantasyPicks.length,
       sampled: sample.length,
+      attempted,
+      elapsedMs: Date.now() - started,
+      timedOut,
+      ...(timedOut ? { timeoutNote: 'Ran out of budget before finishing the sample. The verdicts below are from what DID resolve; add ?limit=8 for a faster pass, or trust them if n is already 10+.' } : {}),
       mlbCurrentlyEnabled: MLB_VERIFIED,
       verdicts,
       sampleRows: rows,
