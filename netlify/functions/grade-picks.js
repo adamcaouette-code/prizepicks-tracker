@@ -153,10 +153,32 @@ export const handler = async (event) => {
     // how good the new sources are.
     let revived = 0;
     for (const p of picks) {
-      if (ungraded(p) && !p.ungradeable && p.graderEra !== GRADER_ERA) {
-        if (p.gradeAttempts) { p.gradeAttempts = 0; revived++; }
-        p.graderEra = GRADER_ERA;
+      if (!ungraded(p) || p.graderEra === GRADER_ERA) continue;
+      // A CONDITIONAL ungradeable mark — no mapping for the stat, no source for
+      // the league — is a statement about what this app supported at the time,
+      // not about the pick. Adding a mapping or a data source makes it gradeable
+      // again, so the mark lifts when the era moves. Without this, cleaning up
+      // the backlog would quietly bury picks that a later mapping could rescue,
+      // and every unmapped stat in the current audit became gradeable at some
+      // point in the last few days.
+      //
+      // A PERMANENT mark (a combo, a period prop) is a statement about the prop
+      // itself and never lifts.
+      if (p.ungradeable) {
+        if (p.ungradeablePermanent === true) continue;
+        if (p.ungradeableReason) {
+          delete p.ungradeable;
+          delete p.ungradeableReason;
+          delete p.ungradeablePermanent;
+          p.gradeAttempts = 0;
+          revived++;
+        } else {
+          continue;   // an older mark with no recorded reason: leave it alone
+        }
+      } else if (p.gradeAttempts) {
+        p.gradeAttempts = 0; revived++;
       }
+      p.graderEra = GRADER_ERA;
     }
 
     const needsPpId = (p) => gradersFor(p.league).every((src) => src === 'prizepicks');

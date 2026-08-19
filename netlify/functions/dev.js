@@ -125,6 +125,9 @@ export const handler = async () => {
     "async function retrySlips(){show('retrying given-up slip legs ...','clears tombstones, then regrades');var r=await call('/api/grade-slips?retry=1');show('grade-slips retry',r.json||r);}",
     "async function gradeSlips(){show('grading saved slips ...','working');var r=await call('/api/grade-slips');show('grade-slips',r.json||r);}",
     "async function diagnose(){var d=document.getElementById('whyDate').value;if(!d)return show('diagnose','pick a date first');show('diagnosing '+d+' ...','checking every pending pick against PrizePicks');var r=await call('/api/grade-debug?date='+d+'&limit=40');show('why not grading — '+d,r.json||r);}",
+    "async function cleanupPreview(){show('checking what cannot be graded ...','working');var r=await call('/api/grade-cleanup?dry=1');show('preview — nothing written yet',r.json||r);}",
+    "async function cleanupApply(){if(!confirm('Mark every ungradeable pick so the grader stops retrying them?\\n\\nThey are MARKED, not deleted — combos and period props permanently, everything else only until a mapping or source covers it.'))return;show('marking ...','working');var r=await call('/api/grade-cleanup');show('marked (refresh to update counts)',r.json||r);}",
+    "async function cleanupUndo(){show('undoing ...','working');var r=await call('/api/grade-cleanup?undo=1');show('undo — conditional marks cleared, attempts reset',r.json||r);}",
     "async function mlbGradeTest(){show('MLB grader ...','working');var r=await call('/api/mlb-grade');show('MLB grader — mapped stats',r.json||r);}",
     "async function grade(d){show('grading '+d+' ...','working');var res=await call('/api/grade-picks?date='+d);show('grade '+d,res.json||res);}",
     "async function debug(d){show('debug '+d+' ...','working');var res=await call('/api/grade-debug?date='+d+'&limit=6');show('debug '+d,res.json||res);}",
@@ -211,6 +214,23 @@ export const handler = async () => {
     <input type="date" id="whyDate">
     <button onclick="diagnose()">diagnose that date</button>
     <button onclick="mlbGradeTest()">test the MLB grader</button>
+  </div>
+
+  <h2>Stop retrying what can't be graded</h2>
+  <p style="color:#667;max-width:680px;margin:0 0 8px">
+    Every ungraded pick costs an attempt and a slot in the run budget on each pass.
+    Most of the residue isn't waiting on anything — a <b>combo</b> has two players in
+    one prop and no box score settles it, and an <b>esports</b> pick has no free data
+    source in existence. This <b>marks</b> those, it does not delete them: they stay
+    in the log, still count as logged, and the mark is reversible.<br>
+    <b>Permanent</b> (combos, period props) never come back. <b>Conditional</b> (no
+    mapping, no source) return automatically the moment a mapping or data source is
+    added — so nothing is lost by marking them now.
+  </p>
+  <div class="row">
+    <button onclick="cleanupPreview()">preview — what would be marked</button>
+    <button onclick="cleanupApply()">mark them ungradeable</button>
+    <button onclick="cleanupUndo()">undo (conditional only)</button>
   </div>
 
   <h2>Grade / debug any date</h2>
