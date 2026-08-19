@@ -69,6 +69,10 @@ export const handler = async (event) => {
   const dry = q.dry === '1';
   const undo = q.undo === '1';
   const days = Math.min(Number(q.days) || 120, 400);
+  // Leagues to remove from the log outright, comma separated. Unlike marking,
+  // this is a real delete and cannot be undone — so it only ever acts on the
+  // leagues named explicitly in the request, never on a default.
+  const purge = new Set(String(q.purgeLeague || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean));
 
   try {
     const store = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
@@ -79,10 +83,27 @@ export const handler = async (event) => {
     const byReason = {};
     const examples = [];
 
+    let purged = 0;
+    const purgedByLeague = {};
+
     for (const date of dates) {
       let picks = [];
       try { picks = (await store.get(date, { type: 'json' })) || []; } catch { continue; }
       let touched = false;
+
+      if (purge.size) {
+        const before = picks.length;
+        const kept = picks.filter((p) => !purge.has(String(p.league || '').toLowerCase()));
+        for (const p of picks) {
+          const lg = String(p.league || '').toLowerCase();
+          if (purge.has(lg)) purgedByLeague[lg] = (purgedByLeague[lg] || 0) + 1;
+        }
+        if (kept.length !== before) {
+          purged += before - kept.length;
+          picks = kept;
+          touched = true;
+        }
+      }
 
       for (const p of picks) {
         if (!ungraded(p)) continue;
@@ -127,6 +148,7 @@ export const handler = async (event) => {
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
       mode: undo ? 'undo' : dry ? 'preview (nothing written)' : 'marked',
       days: dates.length,
+      ...(purge.size ? { purgedLeagues: [...purge], purged, purgedByLeague } : {}),
       ...(undo ? { revived } : { marked, alreadyMarked, stillGradeable, byReason, examples }),
       ...(undo ? {} : {
         permanent,

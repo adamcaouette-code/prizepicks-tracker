@@ -98,6 +98,28 @@ export default async function ({ t }) {
   t.ok('...while a combo stays marked, because it is still a combo',
     !!afterBy('A Hitter + B Hitter').ungradeable);
 
+  // ---- purging a league outright ------------------------------------------
+  // Marking is the default because it is reversible. Purging is not, so it only
+  // ever acts on leagues named explicitly in the request — never on a default,
+  // and never as a side effect of a normal cleanup run.
+  reset();
+  seed('pick-log', D, [
+    pick({ league: 'world_cup', player: 'A Winger', stat: 'Clearances' }),
+    pick({ league: 'world_cup', player: 'B Winger', stat: 'Shots', hit: true, result: 3 }),
+    pick({ league: 'mlb', player: 'Keep Me', stat: 'Hits' }),
+  ]);
+  const plain = JSON.parse((await mod.handler({ queryStringParameters: { dry: '1' } })).body);
+  t.eq('a normal run never purges anything', plain.purged, undefined);
+  t.eq('...and leaves every row in place', (read('pick-log', D) || []).length, 3);
+
+  const purged = JSON.parse((await mod.handler({
+    queryStringParameters: { purgeLeague: 'world_cup' } })).body);
+  const left = read('pick-log', D);
+  t.eq('naming a league removes its picks', purged.purged, 2);
+  t.eq('...including the graded ones, since the whole league is going', left.length, 1);
+  t.eq('...leaving other leagues untouched', left[0].player, 'Keep Me');
+  t.ok('...and reporting exactly what went, per league', purged.purgedByLeague.world_cup === 2);
+
   // ---- a new grader era lifts conditional marks by itself -----------------
   // This is why conditional marks are safe to apply now: when a mapping or a
   // source lands, the picks come back with no manual step.

@@ -67,6 +67,34 @@ export default async function ({ t }) {
   t.ok('...and stating why splitting costs sample size',
     /needs its own\s+~50 graded picks/.test(html));
 
+  // ---- a dormant league is kept out of the record entirely ---------------
+  // The World Cup runs once every four years. A handful of picks from one
+  // tournament say nothing about a slate you can actually bet, and they will not
+  // be refreshed for years — so they only drag the overall number around. That
+  // is different from a league performing BADLY, which is a finding worth
+  // keeping; this is a dormant one, which is noise.
+  reset();
+  const withWC = [];
+  for (let i = 0; i < 10; i++) withWC.push(mk('mlb', 0.70, i < 7, i));
+  for (let i = 0; i < 10; i++) withWC.push(mk('world_cup', 0.70, i < 3, 200 + i));
+  seed('pick-log', DAY, withWC);
+  const calWC = await loadFn('calibration.js');
+  const wc = JSON.parse((await calWC.handler({ queryStringParameters: { format: 'json' } })).body);
+
+  t.eq('World Cup picks are excluded from the graded count', wc.graded, 10);
+  t.eq('...and get no league row of their own', wc.leagues?.world_cup, undefined);
+  t.eq('...while MLB is untouched', wc.leagues?.mlb?.graded, 10);
+  t.ok('...and the overall Brier is MLB\'s alone, not dragged by a dormant league',
+    Math.abs(wc.brier - wc.leagues.mlb.brier) < 1e-9,
+    `overall ${wc.brier.toFixed(3)} vs mlb ${wc.leagues.mlb.brier.toFixed(3)}`);
+  const wcHtml = (await calWC.handler({ queryStringParameters: {} })).body;
+  t.ok('...and it never appears in the table', !/WORLD_CUP/i.test(wcHtml));
+
+  // Excluding rather than only deleting matters: a future tournament must not
+  // silently start counting again without a decision being made.
+  t.ok('the exclusion is a named list, so it survives new picks arriving',
+    calWC.EXCLUDED_LEAGUES.has('world_cup') && calWC.EXCLUDED_LEAGUES.has('fifa_world_cup'));
+
   // ---- a league with nothing graded doesn't clutter the table -------------
   reset();
   seed('pick-log', DAY, [

@@ -32,8 +32,23 @@ function dedupe(picks) {
 
 // `perLeague` is off for the recursive call so a league's own summary doesn't
 // try to split itself again.
+// Leagues kept out of the record entirely.
+//
+// The World Cup runs once every four years. A handful of picks from one
+// tournament tell you nothing about how the engine will perform on a slate you
+// can actually bet, and they will not be refreshed for years — so leaving them
+// in only drags the overall number around for no informational gain. That is
+// different from a league performing badly: a bad league is a finding worth
+// keeping, a dormant one is noise.
+//
+// Excluded here rather than only deleted from the log, so a future tournament
+// does not silently start counting again without a decision being made.
+export const EXCLUDED_LEAGUES = new Set(['world_cup', 'fifa_world_cup']);
+
+const isExcluded = (p) => EXCLUDED_LEAGUES.has(String(p.league || '').toLowerCase());
+
 function aggregate(rawPicks, { perLeague = true } = {}) {
-  const picks = dedupe(rawPicks);
+  const picks = dedupe(rawPicks).filter((p) => !isExcluded(p));
   const graded = picks.filter(isGraded);
 
   // Break down what is NOT graded, so a big "pending" number is honest instead of alarming.
