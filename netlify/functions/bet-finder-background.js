@@ -11,7 +11,7 @@ import { getStore } from '@netlify/blobs';
 // Raw MLB data (injuries, personIds, logos). No model involved — see mlb-stats.js.
 import { slate as mlbSlate, normKey as mlbNormKey, PP_TO_MLB_ABBR } from './mlb-stats.js';
 import { attachMlbForm } from './mlb-grade.js';
-import { attachEspnForm, SLUGS as ESPN_SLUGS_FOR_FORM } from './espn-grade.js';
+import { attachEspnForm, markEspnVoids, SLUGS as ESPN_SLUGS_FOR_FORM } from './espn-grade.js';
 
 const MODEL = process.env.JUDGE_MODEL || 'claude-opus-4-8';
 const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap web searches so runs don't blow past the timeout
@@ -1605,7 +1605,17 @@ export const handler = async (event) => {
     // A DNP is refunded, not scored 0. Rating them produced 90%+ "unders" on
     // pitchers who weren't starting — the best numbers on the board, all of them
     // worthless. Filtering here also keeps them out of the judge's token bill.
-    const voids = params.league === 'mlb' ? markVoids(candidates, mlbSlateData) : { inactive: 0, notStarting: 0, total: 0 };
+    // MLB voids off confirmed lineups; every ESPN league voids off the injury
+    // report. Before this only MLB had any check at all, so an NFL prop on a
+    // player ruled OUT would be rated and recommended like any other.
+    const voids = params.league === 'mlb'
+      ? markVoids(candidates, mlbSlateData)
+      : ESPN_SLUGS_FOR_FORM[String(params.league || '').toLowerCase()]
+        ? await (async () => {
+          const r = await markEspnVoids(candidates, params.league).catch(() => ({ checked: 0, out: 0 }));
+          return { inactive: r.out, notStarting: 0, notInLineup: 0, total: r.out, injuryRowsChecked: r.checked };
+        })()
+        : { inactive: 0, notStarting: 0, total: 0 };
     const voided = candidates.filter((c) => c.voidReason);
     const live = candidates.filter((c) => !c.voidReason);
     if (mlbStatus) mlbStatus.voided = { ...voids, examples: voided.slice(0, 6).map((c) => `${c.player} · ${c.statDisplay || c.stat}`) };

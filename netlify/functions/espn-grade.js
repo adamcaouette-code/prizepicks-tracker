@@ -520,6 +520,78 @@ export async function attachEspnForm(candidates, league, { before, limit = 5, wi
   return attached ? candidates : null;
 }
 
+// ---- who is not playing -----------------------------------------------------
+// PrizePicks VOIDS a prop on a player who does not appear — it does not settle
+// it at 0 — so a "win" on one pays nothing. MLB gets this from confirmed
+// lineups; every ESPN league had no equivalent at all.
+//
+// It matters most in NFL. Inactives are declared 90 minutes before kickoff, a
+// meaningful share of any week's board is on players who end up down, and the
+// engine would happily rate one at 85% with nothing to say otherwise. This is
+// the same failure that showed up in MLB as Kyle Tucker at 85% with "not in
+// confirmed lineup" printed underneath.
+//
+// OUT and INJURY_STATUS_OUT are the only statuses treated as a void.
+// QUESTIONABLE and DOUBTFUL are NOT: those players frequently play, and voiding
+// them would silently delete half a Sunday board on a maybe.
+const OUT_STATUS = /^(out|injury_status_out|ir|injured_reserve|suspension|pup|nfi|did_not_play)$/i;
+const INJURY_TTL = 30 * 60 * 1000;   // inactives move on game day; keep it fresh
+
+export async function espnInjuries(league) {
+  const slug = SLUGS[String(league || '').toLowerCase()];
+  if (!slug) return null;
+  return cached(`injuries-${league}`, INJURY_TTL, async () => {
+    const d = await api(`${SITE}/${slug}/injuries`);
+    const out = {};   // normalised name -> { status, detail }
+    for (const team of d?.injuries || []) {
+      for (const it of team?.injuries || []) {
+        const name = it?.athlete?.displayName || it?.athlete?.fullName;
+        if (!name) continue;
+        const status = String(it.status || it?.type?.name || '').replace(/\s+/g, '_');
+        out[normKey(name)] = {
+          name,
+          status,
+          out: OUT_STATUS.test(status),
+          detail: it?.details?.type || it?.shortComment || null,
+        };
+      }
+    }
+    return out;
+  });
+}
+
+/**
+ * Mark candidates whose player ESPN lists as OUT. Returns how many.
+ * Additive and defensive: if the endpoint gives nothing, nothing is voided —
+ * an empty injury report must never read as "everyone is out".
+ */
+export async function markEspnVoids(candidates, league) {
+  if (!candidates?.length) return { checked: 0, out: 0 };
+  const inj = await espnInjuries(league);
+  if (!inj || !Object.keys(inj).length) return { checked: 0, out: 0 };
+
+  // Match names the same way grading does. A plain exact lookup missed
+  // "Marvin Harrison" against ESPN's "Marvin Harrison Jr." — and in the NFL the
+  // Jr./II/III suffix is everywhere, so an exact-only check would let a
+  // meaningful share of ruled-out players straight through.
+  //
+  // The asymmetry favours matching loosely here. Voiding a player who turns out
+  // to play only costs a pick; MISSING one who is out recommends a prop that
+  // cannot win.
+  const index = buildIndex(Object.values(inj).map((v) => [v.name, v]));
+
+  let out = 0;
+  for (const c of candidates) {
+    if (/ \+ /.test(c.player || '')) continue;          // combo: no single player
+    const hit = matchPlayer(index, c.player)?.value;
+    if (!hit || !hit.out) continue;
+    c.injured = hit.detail ? `${hit.status} (${hit.detail})` : hit.status;
+    c.voidReason = `listed ${hit.status} — PrizePicks voids this, it does not settle at 0`;
+    out++;
+  }
+  return { checked: Object.keys(inj).length, out };
+}
+
 export { resolveStat, dayIndex, SLUGS };
 
 export const handler = async (event) => {
