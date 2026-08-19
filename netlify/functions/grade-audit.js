@@ -20,12 +20,19 @@ import { getStore } from '@netlify/blobs';
 import { resolveStat as espnStat, SLUGS as ESPN_LEAGUES } from './espn-grade.js';
 import { resolveStat as mlbStat } from './mlb-grade.js';
 import { gradersFor, isCombo } from './grade-picks.js';
+import { fantasyKind } from './fantasy-score.js';
 
 const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
 /** Would any wired grader be able to resolve this pick's stat? */
 export function statResolves(league, stat) {
   const lg = String(league || '').toLowerCase();
+  // Fantasy Score never lived in the column tables — it routes through its own
+  // weighted formula inside the graders. This audit only asked the column
+  // tables, so it kept reporting Fantasy Score picks as "stat name not in the
+  // mapping table" long after they were grading fine, and sent me looking for a
+  // mapping that was never the problem.
+  if (fantasyKind(lg, stat)) return true;
   if (lg === 'mlb') return !!mlbStat(stat);
   if (ESPN_LEAGUES[lg]) return !!espnStat(lg, stat);
   return false;

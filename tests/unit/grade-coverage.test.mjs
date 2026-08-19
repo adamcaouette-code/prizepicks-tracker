@@ -223,6 +223,17 @@ export default async function ({ t }) {
 
   // ---- 8. the rest of the audit's list ------------------------------------
   t.ok('MLB "Plate Appearances" now resolves', !!mlb.resolveStat('Plate Appearances'));
+  t.ok('MLB "Pitches Seen" now resolves', !!mlb.resolveStat('Pitches Seen'));
+
+  // The audit only ever asked the COLUMN tables, so it kept reporting Fantasy
+  // Score picks as an unmapped stat long after they were grading fine — sending
+  // me hunting for a mapping that was never the problem. Fantasy routes through
+  // its own weighted formula, and the audit has to know that to be believed.
+  t.eq('the audit knows Fantasy Score resolves via its formula, not a column',
+    audit.statResolves('mlb', 'Hitter Fantasy Score'), true);
+  t.eq('...for NFL too', audit.statResolves('nfl', 'Fantasy Score'), true);
+  t.eq('...while a genuinely unknown stat is still reported unmapped',
+    audit.statResolves('mlb', 'Strikes Counted'), false);
   t.ok('the World Cup routes to ESPN soccer', !!espn.SLUGS.world_cup);
   t.eq('esports still has no source, honestly reported', espn.resolveStat('lol', 'Kills'), null);
 }

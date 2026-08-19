@@ -99,6 +99,9 @@ const HIT = {
   atbats: (s) => s.atBats,
   plateappearances: (s) => s.plateAppearances,
   pa: (s) => s.plateAppearances,
+  // For a HITTER, numberOfPitches in the hitting group is pitches SEEN. The live
+  // sample confirmed it: Miguel Vargas, 5 plate appearances, numberOfPitches 24.
+  pitchesseen: (s) => s.numberOfPitches,
   // Props PrizePicks posts that had no mapping, so they never graded.
   runsrbis: (s) => num(s.runs) + num(s.rbi),
   rbisruns: (s) => num(s.runs) + num(s.rbi),
