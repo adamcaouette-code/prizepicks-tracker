@@ -445,6 +445,81 @@ async function latestGameDay(slug, from) {
   return null;
 }
 
+/**
+ * The last N days this league actually played, before `before`.
+ *
+ * NFL plays three days a week, so walking back day by day would be ~35
+ * scoreboard calls to reach five game days. One range query finds them instead.
+ */
+async function gameDaysBefore(slug, before, n, windowDays) {
+  const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, '');
+  const end = new Date(Date.parse(`${before}T00:00:00Z`) - 86400000);   // strictly BEFORE
+  const start = new Date(end.getTime() - windowDays * 86400000);
+  const sb = await api(`${SITE}/${slug}/scoreboard?dates=${ymd(start)}-${ymd(end)}`);
+  const days = new Set();
+  for (const ev of sb?.events || []) {
+    if (!isFinished(ev)) continue;
+    const d = String(ev.date || '').slice(0, 10);
+    if (d) days.add(d);
+  }
+  return [...days].sort().reverse().slice(0, n);
+}
+
+/**
+ * Recent form for ESPN leagues — the last N results for THIS exact stat.
+ *
+ * This closes the largest hole in the engine outside MLB. `recent5` is the
+ * signal the judge weights most heavily, and the ONLY thing that ever supplied
+ * it was attachHistory(), which reads api.prizepicks.com — the host behind
+ * DataDome that answers 403 to everything. So every NFL, NBA, NHL and college
+ * candidate has been judged with no recent form at all, silently, for as long as
+ * that block has been up. It is very likely why probabilities cluster low.
+ *
+ * The fix needs no new data source. Grading already fetches a day's box scores
+ * and already knows how to read any mapped stat out of them; form is the same
+ * two operations pointed at earlier dates. That also means form is exactly as
+ * correct as grading is — one mapping, one shape, verified once.
+ *
+ * `before` must be the slate date, so a re-run after kickoff cannot feed the
+ * game's own result back in as "form".
+ */
+export async function attachEspnForm(candidates, league, { before, limit = 5, windowDays = 45 } = {}) {
+  const slug = SLUGS[String(league || '').toLowerCase()];
+  if (!slug || !candidates?.length || !before) return null;
+
+  const days = await gameDaysBefore(slug, before, limit + 2, windowDays);
+  if (!days.length) return null;
+
+  // Oldest first, so each player's series reads chronologically.
+  const indices = [];
+  for (const d of [...days].reverse()) {
+    const idx = await dayIndex(league, d);
+    if (idx?.players && Object.keys(idx.players).length) indices.push(idx);
+  }
+  if (!indices.length) return null;
+
+  let attached = 0;
+  for (const c of candidates) {
+    const read = resolveStat(league, c.stat);
+    if (!read) continue;
+    const values = [];
+    for (const idx of indices) {
+      const m = matchPlayer(buildIndex(Object.values(idx.players).map((r) => [r.name, r])), c.player);
+      if (!m) continue;                       // did not play that day — not a zero
+      const v = read(m.value);
+      if (v == null || !isFinite(Number(v))) continue;
+      values.push(Number(v));
+    }
+    if (!values.length) continue;
+    const last = values.slice(-limit);
+    c.last5 = last;
+    c.avg = Math.round((last.reduce((a, b) => a + b, 0) / last.length) * 100) / 100;
+    c.histGames = last.length;
+    attached++;
+  }
+  return attached ? candidates : null;
+}
+
 export { resolveStat, dayIndex, SLUGS };
 
 export const handler = async (event) => {

@@ -11,6 +11,7 @@ import { getStore } from '@netlify/blobs';
 // Raw MLB data (injuries, personIds, logos). No model involved — see mlb-stats.js.
 import { slate as mlbSlate, normKey as mlbNormKey, PP_TO_MLB_ABBR } from './mlb-stats.js';
 import { attachMlbForm } from './mlb-grade.js';
+import { attachEspnForm, SLUGS as ESPN_SLUGS_FOR_FORM } from './espn-grade.js';
 
 const MODEL = process.env.JUDGE_MODEL || 'claude-opus-4-8';
 const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap web searches so runs don't blow past the timeout
@@ -1529,6 +1530,17 @@ export const handler = async (event) => {
         const attached = await attachMlbForm(candidates, mlb?.people, { before: mlb?.date });
         if (attached) return attached;
         return attachHistory(candidates);          // fall back if MLB gave nothing
+      }
+      // Every other ESPN league gets form from the same box scores that grade
+      // it. attachHistory below reads api.prizepicks.com, which is behind
+      // DataDome and answers 403 to everything — so before this, every NFL, NBA
+      // and NHL candidate reached the judge with recent5 null.
+      if (ESPN_SLUGS_FOR_FORM[String(params.league || '').toLowerCase()]) {
+        const slate = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+        }).format(new Date());
+        const attached = await attachEspnForm(candidates, params.league, { before: slate });
+        if (attached) return attached;
       }
       return attachHistory(candidates);
     })()));
