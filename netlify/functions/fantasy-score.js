@@ -71,6 +71,12 @@ export const MLB_VERIFIED = process.env.FANTASY_MLB_VERIFIED === '1';
 
 export function mlbHitterFantasy(s) {
   if (!s) return null;
+  // A game log row with zero plate appearances means he did not bat — a late
+  // defensive replacement, or listed but never used. PrizePicks VOIDS a prop on
+  // a player who does not appear; it does not settle it at 0. Scoring it 0 writes
+  // a false loss into calibration. Corey Seager showed up in a live sample
+  // exactly this way: "0-0", 0 AB, 0 PA, scored 0.
+  if (Number(s.plateAppearances) === 0) return null;
   const hits = s.hits, doubles = s.doubles, triples = s.triples, hr = s.homeRuns;
   if ([hits, doubles, triples, hr, s.runs, s.rbi, s.baseOnBalls].some((v) => v == null)) return null;
   const singles = num(hits) - num(doubles) - num(triples) - num(hr);
@@ -86,6 +92,8 @@ export function mlbHitterFantasy(s) {
 
 export function mlbPitcherFantasy(s) {
   if (!s) return null;
+  // Same rule on the mound: no outs recorded means he never pitched.
+  if (Number(s.outs) === 0 && Number(s.battersFaced || 0) === 0) return null;
   if ([s.outs, s.strikeOuts, s.earnedRuns].some((v) => v == null)) return null;
   const parts = {
     outs: num(s.outs), strikeOuts: num(s.strikeOuts), earnedRuns: num(s.earnedRuns),
@@ -94,6 +102,41 @@ export function mlbPitcherFantasy(s) {
   let total = 0;
   for (const [k, w] of Object.entries(MLB_PITCHER_WEIGHTS)) total += parts[k] * w;
   return Math.round(total * 100) / 100;
+}
+
+/**
+ * What the formula produces for a LEAGUE-AVERAGE game.
+ *
+ * This is the check that finally settled the weights question, and it is better
+ * than the median-vs-line ratio for one reason: it does not touch the pick log
+ * at all. The logged picks are ones the engine CHOSE, so their outcomes beat
+ * their lines even with perfect weights, and no amount of care separates that
+ * bias from a weight error without a control — which never resolved, because
+ * every basketball fantasy pick in the log turned out to be goblin or demon.
+ *
+ * A bookmaker sets a line near the middle of the distribution, so the formula's
+ * output for an average game should land near the typical line. If it does not,
+ * the weights are wrong by roughly that factor — and nothing about selection can
+ * explain it away.
+ *
+ * Rates are per-game for a qualified regular / a starting pitcher.
+ */
+export const AVERAGE_HITTER_GAME = {
+  hits: 0.955, doubles: 0.18, triples: 0.015, homeRuns: 0.13,
+  runs: 0.55, rbi: 0.53, baseOnBalls: 0.35, hitByPitch: 0.045, stolenBases: 0.05,
+  plateAppearances: 4.1,
+};
+export const AVERAGE_PITCHER_START = {
+  outs: 15.6, strikeOuts: 5.5, earnedRuns: 2.6, hits: 4.9, baseOnBalls: 1.8, battersFaced: 22,
+};
+
+export function scaleCheck(kind) {
+  if (kind === 'mlb-hitter') return mlbHitterFantasy(AVERAGE_HITTER_GAME);
+  if (kind === 'mlb-pitcher') return mlbPitcherFantasy(AVERAGE_PITCHER_START);
+  if (kind === 'basketball') {
+    return basketballFantasy({ points: 11.5, rebounds: 4.3, assists: 2.6, steals: 0.75, blocks: 0.5, turnovers: 1.3 });
+  }
+  return null;
 }
 
 /** Which fantasy variant a PrizePicks stat name refers to, if any. */

@@ -113,6 +113,43 @@ export default async function ({ t }) {
   t.ok('...along with the game date that settled it',
     zeroed.sampleRows.some((r) => !!r.gameDate));
 
+  // ---- the scale test: the one check selection bias cannot corrupt --------
+  // The control ratio never resolved on real data, because every basketball
+  // fantasy pick in the log turned out to be goblin or demon and the standard
+  // filter removed them all. Without a control, a raw ratio of 1.82 could be a
+  // weight error or could be the engine picking overs it liked — indistinguishable.
+  //
+  // Scoring a LEAGUE-AVERAGE game needs no pick log at all, so nothing about
+  // selection can explain its answer away.
+  const fs2 = await loadFn('fantasy-score.js');
+  t.ok('an average hitter game scores something sane', fs2.scaleCheck('mlb-hitter') > 0);
+  t.ok('an average pitcher start too', fs2.scaleCheck('mlb-pitcher') > 0);
+  t.eq('a kind with no formula has no scale check', fs2.scaleCheck('tennis'), null);
+
+  reset();
+  seed('pick-log', D, Array.from({ length: 14 }, (_, i) => hitter(i, { line: 5.5 })));
+  const scaled = await runBg(mlbMock(14, GOOD_LINE));
+  const hv = scaled.verdicts['mlb-hitter'];
+  t.ok('the verdict reports what an average game scores', typeof hv.averageGameScore === 'number');
+  t.ok('...against the typical line, as a ratio', typeof hv.scaleVsTypicalLine === 'number');
+  t.ok('...and leads with it when the weights are off, naming the factor',
+    /WEIGHTS ARE WRONG/.test(hv.verdict) && /too HIGH|too LOW/.test(hv.verdict), hv.verdict);
+  t.ok('...saying explicitly that selection bias cannot explain it',
+    /selection bias cannot explain/.test(hv.verdict));
+
+  // ---- a player who did not bat is a VOID, not a zero ---------------------
+  // Corey Seager appeared in a live sample as "0-0" with 0 plate appearances —
+  // he never came to the plate. PrizePicks voids that rather than settling it at
+  // 0, so scoring it 0 writes a false loss into calibration.
+  t.eq('zero plate appearances refuses rather than scoring 0',
+    fs2.mlbHitterFantasy({ plateAppearances: 0, hits: 0, doubles: 0, triples: 0, homeRuns: 0, runs: 0, rbi: 0, baseOnBalls: 0 }), null);
+  t.eq('...while a genuine 0-for-4 still scores 0, because he DID play',
+    fs2.mlbHitterFantasy({ plateAppearances: 4, hits: 0, doubles: 0, triples: 0, homeRuns: 0, runs: 0, rbi: 0, baseOnBalls: 0 }), 0);
+  t.eq('a pitcher who never took the mound refuses too',
+    fs2.mlbPitcherFantasy({ outs: 0, battersFaced: 0, strikeOuts: 0, earnedRuns: 0, hits: 0, baseOnBalls: 0 }), null);
+  t.ok('...while one who faced batters and recorded no outs still scores',
+    fs2.mlbPitcherFantasy({ outs: 0, battersFaced: 3, strikeOuts: 0, earnedRuns: 3, hits: 3, baseOnBalls: 0 }) != null);
+
   // ---- a job that died must not read as still running ---------------------
   // The save helper did not AWAIT its write, so the final 'done' state was a
   // floating promise and the invocation ended before it flushed. The store kept

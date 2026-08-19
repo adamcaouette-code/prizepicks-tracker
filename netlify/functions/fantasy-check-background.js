@@ -21,7 +21,7 @@
 import { getStore } from '@netlify/blobs';
 import { gradeFromMlb } from './mlb-grade.js';
 import { gradeFromEspn } from './espn-grade.js';
-import { fantasyKind } from './fantasy-score.js';
+import { fantasyKind, scaleCheck } from './fantasy-score.js';
 import { RESULT_KEY } from './fantasy-check.js';
 
 const BUDGET_MS = 11 * 60 * 1000;   // well inside the 15-minute ceiling
@@ -129,6 +129,13 @@ export const handler = async (event) => {
     for (const [kind, r] of Object.entries(raw)) {
       const rel = control && r.ratio ? r.ratio / control : null;
       const zeroShare = r.n ? r.zeros / r.n : 0;
+
+      // The scale test. Unlike the ratio above it never touches the pick log, so
+      // selection bias cannot explain it away: if the formula's output for an
+      // AVERAGE game is far from the typical line, the weights are wrong by
+      // about that factor, full stop.
+      const avg = scaleCheck(kind);
+      const scale = avg != null && r.medianLine ? avg / r.medianLine : null;
       verdicts[kind] = {
         n: r.n,
         zeroResults: r.zeros,
@@ -136,9 +143,19 @@ export const handler = async (event) => {
         medianLine: r.medianLine,
         lineRatio: r.ratio == null ? null : Math.round(r.ratio * 1000) / 1000,
         vsControl: rel == null ? null : Math.round(rel * 1000) / 1000,
+        averageGameScore: avg,
+        scaleVsTypicalLine: scale == null ? null : Math.round(scale * 1000) / 1000,
         verdict: r.n < 10 ? `too few resolved (n=${r.n})`
-          : zeroShare > 0.35 ? `SUSPECT — ${r.zeros} of ${r.n} computed to exactly 0. Some are real 0-for-4 games, but this many suggests the lookup is finding games the player did not appear in. Check statLine on the sample rows before trusting any ratio here.`
+          // Basketball is the control — its weights are the standard DFS ones
+          // and are not under test, so the scale test does not judge them.
           : kind === 'basketball' ? `CONTROL — standard DFS weights, not under test. Its ratio (${r.ratio?.toFixed(2)}) is the selection-bias baseline.`
+          // The scale test leads for everything else, because it is the only
+          // check selection bias cannot corrupt. The band is deliberately wide:
+          // a median line still drifts with the quality of the players sampled,
+          // so only a gap too large for that to explain counts as an error.
+          : scale != null && (scale > 1.25 || scale < 0.8)
+            ? `WEIGHTS ARE WRONG — an AVERAGE game scores ${avg} against a typical line of ${r.medianLine}, i.e. ${scale > 1 ? `${scale.toFixed(2)}x too HIGH` : `${(1 / scale).toFixed(2)}x too LOW`}. This test uses league-average rates, not your picks, so selection bias cannot explain it.`
+          : zeroShare > 0.35 ? `SUSPECT — ${r.zeros} of ${r.n} computed to exactly 0. Some are real 0-for-4 games, but this many suggests the lookup is finding games the player did not appear in. Check statLine on the sample rows before trusting any ratio here.`
           : rel == null ? `raw ratio ${r.ratio?.toFixed(2)}, but no basketball control resolved — cannot separate a weight error from selection bias.`
           : rel > 0.8 && rel < 1.25 ? `WEIGHTS LOOK RIGHT — ${rel.toFixed(2)}x the control`
           : rel >= 1.25 ? `TOO HIGH by ~${rel.toFixed(2)}x relative to the control — a term is over-weighted`
@@ -157,7 +174,7 @@ export const handler = async (event) => {
       controlRatio: control == null ? null : Math.round(control * 1000) / 1000,
       verdicts,
       sampleRows: rows,
-      method: 'Standard tier only, stratified per kind, judged relative to the basketball control.',
+      method: 'Standard tier only, stratified per kind. The SCALE TEST leads: it scores a league-average game with these weights and compares it to the typical line, which selection bias cannot corrupt. The control ratio is secondary and needs standard-tier basketball picks to exist at all.',
     });
 
     return { statusCode: 200, body: JSON.stringify({ attempted, timedOut }) };
