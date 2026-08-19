@@ -203,8 +203,10 @@ export default async function ({ t }) {
   t.eq('tennis fantasy has no formula wired and says so', fs.fantasyKind('tennis', 'Fantasy Score'), null);
   t.eq('a non-fantasy stat is not swept in', fs.fantasyKind('mlb', 'Hits'), null);
 
-  // The gate: MLB weights are unverified, so they must not grade anything yet.
-  t.eq('MLB fantasy is OFF until the weights are checked', fs.MLB_VERIFIED, false);
+  // The gate existed while the weights were inferred. They now come from
+  // PrizePicks' published scoring chart, so it is open — and the escape hatch
+  // stays for the day that chart changes.
+  t.eq('MLB fantasy grades now the weights are sourced, not guessed', fs.MLB_VERIFIED, true);
   reset();
   const mlbFs = mockFetch([
     [/\/sports\/1\/players/, async () => ({ people: [{ id: 900, fullName: 'Some Hitter' }] })],
@@ -216,9 +218,8 @@ export default async function ({ t }) {
     gated = await mlb.gradeFromMlb({ player: 'Some Hitter', date: '2026-08-14', stat: 'Hitter Fantasy Score', line: 20.5 });
     allowed = await mlb.gradeFromMlb({ player: 'Some Hitter', date: '2026-08-14', stat: 'Hitter Fantasy Score', line: 20.5, allowUnverifiedFantasy: true });
   } finally { mlbFs.restore(); }
-  t.eq('an unverified MLB fantasy prop grades NOTHING', gated, null);
-  t.ok('...while the checker can still see what the formula would produce', allowed?.result != null,
-    `computed ${allowed?.result}`);
+  t.ok('an MLB fantasy prop now grades', gated?.result != null, `computed ${gated?.result}`);
+  t.eq('...to the same number the checker sees', gated?.result, allowed?.result);
 
   // ---- 8. the rest of the audit's list ------------------------------------
   t.ok('MLB "Plate Appearances" now resolves', !!mlb.resolveStat('Plate Appearances'));

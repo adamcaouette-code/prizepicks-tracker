@@ -53,7 +53,7 @@ export default async function ({ t }) {
   const empty = JSON.parse((await reader.handler({})).body);
   t.eq('with no result stored it says so rather than erroring', empty.state, 'never run');
   t.ok('...and names the thing to run', /fantasy-check-background/.test(empty.next));
-  t.eq('MLB stays gated in every case', empty.mlbCurrentlyEnabled, false);
+  t.eq('MLB fantasy grades, now that the weights come from the published chart', empty.mlbCurrentlyEnabled, true);
   t.ok('the weights are shown even with no result', !!empty.weightsInUse?.mlbHitter?.singles);
 
   // ---- correction 1: tiers cannot be mixed --------------------------------
@@ -150,6 +150,54 @@ export default async function ({ t }) {
   t.ok('...while one who faced batters and recorded no outs still scores',
     fs2.mlbPitcherFantasy({ outs: 0, battersFaced: 3, strikeOuts: 0, earnedRuns: 3, hits: 3, baseOnBalls: 0 }) != null);
 
+  // ---- the weights, now taken from PrizePicks' published chart ------------
+  // Four of nine hitter weights were wrong and the pitcher formula was wrong in
+  // both directions at once — two invented penalties and two missing bonuses,
+  // which partly cancelled and made the aggregate look merely "a bit low".
+  t.eq('a double is 5, not 6', fs2.MLB_HITTER_WEIGHTS.doubles, 5);
+  t.eq('a walk is 2, not 3', fs2.MLB_HITTER_WEIGHTS.baseOnBalls, 2);
+  t.eq('a hit by pitch is 2, not 3', fs2.MLB_HITTER_WEIGHTS.hitByPitch, 2);
+  t.eq('a stolen base is 5, not 4', fs2.MLB_HITTER_WEIGHTS.stolenBases, 5);
+  t.eq('a win is worth 6 and was missing entirely', fs2.MLB_PITCHER_WEIGHTS.wins, 6);
+  t.eq('a quality start is worth 4 and was missing entirely', fs2.MLB_PITCHER_WEIGHTS.qualityStarts, 4);
+  t.eq('there is no penalty for a hit allowed — that was invented',
+    fs2.MLB_PITCHER_WEIGHTS.hits, undefined);
+  t.eq('nor for a walk allowed', fs2.MLB_PITCHER_WEIGHTS.baseOnBalls, undefined);
+
+  // Basketball needed no change: the published chart matches exactly.
+  t.eq('a rebound is 1.2', fs2.BASKETBALL_WEIGHTS.rebounds, 1.2);
+  t.eq('an assist is 1.5', fs2.BASKETBALL_WEIGHTS.assists, 1.5);
+  t.eq('a turnover is -1', fs2.BASKETBALL_WEIGHTS.turnovers, -1);
+
+  // A quality start is derived, not guessed: 6 innings, 3 earned runs or fewer.
+  t.eq('6 innings and 2 earned runs is a quality start', fs2.isQualityStart({ outs: 18, earnedRuns: 2 }), 1);
+  t.eq('...5.2 innings is not, however few runs', fs2.isQualityStart({ outs: 17, earnedRuns: 0 }), 0);
+  t.eq('...nor is 7 innings and 4 earned runs', fs2.isQualityStart({ outs: 21, earnedRuns: 4 }), 0);
+
+  const worked = fs2.mlbPitcherFantasy({ outs: 21, strikeOuts: 8, earnedRuns: 1, wins: 1, battersFaced: 26 });
+  t.eq('a 7-inning win with 8 K and 1 ER scores the bonuses', worked, 21 + 24 - 3 + 6 + 4);
+
+  // MLB is on now — the weights come from the rulebook, not from inference.
+  t.eq('MLB fantasy grades again', fs2.MLB_VERIFIED, true);
+
+  // The scale test is now a REGRESSION guard, not evidence about what the
+  // weights should be. A sharp move means someone edited one.
+  for (const [kind, expected] of Object.entries(fs2.EXPECTED_SCALE)) {
+    t.ok(`${kind} scale is unchanged from the verified weights`,
+      Math.abs(fs2.scaleCheck(kind) - expected) < 0.5, `${fs2.scaleCheck(kind)} vs ${expected}`);
+  }
+
+  // ---- NFL, from the same chart ------------------------------------------
+  t.eq('a back with 45 rush, 3 catches, 30 receiving and a TD scores full PPR',
+    fs2.nflFantasy({ rushingYards: 45, receptions: 3, receivingYards: 30, rushingTouchdowns: 1 }), 16.5);
+  t.eq('a passing yard is 0.04 and an interception costs a point',
+    fs2.nflFantasy({ passingYards: 300, passingTouchdowns: 3, interceptions: 1, rushingYards: 20 }), 25);
+  t.eq('an NFL fantasy prop routes to the NFL formula', fs2.fantasyKind('nfl', 'Fantasy Score'), 'nfl');
+  // Kicker scoring needs field goals by DISTANCE, which a box score does not
+  // carry — so it refuses rather than scoring every kick the same.
+  t.eq('kicker fantasy refuses, because distance is not in the box score',
+    fs2.fantasyKind('nfl', 'Kicker Fantasy Score'), null);
+
   // ---- a job that died must not read as still running ---------------------
   // The save helper did not AWAIT its write, so the final 'done' state was a
   // floating promise and the invocation ended before it flushed. The store kept
@@ -175,6 +223,6 @@ export default async function ({ t }) {
   const served = JSON.parse((await (await loadFn('fantasy-check.js')).handler({})).body);
   t.eq('the reader returns the stored run', served.state, 'done');
   t.ok('...with its verdicts intact', !!served.verdicts['mlb-hitter']);
-  t.ok('...and still says MLB is gated', served.mlbCurrentlyEnabled === false);
+  t.ok('...and reports MLB as live', served.mlbCurrentlyEnabled === true);
   t.ok('...and how to turn it on once the weights check out', /FANTASY_MLB_VERIFIED/.test(served.howToEnable));
 }

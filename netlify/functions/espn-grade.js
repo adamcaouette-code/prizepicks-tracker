@@ -66,7 +66,7 @@ const SLUGS = {
 };
 
 import { normKey, buildIndex, matchPlayer } from './player-match.js';
-import { fantasyKind, basketballFantasy } from './fantasy-score.js';
+import { fantasyKind, basketballFantasy, nflFantasy } from './fantasy-score.js';
 
 const store = () => {
   try { return getStore({ name: 'espn-cache', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN }); }
@@ -247,6 +247,14 @@ const MAPS = {
     fieldgoalsmade: (r) => readStat(r, 'fieldGoalsMade/fieldGoalAttempts', 0),
     extrapointsmade: (r) => readStat(r, 'extraPointsMade/extraPointAttempts', 0),
     punts: (r) => readStat(r, 'punts'),
+    // Full-PPR weighted formula from the published chart, not a column.
+    fantasyscore: (r) => nflFantasy({
+      passingYards: readStat(r, 'passingYards'), passingTouchdowns: readStat(r, 'passingTouchdowns'),
+      interceptions: readStat(r, 'interceptions'),
+      rushingYards: readStat(r, 'rushingYards'), rushingTouchdowns: readStat(r, 'rushingTouchdowns'),
+      receptions: readStat(r, 'receptions'), receivingYards: readStat(r, 'receivingYards'),
+      receivingTouchdowns: readStat(r, 'receivingTouchdowns'), fumblesLost: readStat(r, 'fumblesLost'),
+    }),
   },
   // SHAPE UNVERIFIED. Written from ESPN's documented soccer/tennis summary
   // shape, never checked against a real response — exactly the position the

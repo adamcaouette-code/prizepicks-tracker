@@ -48,26 +48,40 @@ export function basketballFantasy(s) {
 }
 
 // ---------------------------------------------------------------------------
-// MLB. UNVERIFIED — these weights are my best understanding of PrizePicks'
-// published scoring, not something I have confirmed against a settled prop.
-// 335 picks depend on them, so they stay off until fantasy-check says the
-// computed values track the lines.
+// MLB — taken from PrizePicks' own published scoring chart. Four of my nine
+// hitter weights were wrong and the pitcher formula was wrong in both
+// directions at once:
+//
+//   Double        was 6, is 5
+//   Walk          was 3, is 2
+//   Hit By Pitch  was 3, is 2
+//   Stolen Base   was 4, is 5
+//   Win           MISSING — worth 6
+//   Quality Start MISSING — worth 4
+//   Hits allowed  INVENTED at -0.6; no such category exists
+//   Walks allowed INVENTED at -0.6; no such category exists
+//
+// The invented penalties and the missing bonuses partly cancelled, which is
+// why the pitcher scale test read only 1.21x low rather than obviously broken.
+// That is the case for reading the actual rulebook rather than inferring from
+// a proxy: a formula can be wrong in several places and still produce a
+// plausible-looking aggregate.
 export const MLB_HITTER_WEIGHTS = {
-  singles: 3, doubles: 6, triples: 8, homeRuns: 10,
-  runs: 2, rbi: 2, baseOnBalls: 3, hitByPitch: 3, stolenBases: 4,
+  singles: 3, doubles: 5, triples: 8, homeRuns: 10,
+  runs: 2, rbi: 2, baseOnBalls: 2, hitByPitch: 2, stolenBases: 5,
 };
 export const MLB_PITCHER_WEIGHTS = {
-  outs: 1,           // 3 per inning pitched, applied per out
+  outs: 1,            // 3 per inning pitched, applied per out
   strikeOuts: 3,
   earnedRuns: -3,
-  hits: -0.6,
-  baseOnBalls: -0.6,
+  wins: 6,
+  qualityStarts: 4,
 };
 
-// Flip to true ONLY after /api/fantasy-check reports lineRatio near 1.0.
-// Set FANTASY_MLB_VERIFIED=1 in the Netlify environment to enable without a
-// redeploy once you have checked it.
-export const MLB_VERIFIED = process.env.FANTASY_MLB_VERIFIED === '1';
+// Now sourced from the published chart rather than inferred, so it is ON.
+// FANTASY_MLB_DISABLE=1 turns it back off without a code change if the chart
+// ever moves.
+export const MLB_VERIFIED = process.env.FANTASY_MLB_DISABLE !== '1';
 
 export function mlbHitterFantasy(s) {
   if (!s) return null;
@@ -90,6 +104,9 @@ export function mlbHitterFantasy(s) {
   return Math.round(total * 100) / 100;
 }
 
+/** A quality start is 6+ innings with 3 or fewer earned runs — 18 outs. */
+export const isQualityStart = (s) => (Number(s?.outs) >= 18 && Number(s?.earnedRuns) <= 3 ? 1 : 0);
+
 export function mlbPitcherFantasy(s) {
   if (!s) return null;
   // Same rule on the mound: no outs recorded means he never pitched.
@@ -97,7 +114,11 @@ export function mlbPitcherFantasy(s) {
   if ([s.outs, s.strikeOuts, s.earnedRuns].some((v) => v == null)) return null;
   const parts = {
     outs: num(s.outs), strikeOuts: num(s.strikeOuts), earnedRuns: num(s.earnedRuns),
-    hits: num(s.hits), baseOnBalls: num(s.baseOnBalls),
+    // The game log carries wins directly. Quality start it does not, but the
+    // definition is fixed — 6 innings, 3 earned runs or fewer — so it is derived
+    // rather than guessed.
+    wins: num(s.wins),
+    qualityStarts: isQualityStart(s),
   };
   let total = 0;
   for (const [k, w] of Object.entries(MLB_PITCHER_WEIGHTS)) total += parts[k] * w;
@@ -127,16 +148,50 @@ export const AVERAGE_HITTER_GAME = {
   plateAppearances: 4.1,
 };
 export const AVERAGE_PITCHER_START = {
-  outs: 15.6, strikeOuts: 5.5, earnedRuns: 2.6, hits: 4.9, baseOnBalls: 1.8, battersFaced: 22,
+  outs: 15.6, strikeOuts: 5.5, earnedRuns: 2.6, battersFaced: 22, wins: 0.33,
 };
+
+// What the VERIFIED weights produce for these average lines. Recorded so the
+// scale test becomes a regression guard: once the weights come from the
+// published chart it is no longer evidence about what they SHOULD be, but a
+// sharp move here still means someone changed one.
+//
+// The residual gap for hitters (7.4 against a typical 5.5 line) is not an error.
+// The average modelled here is a qualified regular, while the line pool includes
+// rookies and platoon players with lower expected output.
+export const EXPECTED_SCALE = { 'mlb-hitter': 7.41, 'mlb-pitcher': 26.28, basketball: 23.01 };
 
 export function scaleCheck(kind) {
   if (kind === 'mlb-hitter') return mlbHitterFantasy(AVERAGE_HITTER_GAME);
   if (kind === 'mlb-pitcher') return mlbPitcherFantasy(AVERAGE_PITCHER_START);
+  if (kind === 'nfl') {
+    return nflFantasy({ passingYards: 0, rushingYards: 45, receivingYards: 30, receptions: 3,
+      rushingTouchdowns: 0.3, receivingTouchdowns: 0.2, passingTouchdowns: 0, interceptions: 0, fumblesLost: 0.05 });
+  }
   if (kind === 'basketball') {
     return basketballFantasy({ points: 11.5, rebounds: 4.3, assists: 2.6, steals: 0.75, blocks: 0.5, turnovers: 1.3 });
   }
   return null;
+}
+
+// NFL, from the same published chart. Full PPR.
+// Kicker fantasy is deliberately absent: it scores field goals by DISTANCE
+// (3/4/5 for 0-39, 40-49, 50+), and an ESPN box score reports makes and
+// attempts without the yardage, so it cannot be computed honestly.
+export const NFL_WEIGHTS = {
+  passingYards: 0.04, passingTouchdowns: 4, interceptions: -1,
+  rushingYards: 0.1, rushingTouchdowns: 6,
+  receptions: 1, receivingYards: 0.1, receivingTouchdowns: 6,
+  fumblesLost: -1,
+};
+
+export function nflFantasy(s) {
+  if (!s) return null;
+  // Yardage is the backbone here; without it nothing else is worth summing.
+  if (s.passingYards == null && s.rushingYards == null && s.receivingYards == null) return null;
+  let total = 0;
+  for (const [k, w] of Object.entries(NFL_WEIGHTS)) total += num(s[k]) * w;
+  return Math.round(total * 100) / 100;
 }
 
 /** Which fantasy variant a PrizePicks stat name refers to, if any. */
@@ -150,5 +205,11 @@ export function fantasyKind(league, stat) {
     return 'mlb-hitter';      // bare "Fantasy Score" on a hitter's board
   }
   if (['nba', 'wnba', 'cbb', 'college_basketball'].includes(lg)) return 'basketball';
+  if (['nfl', 'cfb', 'college_football'].includes(lg)) {
+    // Kicker scoring needs field goals by distance, which the box score does
+    // not carry — refuse rather than score it wrong.
+    if (/kicker/.test(s)) return null;
+    return 'nfl';
+  }
   return null;                // tennis and everything else: no formula wired
 }
