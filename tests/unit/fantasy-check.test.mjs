@@ -113,7 +113,28 @@ export default async function ({ t }) {
   t.ok('...along with the game date that settled it',
     zeroed.sampleRows.some((r) => !!r.gameDate));
 
+  // ---- a job that died must not read as still running ---------------------
+  // The save helper did not AWAIT its write, so the final 'done' state was a
+  // floating promise and the invocation ended before it flushed. The store kept
+  // the earlier 'running' and the reader showed a finished job as in progress —
+  // for hours, with nothing to indicate otherwise.
+  reset();
+  seed('run-stats', 'fantasy-check', { state: 'running', at: new Date(Date.now() - 90 * 60000).toISOString() });
+  const stale = JSON.parse((await (await loadFn('fantasy-check.js')).handler({})).body);
+  t.eq('a run still "running" long past the ceiling is reported stalled', stale.state, 'stalled');
+  t.ok('...saying why, since 15 minutes is the hard limit', /15-minute|ceiling/.test(stale.stalledNote));
+  t.ok('...and how to start a fresh one', /fantasy-check-background/.test(stale.stalledNote));
+  t.ok('...with the age shown', stale.ageMinutes >= 89);
+
+  reset();
+  seed('run-stats', 'fantasy-check', { state: 'running', at: new Date(Date.now() - 60000).toISOString() });
+  const fresh2 = JSON.parse((await (await loadFn('fantasy-check.js')).handler({})).body);
+  t.eq('a job that started a minute ago is genuinely still running', fresh2.state, 'running');
+
   // ---- the reader serves what the background job stored -------------------
+  reset();
+  seed('pick-log', D, Array.from({ length: 14 }, (_, i) => hitter(i)));
+  await runBg(mlbMock(14, GOOD_LINE));
   const served = JSON.parse((await (await loadFn('fantasy-check.js')).handler({})).body);
   t.eq('the reader returns the stored run', served.state, 'done');
   t.ok('...with its verdicts intact', !!served.verdicts['mlb-hitter']);

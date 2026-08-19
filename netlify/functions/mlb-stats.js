@@ -137,12 +137,22 @@ async function teamMap() {
 async function slate(dateStr) {
   const date = dateStr || new Date().toISOString().slice(0, 10);
   return cached(`slate-${date}`, SLATE_TTL, async () => {
-    const sched = await api(`/schedule?sportId=1&date=${date}&hydrate=probablePitcher,team`);
+    // `lineups` gives the posted batting order. Without it the only thing that
+    // could be confirmed was the starting PITCHER, so a hitter who was not in the
+    // lineup at all sailed through as a live candidate — PrizePicks voids those
+    // rather than settling them at 0, so a "win" on one pays nothing.
+    //
+    // Lineups post a couple of hours before first pitch, so they are absent
+    // earlier in the day. That absence must mean "cannot confirm yet", never
+    // "nobody is playing" — see markVoids, which only acts on a POSTED lineup.
+    const sched = await api(`/schedule?sportId=1&date=${date}&hydrate=probablePitcher,team,lineups`);
     const games = [];
     const teamIds = new Set();
     for (const d of sched?.dates || []) {
       for (const g of d.games || []) {
-        const side = (s) => {
+        const order = (arr) => (Array.isArray(arr) && arr.length
+          ? arr.map((pl) => ({ id: pl.id, name: pl.fullName })) : null);
+        const side = (s, which) => {
           const t = s?.team || {};
           if (t.id) teamIds.add(t.id);
           return {
@@ -151,6 +161,8 @@ async function slate(dateStr) {
             probablePitcher: s?.probablePitcher
               ? { id: s.probablePitcher.id, name: s.probablePitcher.fullName, headshot: headshotUrl(s.probablePitcher.id) }
               : null,
+            // null means NOT POSTED YET, which is different from empty.
+            lineup: order(which === 'home' ? g.lineups?.homePlayers : g.lineups?.awayPlayers),
           };
         };
         games.push({
@@ -158,7 +170,7 @@ async function slate(dateStr) {
           gameDate: g.gameDate || null,
           status: g.status?.detailedState || null,
           venue: g.venue?.name || null,
-          home: side(g.teams?.home), away: side(g.teams?.away),
+          home: side(g.teams?.home, 'home'), away: side(g.teams?.away, 'away'),
         });
       }
     }

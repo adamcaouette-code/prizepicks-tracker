@@ -45,7 +45,14 @@ export const handler = async (event) => {
   const started = Date.now();
 
   const save = async (state) => {
-    try { (await store('run-stats')).setJSON(RESULT_KEY, { ...state, at: new Date().toISOString() }); } catch {}
+    // AWAIT the write. Without it the final 'done' state was a floating promise
+    // and the invocation ended before it flushed, so the store kept the earlier
+    // 'running' forever and the reader showed a job that had actually finished
+    // as still in progress — for hours.
+    try {
+      const s = await store('run-stats');
+      await s.setJSON(RESULT_KEY, { ...state, at: new Date().toISOString() });
+    } catch { /* progress is best-effort; never let it stop the work */ }
   };
 
   try {

@@ -52,8 +52,19 @@ export const handler = async () => {
       }, null, 2) };
     }
 
+    // A job that says 'running' long after it could still be alive has died —
+    // the platform caps a background function at 15 minutes. Saying so beats
+    // showing 'running' indefinitely and leaving someone waiting on it.
+    const ageMin = result.at ? (Date.now() - Date.parse(result.at)) / 60000 : null;
+    const stalled = result.state === 'running' && ageMin != null && ageMin > 16;
+
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
       ...result,
+      ...(ageMin == null ? {} : { ageMinutes: Math.round(ageMin) }),
+      ...(stalled ? {
+        state: 'stalled',
+        stalledNote: `Reported running ${Math.round(ageMin)} minutes ago, past the 15-minute ceiling for a background function, so it is not still going. Start a fresh one at /api/fantasy-check-background.`,
+      } : {}),
       mlbCurrentlyEnabled: MLB_VERIFIED,
       weightsInUse: { basketball: BASKETBALL_WEIGHTS, mlbHitter: MLB_HITTER_WEIGHTS, mlbPitcher: MLB_PITCHER_WEIGHTS },
       howToEnable: 'If the MLB verdicts read near the control, set FANTASY_MLB_VERIFIED=1 in the Netlify environment and redeploy. If one reads TOO HIGH or TOO LOW, send this back and the weights get corrected before anything grades.',

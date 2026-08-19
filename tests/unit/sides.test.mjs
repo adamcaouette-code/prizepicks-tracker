@@ -129,11 +129,41 @@ export default async function ({ t }) {
     { player: 'Goblin Over',  stat: 'Hits', line: 0.5, prob: 0.70, verdict: 'play', oddsType: 'goblin' },
   ];
   mod.attachSides(tiers, 'both');
-  t.eq('an under on a goblin runs against the tier and is flagged',
-    tiers.find((p) => p.player === 'Goblin Under').tierAgainstSide, true);
-  t.eq('an under on a demon runs WITH the tier and is not flagged',
-    tiers.find((p) => p.player === 'Demon Under').tierAgainstSide, false);
-  t.eq('an over on a goblin runs with the tier', tiers.find((p) => p.player === 'Goblin Over').tierAgainstSide, false);
+  const byTier = (n) => tiers.find((p) => p.player === n);
+
+  // PrizePicks offers Over AND Under on the STANDARD line only. Every other line
+  // on a prop — the goblin below it, the demons above — shows a single "More"
+  // button and no "Less". The engine did not know that: it took whichever side
+  // its probability favoured, so a demon with a low P(over) was recommended as an
+  // UNDER at 80% — a bet that cannot be placed at all.
+  t.eq('an alt line has no under available', byTier('Goblin Under').underAvailable, false);
+  t.eq('...so the only real bet on it is the over', byTier('Goblin Under').side, 'over');
+  t.eq('...priced as the over it actually is, not the under it was showing',
+    byTier('Goblin Under').sideProb, 0.30);
+  t.eq('a demon is the same — over only', byTier('Demon Under').side, 'over');
+  t.eq('...at its true over probability, so a weak one drops out on merit',
+    byTier('Demon Under').sideProb, 0.30);
+  t.eq('an over on an alt line is unaffected', byTier('Goblin Over').side, 'over');
+  t.eq('...and keeps its probability', byTier('Goblin Over').sideProb, 0.70);
+
+  // The standard line is the only place an under exists.
+  const std = [{ player: 'Std Under', stat: 'Hits', line: 1.5, prob: 0.30, verdict: 'pass', oddsType: 'standard' }];
+  mod.attachSides(std, 'both');
+  t.eq('a standard line DOES offer the under', std[0].underAvailable, true);
+  t.eq('...and takes it when the probability favours it', std[0].side, 'under');
+  t.eq('...at the flipped probability', Math.round(std[0].sideProb * 100), 70);
+
+  // Unders-only mode must not quietly serve an over instead.
+  const onlyUnders = [
+    { player: 'Alt', stat: 'Hits', line: 4.5, prob: 0.30, verdict: 'pass', oddsType: 'demon' },
+    { player: 'Std', stat: 'Hits', line: 1.5, prob: 0.30, verdict: 'pass', oddsType: 'standard' },
+  ];
+  mod.attachSides(onlyUnders, 'under');
+  t.eq('in unders-only mode an alt line is marked unavailable', onlyUnders[0].sideUnavailable, true);
+  t.eq('...while the standard line is fine', onlyUnders[1].sideUnavailable, false);
+  const undersOnlyLegs = mod.selectLegs(onlyUnders.map((p) => ({ ...p, sideVerdict: 'play', matchup: 'A vs B' })), 2);
+  t.ok('...and the unavailable one is never selected',
+    !undersOnlyLegs.some((p) => p.player === 'Alt'), undersOnlyLegs.map((p) => p.player).join(','));
 
   // ---- one prop per player, whatever the line ----------------------------
   // The reported bug: the recommended slip carried "Altmaier Total Games Won

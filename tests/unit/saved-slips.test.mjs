@@ -303,7 +303,11 @@ export default async function ({ t }) {
     sizing: { label: 'POWER', multipliers: [{ hits: 2, mult: 3 }], payouts: [{ hits: 2, pays: 30 }] } }) })).body).slip;
   // Force the slate a day AHEAD of the games, as the old fallback would have.
   const bad = read('saved-slips', drifted.id);
-  bad.slateDate = '2026-08-15';
+  // One day AHEAD of the games, which is what the UTC fallback used to produce.
+  // Relative, not hardcoded: retention sweeps a settled slip four days after its
+  // slate, so a fixed date passes until the calendar reaches it and then deletes
+  // the fixture out from under the test.
+  bad.slateDate = new Date(Date.parse(`${SLATE}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
   seed('saved-slips', drifted.id, bad);
 
   const driftMock = mockFetch([[/history/, async () => ({ games: [{ stat_value: 2, game_start_time: `${SLATE}T23:30:00Z` }] })]]);

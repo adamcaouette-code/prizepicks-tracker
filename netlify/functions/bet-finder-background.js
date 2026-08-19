@@ -1148,50 +1148,91 @@ const sideVerdictFor = (q) => (q >= 0.62 ? 'play' : q >= 0.54 ? 'lean' : 'pass')
 // and a prop we can't verify stays on the board.
 function markVoids(candidates, mlb) {
   const starters = {};   // team abbr -> Set of confirmed starter name keys
+  const lineups = {};    // team abbr -> Set of posted batting-order name keys
   for (const g of mlb?.games || []) {
     for (const side of [g.home, g.away]) {
       const abbr = String(side?.abbr || '').toUpperCase();
-      if (!abbr || !side?.probablePitcher?.name) continue;
-      (starters[abbr] ||= new Set()).add(mlbNormKey(side.probablePitcher.name));
+      if (!abbr) continue;
+      if (side?.probablePitcher?.name) {
+        (starters[abbr] ||= new Set()).add(mlbNormKey(side.probablePitcher.name));
+      }
+      // Only a POSTED lineup counts. Absent means "not announced yet", which is
+      // not evidence that anyone is out — voiding on it would wipe the whole
+      // early-afternoon board.
+      if (Array.isArray(side?.lineup) && side.lineup.length) {
+        lineups[abbr] = new Set(side.lineup.map((pl) => mlbNormKey(pl.name)));
+      }
     }
   }
 
-  let inactive = 0, notStarting = 0;
+  let inactive = 0, notStarting = 0, notInLineup = 0;
   for (const c of candidates) {
     if (/ \+ /.test(c.player)) continue;                 // combo: no single player to confirm
     if (c.injured) { c.voidReason = `${c.injured} — PrizePicks voids this, it does not settle at 0`; inactive++; continue; }
 
+    const abbrOf = PP_TO_MLB_ABBR[String(c.team || '').toUpperCase()] || String(c.team || '').toUpperCase();
     const isPitcherProp = mlbStatKind(c.stat) === 'PIT' || mlbRole(c.position) === 'PIT';
-    if (!isPitcherProp) continue;
 
-    const abbr = PP_TO_MLB_ABBR[String(c.team || '').toUpperCase()] || String(c.team || '').toUpperCase();
+    if (!isPitcherProp) {
+      // A hitter who is not in the posted lineup is a void, not a zero — the
+      // same rule that already applied to pitchers. Only pitchers were checked
+      // before, so hitters like these were served as live picks at 80%+ with
+      // the model itself noting "not in confirmed lineup" in its own reasoning.
+      const posted = lineups[abbrOf];
+      if (posted && posted.size && !posted.has(mlbNormKey(c.player))) {
+        c.voidReason = 'not in the confirmed lineup — PrizePicks voids this, it does not settle at 0';
+        notInLineup++;
+      }
+      continue;
+    }
+
     // Prefer MLB's own probable; fall back to the ESPN starter attachStarters found.
-    const confirmed = starters[abbr] || (c.selfSP?.name ? new Set([mlbNormKey(c.selfSP.name)]) : null);
+    const confirmed = starters[abbrOf] || (c.selfSP?.name ? new Set([mlbNormKey(c.selfSP.name)]) : null);
     if (!confirmed || !confirmed.size) continue;         // nothing posted — can't confirm, leave it
     if (confirmed.has(mlbNormKey(c.player))) continue;   // he IS the starter
     c.voidReason = 'not the confirmed starter — PrizePicks voids this, it does not settle at 0';
     notStarting++;
   }
-  return { inactive, notStarting, total: inactive + notStarting };
+  return { inactive, notStarting, notInLineup, total: inactive + notStarting + notInLineup };
 }
 
 function attachSides(picks, mode = 'both') {
   for (const p of picks) {
     const over = clamp(p.prob);
-    const side = mode === 'over' ? 'over'
+    const tier = (p.oddsType || 'standard').toLowerCase();
+
+    // PrizePicks offers Over AND Under on the STANDARD line only. Every other
+    // line on a prop — the goblin below it and the demons above — is OVER-ONLY:
+    // the card shows a single "More" button with no "Less".
+    //
+    // The engine did not know this. It picked whichever side its probability
+    // favoured, so a demon line with a low P(over) came out as an UNDER and was
+    // recommended at 80% — a bet that does not exist and cannot be placed. Every
+    // under on a goblin or demon line was in that category.
+    //
+    // On those lines the only real bet is the over, so that is what it becomes.
+    // A weak over then scores as the weak bet it is and drops out of the board
+    // on its own merits, which is the correct outcome — no special-casing needed.
+    const underAvailable = tier === 'standard';
+    p.underAvailable = underAvailable;
+
+    const side = !underAvailable ? 'over'
+               : mode === 'over' ? 'over'
                : mode === 'under' ? 'under'
                : (over < 0.5 ? 'under' : 'over');     // 'both': whichever side is the bet
     p.side = side;
     p.sideProb = side === 'under' ? 1 - over : over;
     p.sideVerdict = sideVerdictFor(p.sideProb);
-    // PrizePicks moves the LINE for goblin/demon, so the tier favours one side:
-    // a goblin line is lowered (easy over, poor under), a demon raised (hard
-    // over, friendlier under). The probability already accounts for the line —
-    // but our payout tables are captured per tier, not per tier+side, so a leg
-    // taken against its tier's grain is priced on an unverified table. Flag it
-    // rather than quietly pricing it as if it were verified.
-    const tier = (p.oddsType || 'standard').toLowerCase();
-    p.tierAgainstSide = (tier === 'goblin' && side === 'under') || (tier === 'demon' && side === 'over');
+
+    // In unders-only mode an alt line has nothing to offer, since its under does
+    // not exist. Mark it so the selector skips it rather than silently serving
+    // an over the user did not ask for.
+    p.sideUnavailable = mode === 'under' && !underAvailable;
+
+    // Kept for the payout note: our multiplier tables are captured per tier, not
+    // per tier+side. Only a standard-line under can now be "against the grain",
+    // because the alt lines no longer produce unders at all.
+    p.tierAgainstSide = false;
   }
   return picks;
 }
@@ -1203,6 +1244,11 @@ function selectLegs(picks, n, opts = {}) {
     // A player MLB says isn't active is not a bet at any price. Never in a
     // recommendation, whatever the number says.
     .filter((p) => !p.injured)
+    // Nor is a player who is not in the confirmed lineup. PrizePicks voids those
+    // rather than settling them at 0, so a "win" on one pays nothing.
+    .filter((p) => !p.voidReason)
+    // In unders-only mode, an alt line has no under to take — see attachSides.
+    .filter((p) => !p.sideUnavailable)
     .sort((a, b) => {
       const q = (x) => (x.sideProb != null ? x.sideProb : clamp(x.prob));
       if (q(b) !== q(a)) return q(b) - q(a);
