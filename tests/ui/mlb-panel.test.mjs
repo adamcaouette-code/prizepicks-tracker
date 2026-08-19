@@ -67,27 +67,37 @@ export default async function ({ t, url, browser }) {
     await page.$$eval('#searchResults .injbox', b => b.length), 0);
 
   // Per card, on demand, and only about THIS player and HIS team.
+  // Cards are located by PLAYER NAME. The board's default sort ranks by edge
+  // over the tier's break-even, so it reorders whenever that ranking changes —
+  // and a hardcoded row index then opens a different player's panel while the
+  // assertion still claims to be about this one.
+  const rowOf = async (name) => (await page.$$eval('#searchResults .leg .name',
+    (els, n) => els.map(e => e.textContent.trim()).indexOf(n), name));
+  const HURT = await rowOf('Hurt Guy');
+  const ELLY = await rowOf('Elly De La Cruz');
+
   const injBtns = await page.$$('#searchResults .whybtn[data-panel="inj"]');
   t.eq('every card offers its own injuries toggle', injBtns.length, 3);
   t.eq('injury panels start closed',
     await page.$$eval('#searchResults .why[data-panel="inj"]', ps => ps.map(x => x.hidden)), [true, true, true]);
 
-  await injBtns[1].click();   // the injured player's card
-  await page.waitForFunction(() => {
+  await injBtns[HURT].click();   // the injured player's card
+  await page.waitForFunction((i) => {
     const ps = document.querySelectorAll('#searchResults .why[data-panel="inj"]');
-    return ps[1] && !ps[1].hidden;
-  });
+    return ps[i] && !ps[i].hidden;
+  }, HURT);
   const hurtPanel = await page.$$eval('#searchResults .why[data-panel="inj"]',
-    ps => ps[1].innerText.replace(/\s+/g, ' '));
+    (ps, i) => ps[i].innerText.replace(/\s+/g, ' '), HURT);
   t.ok('the panel leads with THIS player\'s own status',
     /Hurt Guy.*10-Day Injured List.*not expected to play/.test(hurtPanel), hurtPanel.slice(0, 110));
   t.ok('...and says nobody else on his team is out, when nobody is',
     /No one else on CIN/.test(hurtPanel), hurtPanel.slice(0, 200));
   t.ok('no other team appears anywhere in it', !/PIT|LAD|SFG/.test(hurtPanel), hurtPanel.slice(0, 200));
 
-  await injBtns[0].click();   // a healthy player on the same team
-  await page.waitForFunction(() => !document.querySelectorAll('#searchResults .why[data-panel="inj"]')[0].hidden);
-  const healthy = await page.$$eval('#searchResults .why[data-panel="inj"]', ps => ps[0].innerText.replace(/\s+/g, ' '));
+  await injBtns[ELLY].click();   // a healthy player on the same team
+  await page.waitForFunction((i) => !document.querySelectorAll('#searchResults .why[data-panel="inj"]')[i].hidden, ELLY);
+  const healthy = await page.$$eval('#searchResults .why[data-panel="inj"]',
+    (ps, i) => ps[i].innerText.replace(/\s+/g, ' '), ELLY);
   t.ok('a healthy player is stated as having no designation',
     /No injury designation/.test(healthy), healthy.slice(0, 90));
   t.ok('...and his injured teammate IS listed', /Hurt Guy/.test(healthy) && /1 OUT/.test(healthy), healthy.slice(0, 160));
@@ -103,35 +113,49 @@ export default async function ({ t, url, browser }) {
   // fallback configured, so its src stays as authored and shows the intent.
   // The onerror swap is asynchronous — wait for it rather than racing it, or this
   // passes or fails depending on machine load.
+  // Keyed by player rather than by DOM position, for the same reason as above:
+  // only Elly's card has a fallback configured, and only Hurt Guy's shows the
+  // authored SVG untouched. Swapping which row is which turns both assertions
+  // into tests of the opposite claim.
   await page.waitForFunction(() => {
-    const el = document.querySelectorAll('#searchResults .tlogo')[0];
+    const leg = [...document.querySelectorAll('#searchResults .leg')]
+      .find(l => l.querySelector('.name').textContent.trim() === 'Elly De La Cruz');
+    const el = leg && leg.querySelector('.tlogo');
     return el && /espncdn/.test(el.getAttribute('src') || '');
   }, null, { timeout: 15000 }).catch(() => {});
-  const logos = await page.$$eval('#searchResults .tlogo', els => els.map(e => ({ src: e.getAttribute('src'), onerr: e.getAttribute('onerror') })));
-  t.eq('cards with a resolved team carry a cap logo', logos.length, 2);
+  const logos = await page.$$eval('#searchResults .leg', legs => Object.fromEntries(legs
+    .map(l => [l.querySelector('.name').textContent.trim(), l.querySelector('.tlogo')])
+    .filter(([, el]) => el)
+    .map(([n, el]) => [n, { src: el.getAttribute('src'), onerr: el.getAttribute('onerror') }])));
+  t.eq('cards with a resolved team carry a cap logo', Object.keys(logos).length, 2);
   t.ok('the authored mark is the CAP variant, not the primary wordmark',
-    /team-cap-on-dark/.test(logos[1].src), logos[1].src);
+    /team-cap-on-dark/.test(logos['Hurt Guy'].src), logos['Hurt Guy'].src);
   t.ok('a card with a fallback falls back to the ESPN PNG when the SVG fails',
-    /espncdn/.test(logos[0].src), logos[0].src);
+    /espncdn/.test(logos['Elly De La Cruz'].src), logos['Elly De La Cruz'].src);
   t.ok('a card with no fallback hides the whole mark slot rather than leaving a broken image',
-    /tmark.*display=.none./.test(logos[1].onerr || ''), logos[1].onerr);
+    /tmark.*display=.none./.test(logos['Hurt Guy'].onerr || ''), logos['Hurt Guy'].onerr);
 
   // The mark lives in the dead space between the name block and the numbers —
   // not inline with the matchup text, where it was too small to identify.
-  const geom = await page.$$eval('#searchResults .leg', legs => legs.map(leg => {
+  // Measured on Elly's card specifically. Hurt Guy's mark has no fallback and
+  // this environment cannot reach the MLB CDN, so his onerror has already
+  // collapsed the slot to 0px — correct behaviour, but nothing to measure.
+  const geom = await page.$$eval('#searchResults .leg', legs => Object.fromEntries(legs.map(leg => {
     const mark = leg.querySelector('.tmark');
     const info = leg.querySelector('.info');
     const right = leg.querySelector('.stat-right');
     if (!mark) return null;
     const m = mark.getBoundingClientRect(), i = info.getBoundingClientRect(), r = right.getBoundingClientRect();
-    return { w: Math.round(m.width), afterInfo: m.left >= i.right - 1, beforeStats: m.right <= r.left + 1,
-      insideMatchup: !!leg.querySelector('.team .tlogo'), legW: Math.round(leg.getBoundingClientRect().width) };
-  }).filter(Boolean));
-  t.eq('two cards carry a mark', geom.length, 2);
-  t.ok('the mark is big enough to identify a team', geom[0].w >= 28, `${geom[0].w}px`);
-  t.ok('...sits after the name block', geom[0].afterInfo);
-  t.ok('...and before the numbers', geom[0].beforeStats);
-  t.ok('...and is no longer crammed inline with the matchup text', !geom[0].insideMatchup);
+    return [leg.querySelector('.name').textContent.trim(),
+      { w: Math.round(m.width), afterInfo: m.left >= i.right - 1, beforeStats: m.right <= r.left + 1,
+        insideMatchup: !!leg.querySelector('.team .tlogo'), legW: Math.round(leg.getBoundingClientRect().width) }];
+  }).filter(Boolean)));
+  t.eq('two cards carry a mark', Object.keys(geom).length, 2);
+  const g = geom['Elly De La Cruz'];
+  t.ok('the mark is big enough to identify a team', g.w >= 28, `${g.w}px`);
+  t.ok('...sits after the name block', g.afterInfo);
+  t.ok('...and before the numbers', g.beforeStats);
+  t.ok('...and is no longer crammed inline with the matchup text', !g.insideMatchup);
 
   // A card with no resolved team must not leave a hole where the mark would be.
   const noMark = await page.$$eval('#searchResults .leg', legs =>

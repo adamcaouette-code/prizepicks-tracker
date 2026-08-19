@@ -1197,6 +1197,16 @@ function markVoids(candidates, mlb) {
   return { inactive, notStarting, notInLineup, total: inactive + notStarting + notInLineup };
 }
 
+// Per-leg hit rate a pure-tier 3-pick Power needs just to return the stake,
+// from the real payout tables in bet-finder-size.js: goblin 2.0x, standard
+// 4.75x, demon 12.0x. Three legs is the reference because it is the most common
+// slip; the ORDERING between tiers is the same at every size.
+const BREAK_EVEN_3PICK = {
+  goblin: Math.pow(1 / 2.0, 1 / 3),      // 0.794
+  standard: Math.pow(1 / 4.75, 1 / 3),   // 0.595
+  demon: Math.pow(1 / 12.0, 1 / 3),      // 0.437
+};
+
 function attachSides(picks, mode = 'both') {
   for (const p of picks) {
     const over = clamp(p.prob);
@@ -1234,6 +1244,17 @@ function attachSides(picks, mode = 'both') {
     // per tier+side. Only a standard-line under can now be "against the grain",
     // because the alt lines no longer produce unders at all.
     p.tierAgainstSide = false;
+
+    // REAL edge: how far the probability clears what the tier has to pay for.
+    //
+    // The board sorted by raw probability and called it "EDGE %", which is
+    // exactly backwards. A goblin line is set LOW so the over is easy, and it
+    // pays 2.0x on a 3-pick Power — needing 79.4% a leg just to break even. A
+    // standard pays 4.75x and needs 59.5%. So an 80% goblin is worth about
+    // +0.6pp while a 65% standard is worth +5.5pp, roughly nine times more —
+    // and sorting on probability floated the goblin to the top every time.
+    p.breakEven = BREAK_EVEN_3PICK[tier] ?? BREAK_EVEN_3PICK.standard;
+    p.edge = Math.round((p.sideProb - p.breakEven) * 10000) / 10000;
   }
   return picks;
 }
@@ -1653,6 +1674,7 @@ export const handler = async (event) => {
       prob: p.sideProb != null ? p.sideProb : p.prob,   // P(the side we're recommending)
       probOver: p.prob, pick: p.side || 'over', verdict: p.sideVerdict || p.verdict,
       oddsType: p.oddsType, tierAgainstSide: !!p.tierAgainstSide,
+      edge: p.edge, breakEven: p.breakEven,
       team: p.team, matchup: p.matchupLabel || p.matchup,
       projectionId: p.projectionId || null, start: p.start || null,
       headshot: p.headshot || null, teamLogo: p.teamLogo || null, teamLogoFallback: p.teamLogoFallback || null,

@@ -95,16 +95,22 @@ export default async function ({ t, url, browser }) {
   t.eq('alternate lines of one prop are marked on the board',
     await page.$$eval('#searchResults .altline', e => e.length), 2);
 
-  await addBtns[0].click();
+  // Cards are addressed by the leg key the button already carries, never by
+  // position. The board's default sort is a ranking, so it reorders whenever the
+  // ranking changes — and a positional click then silently adds a different prop
+  // than the one the assertion below is about.
+  const ADD = (player, line) => `#searchResults .addbtn[data-add="${player}|Hits|${line}|over"]`;
+
+  await page.click(ADD('Alpha One', 0.5));
   await page.waitForFunction(() => !document.getElementById('slipTray').hidden);
   t.eq('one leg shows in the tray', await page.$$eval('#slipTray .trayleg', l => l.length), 1);
   t.ok('the card marks itself as added',
-    await page.$eval('#searchResults .addbtn', b => b.classList.contains('on') && /in slip/.test(b.textContent)));
+    await page.$eval(ADD('Alpha One', 0.5), b => b.classList.contains('on') && /in slip/.test(b.textContent)));
   t.ok('with one leg it says there is nothing to price yet',
     /at least 2 legs/.test(await page.textContent('#trayMath')));
 
   // ---- two legs: real payout math ----------------------------------------
-  await (await page.$$('#searchResults .addbtn'))[1].click();
+  await page.click(ADD('Beta Two', 1.5));
   await page.waitForFunction(() => document.querySelectorAll('#slipTray .payrow').length > 1);
   t.eq('default stake is $10', await page.$eval('#trayStake', el => el.value), '10');
 
@@ -156,7 +162,7 @@ export default async function ({ t, url, browser }) {
   // ---- the same prop cannot go on twice ----------------------------------
   // Alpha One 0.5 is already in the tray; his 1.5 line must be refused.
   const before = await page.$$eval('#slipTray .trayleg', l => l.length);
-  await (await page.$$('#searchResults .addbtn'))[3].click();
+  await page.click(ADD('Alpha One', 1.5));
   await page.waitForFunction(() => /already on this slip/.test(document.getElementById('trayMsg').textContent));
   t.eq('a second line of the same prop is not added', await page.$$eval('#slipTray .trayleg', l => l.length), before);
   const msg = await page.textContent('#trayMsg');
@@ -164,12 +170,12 @@ export default async function ({ t, url, browser }) {
   t.ok('...and why, rather than just refusing', /aren’t independent/.test(msg), msg);
 
   // ---- removing a leg -----------------------------------------------------
-  await (await page.$$('#searchResults .addbtn'))[2].click();
+  await page.click(ADD('Gamma Three', 0.5));
   await page.waitForFunction(() => document.querySelectorAll('#slipTray .trayleg').length === 3);
   await page.click('#slipTray .trayleg:last-child .tl-x');
   await page.waitForFunction(() => document.querySelectorAll('#slipTray .trayleg').length === 2);
   t.ok('a removed leg clears the card marker',
-    !(await page.$$eval('#searchResults .addbtn', bs => bs[2].classList.contains('on'))));
+    !(await page.$eval(ADD('Gamma Three', 0.5), b => b.classList.contains('on'))));
 
   // ---- save ---------------------------------------------------------------
   await page.fill('#trayName', 'Friday night card');
@@ -190,7 +196,7 @@ export default async function ({ t, url, browser }) {
   t.eq('...along with the EV it was quoted at', savePost.sizing.evPerDollar, 0.12);
 
   t.eq('the tray empties after saving', await page.$$eval('#slipTray .trayleg', l => l.length), 0);
-  t.ok('and the cards reset', !(await page.$eval('#searchResults .addbtn', b => b.classList.contains('on'))));
+  t.ok('and the cards reset', !(await page.$eval(ADD('Alpha One', 0.5), b => b.classList.contains('on'))));
 
   // ---- My Slips -----------------------------------------------------------
   await page.click('#tabBtnSlips');

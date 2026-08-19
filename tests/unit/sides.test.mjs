@@ -165,6 +165,39 @@ export default async function ({ t }) {
   t.ok('...and the unavailable one is never selected',
     !undersOnlyLegs.some((p) => p.player === 'Alt'), undersOnlyLegs.map((p) => p.player).join(','));
 
+  // ---- EDGE is not probability -------------------------------------------
+  // The board sorted by raw probability and labelled it "EDGE %", which ranked
+  // it almost exactly backwards. A goblin line is set LOW so the over is easy,
+  // but it pays 2.0x on a 3-pick Power and needs 79.4% a leg to break even. A
+  // standard pays 4.75x and needs 59.5%. So the tier changes what a percentage
+  // is WORTH, and sorting on the percentage alone floats the worst-paying tier
+  // to the top every time.
+  const tiers2 = [
+    { player: 'Fat Goblin', stat: 'Ks', line: 3.5, prob: 0.80, verdict: 'play', oddsType: 'goblin' },
+    { player: 'Solid Standard', stat: 'Ks', line: 5.5, prob: 0.65, verdict: 'play', oddsType: 'standard' },
+    { player: 'Live Demon', stat: 'Ks', line: 8.5, prob: 0.50, verdict: 'play', oddsType: 'demon' },
+  ];
+  mod.attachSides(tiers2, 'both');
+  const t2 = (n) => tiers2.find((p) => p.player === n);
+
+  t.ok('a goblin must clear ~79%, because 2.0x is all it pays',
+    Math.abs(t2('Fat Goblin').breakEven - 0.7937) < 0.001, String(t2('Fat Goblin').breakEven));
+  t.ok('a standard only has to clear ~59%',
+    Math.abs(t2('Solid Standard').breakEven - 0.5946) < 0.001);
+  t.ok('a demon only ~44%', Math.abs(t2('Live Demon').breakEven - 0.4368) < 0.001);
+
+  t.ok('an 80% goblin is barely above water', Math.abs(t2('Fat Goblin').edge - 0.006) < 0.002,
+    `${(t2('Fat Goblin').edge * 100).toFixed(1)}pp`);
+  t.ok('...while a 65% standard is far better value',
+    Math.abs(t2('Solid Standard').edge - 0.055) < 0.002, `${(t2('Solid Standard').edge * 100).toFixed(1)}pp`);
+  t.ok('THE POINT: the lower percentage is the better bet',
+    t2('Solid Standard').edge > t2('Fat Goblin').edge,
+    `standard ${(t2('Solid Standard').edge * 100).toFixed(1)}pp vs goblin ${(t2('Fat Goblin').edge * 100).toFixed(1)}pp`);
+  t.ok('...by roughly nine times',
+    t2('Solid Standard').edge / t2('Fat Goblin').edge > 5);
+  t.ok('a coin-flip demon still beats the 80% goblin on what it pays',
+    t2('Live Demon').edge > t2('Fat Goblin').edge);
+
   // ---- one prop per player, whatever the line ----------------------------
   // The reported bug: the recommended slip carried "Altmaier Total Games Won
   // under 7.5" AND "under 6.5". PrizePicks won't take one prop twice, and the

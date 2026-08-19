@@ -60,13 +60,23 @@ export default async function ({ t, url, browser }) {
   const names = () => page.$$eval('#searchResults .leg .name', els => els.map(e => e.textContent.trim()));
   const gtimes = () => page.$$eval('#searchResults .leg .team',
     els => els.map(e => { const s = e.querySelector('.gtime'); return s ? s.textContent.trim() : null; }));
+  // Rows are addressed by PLAYER NAME, never by position. The default sort is
+  // the board's ranking, so any change to how it ranks reshuffles every row —
+  // and a position-indexed assertion then quietly starts testing a different
+  // player instead of failing. That is how a real ranking bug survived here.
+  const rowAt = async (name) => (await names()).indexOf(name);
 
   // ---- rows, default sort (edge), verdict styling -------------------------
   t.eq('every pick renders a row', await page.$$eval('#searchResults .leg', l => l.length), 4);
-  t.eq('default order is probability, best edge first',
-    await names(), ['Elly De La Cruz', 'No Extras Guy', 'Junk Time Guy', 'Corbin Carroll']);
+  // EDGE means probability MINUS the tier's break-even, not probability. Elly is
+  // the highest-probability pick on the board at 68%, but she is a goblin: 2.0x
+  // on a 3-pick Power needs 79.4% a leg, so she is -11.4pp and ranks below two
+  // 60% standards that only need 59.5%. Sorting on raw probability under an
+  // "EDGE %" label floated the worst-paying tier to the top of every board.
+  t.eq('default order is edge over break-even, not raw probability',
+    await names(), ['No Extras Guy', 'Junk Time Guy', 'Elly De La Cruz', 'Corbin Carroll']);
   const pct = await page.$$eval('#searchResults .pct', els => els.map(e => e.className));
-  t.eq('board-mode "pass" is styled as fade, not left bare', pct[3], 'pct fade');
+  t.eq('board-mode "pass" is styled as fade, not left bare', pct[await rowAt('Corbin Carroll')], 'pct fade');
   t.ok('probabilities render as percentages', /68%/.test(await page.textContent('#searchResults')));
 
   // ---- sort control -------------------------------------------------------
@@ -84,15 +94,15 @@ export default async function ({ t, url, browser }) {
     await names(), ['Elly De La Cruz', 'Corbin Carroll', 'No Extras Guy', 'Junk Time Guy']);
 
   await page.click('#searchResults .sortbtn[data-sort="edge"]');
-  t.eq('edge sort restores probability order', await names(),
-    ['Elly De La Cruz', 'No Extras Guy', 'Junk Time Guy', 'Corbin Carroll']);
+  t.eq('edge sort restores the edge order', await names(),
+    ['No Extras Guy', 'Junk Time Guy', 'Elly De La Cruz', 'Corbin Carroll']);
 
   // ---- game start time, viewer-local -------------------------------------
   const times = await gtimes();
-  t.eq('tonight game shows local time (ET viewer)', times[0], '7:30 PM');
-  t.eq('late west-coast game rolls to tomorrow for an ET viewer', times[3], 'Sat 1:15 AM');
-  t.eq('missing start_time renders no chip at all', times[1], null);
-  t.eq('unparseable start_time renders no chip at all', times[2], null);
+  t.eq('tonight game shows local time (ET viewer)', times[await rowAt('Elly De La Cruz')], '7:30 PM');
+  t.eq('late west-coast game rolls to tomorrow for an ET viewer', times[await rowAt('Corbin Carroll')], 'Sat 1:15 AM');
+  t.eq('missing start_time renders no chip at all', times[await rowAt('No Extras Guy')], null);
+  t.eq('unparseable start_time renders no chip at all', times[await rowAt('Junk Time Guy')], null);
   const dotIsCss = await page.$eval('#searchResults .gtime',
     el => getComputedStyle(el, '::before').content.includes('·'));
   t.ok('separator is CSS decoration, not DOM text', dotIsCss);
@@ -117,24 +127,32 @@ export default async function ({ t, url, browser }) {
 
   // ---- the "why" toggle ---------------------------------------------------
   const whyBtns = await page.$$('#searchResults .whybtn[data-panel="why"]');
+  // Which rows carry a why button, by name — the citation-stripping check below
+  // needs Elly's panel specifically, and she is no longer the first of them.
+  const whyOwners = await page.$$eval('#searchResults .leg', legs => legs
+    .filter(l => l.querySelector('.whybtn[data-panel="why"]'))
+    .map(l => l.querySelector('.name').textContent.trim()));
   t.eq('a why button only where the judge gave reasoning', whyBtns.length, 3);
   t.eq('panels start collapsed', await page.$$eval('#searchResults .why[data-panel="why"]', w => w.map(x => x.hidden)), [true, true, true]);
 
-  await whyBtns[0].click();
-  await page.waitForFunction(() => !document.querySelector('#searchResults .why[data-panel="why"]').hidden);
-  t.eq('button flips open', (await whyBtns[0].textContent()).trim(), 'why ↑');
-  t.eq('aria-expanded tracks it', await whyBtns[0].getAttribute('aria-expanded'), 'true');
-  const panel = await page.$eval('#searchResults .why[data-panel="why"]', w => w.innerText);
+  const ellyAt = whyOwners.indexOf('Elly De La Cruz');
+  const ellyWhy = whyBtns[ellyAt];
+  await ellyWhy.click();
+  await page.waitForFunction(() => [...document.querySelectorAll('#searchResults .why[data-panel="why"]')].some(w => !w.hidden));
+  t.eq('button flips open', (await ellyWhy.textContent()).trim(), 'why ↑');
+  t.eq('aria-expanded tracks it', await ellyWhy.getAttribute('aria-expanded'), 'true');
+  const panel = await page.$$eval('#searchResults .why[data-panel="why"]', (w, i) => w[i].innerText, ellyAt);
   t.ok('citation markup is stripped', !/<cite|cite index/.test(panel), panel.slice(0, 60));
   t.ok('the reasoning text survives', /4 of the last 5/.test(panel));
   t.eq('other why panels stay closed',
-    await page.$$eval('#searchResults .why[data-panel="why"]', w => w.slice(1).map(x => x.hidden)), [true, true]);
+    await page.$$eval('#searchResults .why[data-panel="why"]', (w, i) => w.filter((_, j) => j !== i).map(x => x.hidden), ellyAt),
+    [true, true]);
 
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   t.ok('no sideways scroll with a panel open (430px viewport)', width <= 430, `scrollWidth ${width}`);
 
-  await whyBtns[0].click();
-  await page.waitForFunction(() => document.querySelector('#searchResults .why[data-panel="why"]').hidden);
+  await ellyWhy.click();
+  await page.waitForFunction(() => [...document.querySelectorAll('#searchResults .why[data-panel="why"]')].every(w => w.hidden));
   t.ok('toggles closed again', true);
 
   t.eq('no unstubbed API calls', unstubbed, []);
@@ -155,10 +173,12 @@ export default async function ({ t, url, browser }) {
 
   // ---- same slate, west-coast viewer --------------------------------------
   const west = await renderBoard(browser, url, 'America/Los_Angeles');
-  const wtimes = await west.page.$$eval('#searchResults .leg .team',
-    els => els.map(e => { const s = e.querySelector('.gtime'); return s ? s.textContent.trim() : null; }));
-  t.eq('same game, PT viewer: 7:30 ET reads 4:30 PM', wtimes[0], '4:30 PM');
-  t.eq('the late PT game is still today out west — no weekday prefix', wtimes[3], '10:15 PM');
+  const wrow = await west.page.$$eval('#searchResults .leg', legs => Object.fromEntries(legs.map(l => {
+    const s = l.querySelector('.team .gtime');
+    return [l.querySelector('.name').textContent.trim(), s ? s.textContent.trim() : null];
+  })));
+  t.eq('same game, PT viewer: 7:30 ET reads 4:30 PM', wrow['Elly De La Cruz'], '4:30 PM');
+  t.eq('the late PT game is still today out west — no weekday prefix', wrow['Corbin Carroll'], '10:15 PM');
   t.eq('no JS errors (PT viewer)', west.errors, []);
   await west.page.close();
 }
