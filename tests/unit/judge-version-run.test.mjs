@@ -51,6 +51,7 @@ async function run(body = {}) {
   const call = mock.calls.find((c) => c.url.includes('api.anthropic.com'));
   const sent = call ? JSON.parse(call.init.body) : null;
   return {
+    sentModel: sent?.model,
     result: read('bet-jobs', 'jv')?.result || {},
     log: read('pick-log', new Date().toISOString().slice(0, 10)) || [],
     system: sent?.system || '',
@@ -88,6 +89,26 @@ export default async function ({ t }) {
   const byName = (l, n) => l.find((p) => p.player === n);
   t.eq('a 0.77 is a play', byName(aph.log, 'Goblin Guy').verdict, 'play');
   t.eq('a 0.58 is a lean', byName(aph.log, 'Standard Guy').verdict, 'lean');
+
+  // ---- the model is a measured dimension too ------------------------------
+  // Same discipline as the prompt version: switchable, and recorded on every
+  // pick. Opus is the default because it always has been, not because anything
+  // cheaper was tried and lost — and at 2.5-5x less per run, a cheaper model
+  // that scores the same buys several times more graded data on a fixed budget.
+  t.eq('the default model is Opus', aph.sentModel, 'claude-opus-4-8');
+  t.eq('every logged pick records the model that produced it',
+    [...new Set(aph.log.map((p) => p.judgeModel))], ['claude-opus-4-8']);
+
+  const cheap = await run({ model: 'claude-haiku-4-5' });
+  t.eq('a cheaper model is actually used', cheap.sentModel, 'claude-haiku-4-5');
+  t.eq('...and recorded, so the two can be scored apart',
+    [...new Set(cheap.log.map((p) => p.judgeModel))], ['claude-haiku-4-5']);
+
+  // An unpriced model would meter as Opus and misreport the bill, which is the
+  // one thing a budget tool must never do — so the price table is the allowlist.
+  const bogus = await run({ model: 'gpt-9-turbo' });
+  t.eq('an unknown model falls back rather than reaching the API',
+    bogus.sentModel, 'claude-opus-4-8');
 
   // ---- psyche is still reachable, unchanged -------------------------------
   const psy = await run({ prompt: 'psyche' });

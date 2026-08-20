@@ -106,6 +106,13 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // describes neither, and a prompt change becomes impossible to evaluate.
     // Rows logged before versioning read as 'psyche (untagged)'.
     byPrompt: {},
+    // The model that produced each probability, scored the same way as the
+    // prompt version and for the same reason. The judge runs on Opus because it
+    // always has, not because a cheaper model was tried and lost. This is what
+    // turns that into a question with an answer — and at 2.5-5x less per run, a
+    // cheaper model that scores the same is not a small saving, it is several
+    // times more graded data for the same budget.
+    byModel: {},
     plays: { n: 0, hits: 0 },        // verdict "play"
     playsLeans: { n: 0, hits: 0 },   // verdict "play" or "lean"
   };
@@ -160,6 +167,10 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     const v = (out.byPrompt[pv] ||= { n: 0, hits: 0, brierSum: 0, predSum: 0 });
     v.n++; v.hits += hit; v.brierSum += (prob - hit) ** 2; v.predSum += prob;
 
+    const jm = p.judgeModel || 'untagged';
+    const mv = (out.byModel[jm] ||= { n: 0, hits: 0, brierSum: 0, predSum: 0 });
+    mv.n++; mv.hits += hit; mv.brierSum += (prob - hit) ** 2; mv.predSum += prob;
+
     if (p.verdict === 'play') { out.plays.n++; out.plays.hits += hit; }
     if (p.verdict === 'play' || p.verdict === 'lean') { out.playsLeans.n++; out.playsLeans.hits += hit; }
   }
@@ -207,7 +218,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
   out.byStat = Object.fromEntries(Object.entries(out.byStat)
     .sort((a, b) => Math.abs(b[1].overstatement) * b[1].n - Math.abs(a[1].overstatement) * a[1].n));
 
-  for (const v of Object.values(out.byPrompt)) {
+  for (const v of [...Object.values(out.byPrompt), ...Object.values(out.byModel)]) {
     v.brier = v.brierSum / v.n;
     v.predicted = v.predSum / v.n;      // what it claimed, on average
     v.actual = v.hits / v.n;            // what happened
@@ -339,6 +350,20 @@ function renderHTML(a) {
       <td>${pct(v.tierRate)}</td><td>${pct(v.breakEven)}</td><td>${clears}</td></tr>`;
   }).join('') || '<tr><td colspan="8" class="mut">Not enough graded picks in any tier yet.</td></tr>';
 
+  const modelRows = Object.entries(a.byModel || {}).sort((x, y) => y[1].n - x[1].n).map(([k, v]) => {
+    const over = v.overstatement, sign = over >= 0 ? '+' : '';
+    const col = v.n < 50 ? 'var(--dim)' : Math.abs(over) <= 0.04 ? 'var(--grn)' : Math.abs(over) <= 0.10 ? 'var(--amb)' : 'var(--red)';
+    return `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${pct(v.predicted)}</td><td>${pct(v.actual)}</td>
+      <td style="color:${col}">${sign}${(over * 100).toFixed(1)}pts</td><td>${v.brier.toFixed(3)}</td>
+      <td>${v.n < 50 ? '<span style="color:var(--amb)">early</span>' : ''}</td></tr>`;
+  }).join('') || '<tr><td colspan="7" class="mut">No graded picks yet.</td></tr>';
+
+  const runRows = Object.entries(a.spend?.perRun || {}).sort((x, y) => y[1].usd - x[1].usd).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td>${v.runs}</td><td>$${v.usdPerRun.toFixed(3)}</td>
+      <td>${(v.inPerRun / 1000).toFixed(0)}k</td><td>${(v.outPerRun / 1000).toFixed(1)}k</td>
+      <td>${v.searchesPerRun}</td><td>${v.inputShare == null ? '—' : pct(v.inputShare)}</td></tr>`).join('')
+    || '<tr><td colspan="7" class="mut">no metered calls yet</td></tr>';
+
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
   const pendRows = pendDates.map(([d, c], i) =>
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
@@ -415,6 +440,14 @@ function renderHTML(a) {
     <i>psyche (untagged)</i>. Both need ~50 graded picks each before the comparison is worth acting on, and the
     cleanest test is running the two on the SAME slate — different nights differ more than the prompts do.</div>
 
+  <h2>Model — head to head</h2>
+  <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>
+  <div class="callout">Scored exactly like the judge versions, and for the same reason: the judge runs on Opus
+    because it always has, not because anything cheaper was tried and lost. Sonnet costs 2.5x less per run and
+    Haiku 5x, so a cheaper model that scores the same is not a small saving — it is several times more graded
+    data for the same budget, which is the thing this whole page is short of. Rows before model tagging read as
+    <i>untagged</i>.</div>
+
   <h2>By tier</h2>
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
 
@@ -459,6 +492,13 @@ function renderHTML(a) {
     ${card('$' + (a.spend?.week ?? 0).toFixed(2), '7 days', '')}
     ${card('$' + (a.spend?.month ?? 0).toFixed(2), '30 days', '')}
   </div>
+  <div class="wrap" style="margin-top:12px"><table><thead><tr><th>call</th><th>runs</th><th>$ / run</th><th>in</th><th>out</th><th>searches</th><th>input share</th></tr></thead><tbody>${runRows}</tbody></table></div>
+  <div class="callout">What one run actually costs, and where it goes. Input tokens are nearly always the driver:
+    web search RESULTS bill as input, so a run doing 8 searches reads far more than it writes. When <b>input
+    share</b> is high the lever is the search budget and the size of the shortlist, not the model's verbosity —
+    and note that the searches largely go looking for confirmed lineups, which the MLB and ESPN feeds already
+    supply for free elsewhere in the same run.</div>
+
   <div class="wrap" style="margin-top:12px"><table><thead><tr><th>feature</th><th>spend (30d)</th></tr></thead><tbody>
     ${Object.entries(a.spend?.byFeature || {}).sort((x, y) => y[1] - x[1]).map(([f, v]) => `<tr><td>${esc(f)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" class="mut">no metered calls yet</td></tr>'}
   </tbody></table></div>
@@ -491,7 +531,12 @@ export const handler = async (event) => {
     const agg = aggregate(picks);
 
     // ---- API spend (from cost-log, written by judge/ask/reevaluate) --------
-    const spend = { today: 0, week: 0, month: 0, byFeature: {}, byModel: {} };
+    // perRun breaks a judge call into its parts. The month's bill is a single
+    // number that cannot be acted on; "each run reads 150k tokens because it
+    // runs 8 web searches" can be. Input tokens are almost always the driver —
+    // search RESULTS bill as input, and at Opus rates a handful of searches
+    // costs more than everything the model writes.
+    const spend = { today: 0, week: 0, month: 0, byFeature: {}, byModel: {}, perRun: {} };
     try {
       const costStore = getStore({ name: 'cost-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
       let ckeys = [];
@@ -512,9 +557,20 @@ export const handler = async (event) => {
           if (k === today) spend.today += usd;
           spend.byFeature[e.feature] = (spend.byFeature[e.feature] || 0) + usd;
           spend.byModel[e.model] = (spend.byModel[e.model] || 0) + usd;
+          const r = (spend.perRun[`${e.feature} · ${e.model}`] ||= { runs: 0, usd: 0, inTok: 0, outTok: 0, searches: 0 });
+          r.runs++; r.usd += usd; r.inTok += e.inTok || 0; r.outTok += e.outTok || 0; r.searches += e.searches || 0;
         }
       }
     } catch { /* spend section is best-effort */ }
+    for (const r of Object.values(spend.perRun)) {
+      r.usdPerRun = r.usd / r.runs;
+      r.inPerRun = Math.round(r.inTok / r.runs);
+      r.outPerRun = Math.round(r.outTok / r.runs);
+      r.searchesPerRun = Math.round((r.searches / r.runs) * 10) / 10;
+      // What share of the bill the input side is. Above ~80% the lever is the
+      // search budget and the payload, not the model's verbosity.
+      r.inputShare = r.usd > 0 ? 1 - (r.outTok / 1e6 * 25) / r.usd : null;
+    }
     agg.spend = spend;
     // ------------------------------------------------------------------------
 

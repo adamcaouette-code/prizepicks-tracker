@@ -27,6 +27,22 @@ const PRICES = {
   'claude-sonnet-4-6': { in: 3, out: 15 },
   'claude-haiku-4-5': { in: 1, out: 5 },
 };
+
+// Which models the judge may be asked to run on. The price table IS the
+// allowlist: a model with no price would meter as Opus and quietly misreport
+// spend, which is the one thing a budget tool must not do. A name outside it
+// falls back to the default rather than reaching the API and failing the run.
+//
+// WHY THIS IS SWITCHABLE. The judge runs on Opus at $5/$25 per million, and a
+// month of it came to $27. That is the whole budget, and it buys probabilities
+// whose usefulness is still unproven — /api/calibration's skill table asks
+// whether the judge separates its own good picks from its bad ones inside a
+// tier, and until that says yes, Opus prices are an assumption rather than a
+// finding. Sonnet is 2.5x cheaper and Haiku 5x, so the same money buys 2.5-5x
+// the graded sample. Every logged pick records the model that produced it, so
+// running cheaper is an experiment with an answer rather than a gamble.
+export const JUDGE_MODELS = Object.keys(PRICES);
+export const pickModel = (name) => (JUDGE_MODELS.includes(String(name)) ? String(name) : MODEL);
 const SEARCH_PRICE = 0.01;
 async function recordCost(feature, model, apiResponse) {
   try {
@@ -938,7 +954,7 @@ export function attachSource(picks, candidates) {
   return picks;
 }
 
-async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}, version = null) {
+async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}, version = null, model = MODEL) {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
   //
@@ -974,7 +990,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
       'content-type': 'application/json',
     },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       max_tokens: 16000,
       system: V.promptFor(league),
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxSearches }],
@@ -983,7 +999,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'Claude API error');
-  recordCost('judge', MODEL, data).catch(() => {});   // best-effort spend metering
+  recordCost('judge', model, data).catch(() => {});   // best-effort spend metering
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   const picks = parsePicks(text);
   for (const p of picks) {
@@ -994,6 +1010,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     // run scores — it only removes a way for the two to disagree.
     p.verdict = verdictFor(Number(p.prob));
     p.promptVersion = V.name;    // so calibration can score the versions apart
+    p.judgeModel = model;        // ...and the models apart, for the same reason
   }
   return attachSource(picks, candidates);
 }
@@ -1363,6 +1380,9 @@ export const handler = async (event) => {
       // Per-run so the two can be compared on the SAME slate, which is the only
       // comparison worth much — different nights differ more than the prompts do.
       prompt: body.prompt ? String(body.prompt).toLowerCase() : null,
+      // Which model writes the probabilities. Validated against the price table
+      // so an unknown name cannot reach the API or mis-meter the spend.
+      model: pickModel(body.model),
     };
 
     // ---- Run timer: timestamped phase log + typical-duration ETA ----------
@@ -1576,7 +1596,7 @@ export const handler = async (event) => {
 
     await tick('Claude researching lineups');
     const judgeStart = Date.now();
-    const judged = await judge(live, teamRecords, odds.teamWinProbs, params.league, oppDef, params.prompt);
+    const judged = await judge(live, teamRecords, odds.teamWinProbs, params.league, oppDef, params.prompt, params.model);
     // Resolve the name back into params so the result payload, the run report
     // and the page all state which judge actually ran. A version you cannot see
     // from the output is one you will misattribute results to.
@@ -1657,6 +1677,7 @@ export const handler = async (event) => {
         // change cannot be evaluated — the log would mix two forecasters and
         // report one blended, uninterpretable calibration curve.
         promptVersion: p.promptVersion || judgeVersion,
+        judgeModel: p.judgeModel || params.model,
         cleared: p.cleared ?? null,     // how many of the last 5 cleared, per the judge
         recentAvg: p.recentAvg ?? null,
         mlbId: p.mlbId ?? null,   // lets the MLB fallback grader skip a name lookup
