@@ -203,11 +203,13 @@ export default async function ({ t }) {
   // under 7.5" AND "under 6.5". PrizePicks won't take one prop twice, and the
   // two are NESTED — under 6.5 already means under 7.5 — so multiplying them as
   // independent produces a number that is simply wrong.
+  // Tiers are stated because they now decide whether an under exists at all —
+  // an unknown tier is treated as over-only, and both Altmaier lines are unders.
   const altLines = [
-    { player: 'Daniel Altmaier', stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 7.5, prob: 0.20, verdict: 'pass', matchup: 'ALT vs MUS' },
-    { player: 'Daniel Altmaier', stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 6.5, prob: 0.22, verdict: 'pass', matchup: 'ALT vs MUS' },
-    { player: 'Zeynep Sonmez',   stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 4.5, prob: 0.70, verdict: 'play', matchup: 'SON vs X' },
-    { player: 'Third Player',    stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 5.5, prob: 0.66, verdict: 'play', matchup: 'THI vs Y' },
+    { player: 'Daniel Altmaier', stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 7.5, prob: 0.20, verdict: 'pass', matchup: 'ALT vs MUS', oddsType: 'standard' },
+    { player: 'Daniel Altmaier', stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 6.5, prob: 0.22, verdict: 'pass', matchup: 'ALT vs MUS', oddsType: 'standard' },
+    { player: 'Zeynep Sonmez',   stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 4.5, prob: 0.70, verdict: 'play', matchup: 'SON vs X', oddsType: 'standard' },
+    { player: 'Third Player',    stat: 'Total Games Won', statDisplay: 'Total Games Won', line: 5.5, prob: 0.66, verdict: 'play', matchup: 'THI vs Y', oddsType: 'standard' },
   ];
   mod.attachSides(altLines, 'both');
   const noDupes = mod.selectLegs(altLines, 3);
@@ -229,4 +231,67 @@ export default async function ({ t }) {
     mixed.filter((p) => p.player === 'Same Guy').length, 2);
   t.eq('...and they are different stats, not two lines of one',
     new Set(mixed.filter((p) => p.player === 'Same Guy').map((p) => p.stat)).size, 2);
+
+  // ---- the join: one prop posted at several lines ------------------------
+  // THE REPORTED BUG. The board offered "Parker Messick Pitcher Strikeouts
+  // UNDER 3.5" when the only under PrizePicks actually had was at 6.
+  //
+  // The judge is sent each line as its own entry and echoes back
+  // player/stat/line/prob — no tier. Everything else is re-attached afterwards
+  // from the candidate rows, and that join was keyed on player+stat ALONE. All
+  // three of Messick's lines collapsed onto one key, last write won, and the 3.5
+  // goblin inherited the 6 line's "standard" tier. attachSides then believed an
+  // under existed on it, saw P(over 3.5) was low, and recommended the under —
+  // a bet with no button on the card.
+  //
+  // The same collision handed it the wrong projectionId, which is worse and
+  // quieter: the pick would have graded cleanly against a line nobody bet.
+  const messickLines = [
+    { id: 'pp-gob', player: 'Parker Messick', stat: 'Pitcher Strikeouts', line: 3.5, oddsType: 'goblin',   team: 'CLE', matchup: 'CLE vs DET', game: 'CLE vs DET' },
+    { id: 'pp-std', player: 'Parker Messick', stat: 'Pitcher Strikeouts', line: 6,   oddsType: 'standard', team: 'CLE', matchup: 'CLE vs DET', game: 'CLE vs DET' },
+    { id: 'pp-dem', player: 'Parker Messick', stat: 'Pitcher Strikeouts', line: 8.5, oddsType: 'demon',    team: 'CLE', matchup: 'CLE vs DET', game: 'CLE vs DET' },
+  ];
+  const judged = [
+    { player: 'Parker Messick', stat: 'Pitcher Strikeouts', line: 3.5, prob: 0.20, verdict: 'pass' },
+    { player: 'Parker Messick', stat: 'Pitcher Strikeouts', line: 6,   prob: 0.42, verdict: 'lean' },
+    { player: 'Parker Messick', stat: 'Pitcher Strikeouts', line: 8.5, prob: 0.08, verdict: 'pass' },
+  ];
+  mod.attachSource(judged, messickLines);
+  const atLine = (l) => judged.find((p) => p.line === l);
+
+  t.eq('each line keeps its OWN tier, not the last one in the array',
+    judged.map((p) => p.oddsType), ['goblin', 'standard', 'demon']);
+  t.eq('...and its own projection id, so it grades against the line it was bet at',
+    judged.map((p) => p.projectionId), ['pp-gob', 'pp-std', 'pp-dem']);
+  t.eq('player-level fields still attach', atLine(3.5).team, 'CLE');
+
+  mod.attachSides(judged, 'both');
+  t.eq('the goblin 3.5 has no under to take', atLine(3.5).underAvailable, false);
+  t.eq('...so it is offered as the over it really is, at its true 20%',
+    [atLine(3.5).side, atLine(3.5).sideProb], ['over', 0.2]);
+  t.eq('the demon 8.5 is over-only too', atLine(8.5).side, 'over');
+  // THE POINT: exactly one line on this prop has an under, and it is the 6.
+  t.eq('the standard 6 is the only line that can be taken under', atLine(6).side, 'under');
+  t.ok('...priced at 1 minus P(over 6)', Math.abs(atLine(6).sideProb - 0.58) < 1e-9,
+    String(atLine(6).sideProb));
+  t.eq('one under on the whole prop, not three',
+    judged.filter((p) => p.side === 'under').map((p) => p.line), [6]);
+
+  // ---- a line no candidate carried ---------------------------------------
+  // The judge occasionally echoes a line that was never on the board. There is
+  // then no tier and no projection id to be had, and INVENTING them is exactly
+  // what caused the bug above. Refuse both, keep the player-level context, and
+  // treat the unknown tier as over-only — assuming no under costs at most one
+  // real bet, while assuming one that does not exist puts an unplaceable pick
+  // on the board.
+  const orphan = [{ player: 'Parker Messick', stat: 'Pitcher Strikeouts', line: 5, prob: 0.30, verdict: 'pass' }];
+  mod.attachSource(orphan, messickLines);
+  t.eq('a line that is not on the board is marked as unmatched', orphan[0].lineMatched, false);
+  t.eq('...and gets no projection id rather than a wrong one', orphan[0].projectionId, undefined);
+  t.eq('...and no tier rather than a guessed one', orphan[0].oddsType, null);
+  t.eq('...but player-level context still attaches', orphan[0].matchup, 'CLE vs DET');
+  mod.attachSides(orphan, 'both');
+  t.eq('an unconfirmed tier is treated as over-only', orphan[0].underAvailable, false);
+  t.eq('...so a weak over stays a weak over instead of becoming a 70% under',
+    [orphan[0].side, orphan[0].sideProb], ['over', 0.3]);
 }

@@ -1001,6 +1001,82 @@ function parsePicks(text) {
   return [];
 }
 
+// ---------- re-attach the source projection to each judged pick ----------
+/**
+ * The judge is sent a slim view of each candidate and echoes back only
+ * player/stat/line/verdict/prob. Everything else the board and the grader need
+ * has to be re-attached from the candidate row it came from.
+ *
+ * Exported for tests: this is the join, and a join on the wrong key is silent.
+ */
+export function attachSource(picks, candidates) {
+  // Keyed by player + stat + LINE. PrizePicks posts the same prop at several
+  // lines — a goblin below the standard, demons above — and every one of them
+  // reaches the judge as its own entry. Keying on player+stat alone collapsed
+  // them, and last-write-wins handed every pick on that prop the attributes of
+  // whichever line happened to be last in the array.
+  //
+  // Two things ride on that and both are line-SPECIFIC:
+  //   oddsType     — the tier. A goblin line labelled "standard" is treated as
+  //                  having an under, and PrizePicks offers no under on it. That
+  //                  is how the board came to recommend "under 3.5" on Parker
+  //                  Messick's Ks when the only under he had was at 6: the 3.5
+  //                  goblin borrowed the tier of the 6 standard sitting next to
+  //                  it, so attachSides believed an under existed and took it.
+  //   projectionId — the grading key. Pointed at the wrong line, a pick grades
+  //                  against a threshold nobody bet, silently and forever.
+  // Everything else copied below (team, matchup, headshot, recent form, the
+  // opposing starter, park) is a property of the PLAYER, not of the line, so a
+  // near-miss on the line is still safe to take those from.
+  const norm = (v) => Number(v);
+  const lookup = {};
+  const byProp = {};
+  for (const c of candidates) {
+    lookup[`${c.player}|${c.stat}|${norm(c.line)}`] = c;
+    byProp[`${c.player}|${c.stat}`] ??= c;         // first, not last — for player-level fields only
+  }
+  for (const p of picks) {
+    const exact = lookup[`${p.player}|${p.stat}|${norm(p.line)}`];
+    const src = exact || byProp[`${p.player}|${p.stat}`] || {};
+    // Whether we are looking at the row the judge actually judged. When the
+    // judge echoes a line no candidate carries, the tier and the projection id
+    // are unknown — and guessing them is how the bug above happened. Say so
+    // instead, and let the consumers refuse rather than assume.
+    p.lineMatched = !!exact;
+    // The PrizePicks projection id. Without it a pick can never be graded — it's
+    // the key every history lookup uses — and a slip saved from this board would
+    // sit "ungradeable" forever. It was previously only written into the pick-log
+    // rows, so it never reached the page. Only ever taken from the exact line:
+    // an id for a different line is worse than no id, because it grades cleanly
+    // against the wrong number.
+    if (exact?.id) p.projectionId ??= exact.id;
+    p.game ??= src.game || '(unknown game)';
+    p.oddsType ??= exact?.oddsType || null;        // so the board can show the tier
+    p.team ??= src.team || '';                      // for team dropdowns
+    p.matchup ??= src.matchup || src.game || '(unknown game)';
+    p.matchupLabel ??= src.matchupLabel || src.game || p.matchup;
+    p.position ??= src.position || '';
+    p.image ??= src.image || '';                    // player headshot
+    if (src.last5) { p.recent5 ??= src.last5; p.recentAvg ??= src.avg; } // last-5 for the UI
+    if (src.histGames) p.histGames ??= src.histGames; // per-game value + opponent + home/away, for the stats panel
+    if (src.oppSP) p.oppSP ??= src.oppSP;            // opposing starter (hitter props) — for UI/validation
+    if (src.selfSP) p.selfSP ??= src.selfSP;         // own season line (pitcher props)
+    if (src.park != null) p.parkIndex ??= src.park;  // home park run index
+    // First pitch / tipoff, straight from PrizePicks' start_time. DISPLAY ONLY —
+    // the board shows it so you know how long you have to place the bet. It is
+    // deliberately absent from the judge's payload above and from the calibration
+    // log below: a clock skew or a postponed game must never move a probability.
+    if (src.start) p.start ??= src.start;
+    // MLB Stats API extras (raw data, never the judge's): headshot, cap logo,
+    // personId for the lazy stats lookup, and the injury flag.
+    if (src.headshot) p.headshot ??= src.headshot;
+    if (src.teamLogo) { p.teamLogo ??= src.teamLogo; p.teamLogoFallback ??= src.teamLogoFallback; }
+    if (src.mlbId) p.mlbId ??= src.mlbId;
+    if (src.injured) p.injured ??= src.injured;
+  }
+  return picks;
+}
+
 async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}) {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
@@ -1049,41 +1125,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
   recordCost('judge', MODEL, data).catch(() => {});   // best-effort spend metering
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   const picks = parsePicks(text);
-  // re-attach game by player+stat
-  const lookup = {};
-  for (const c of candidates) lookup[`${c.player}|${c.stat}`] = c;
-  for (const p of picks) {
-    const src = lookup[`${p.player}|${p.stat}`] || {};
-    // The PrizePicks projection id. Without it a pick can never be graded — it's
-    // the key every history lookup uses — and a slip saved from this board would
-    // sit "ungradeable" forever. It was previously only written into the pick-log
-    // rows, so it never reached the page.
-    if (src.id) p.projectionId ??= src.id;
-    p.game ??= src.game || '(unknown game)';
-    p.oddsType ??= src.oddsType || 'standard';     // so the board can show the tier
-    p.team ??= src.team || '';                      // for team dropdowns
-    p.matchup ??= src.matchup || src.game || '(unknown game)';
-    p.matchupLabel ??= src.matchupLabel || src.game || p.matchup;
-    p.position ??= src.position || '';
-    p.image ??= src.image || '';                    // player headshot
-    if (src.last5) { p.recent5 ??= src.last5; p.recentAvg ??= src.avg; } // last-5 for the UI
-    if (src.histGames) p.histGames ??= src.histGames; // per-game value + opponent + home/away, for the stats panel
-    if (src.oppSP) p.oppSP ??= src.oppSP;            // opposing starter (hitter props) — for UI/validation
-    if (src.selfSP) p.selfSP ??= src.selfSP;         // own season line (pitcher props)
-    if (src.park != null) p.parkIndex ??= src.park;  // home park run index
-    // First pitch / tipoff, straight from PrizePicks' start_time. DISPLAY ONLY —
-    // the board shows it so you know how long you have to place the bet. It is
-    // deliberately absent from the judge's payload above and from the calibration
-    // log below: a clock skew or a postponed game must never move a probability.
-    if (src.start) p.start ??= src.start;
-    // MLB Stats API extras (raw data, never the judge's): headshot, cap logo,
-    // personId for the lazy stats lookup, and the injury flag.
-    if (src.headshot) p.headshot ??= src.headshot;
-    if (src.teamLogo) { p.teamLogo ??= src.teamLogo; p.teamLogoFallback ??= src.teamLogoFallback; }
-    if (src.mlbId) p.mlbId ??= src.mlbId;
-    if (src.injured) p.injured ??= src.injured;
-  }
-  return picks;
+  return attachSource(picks, candidates);
 }
 
 // ---------- selection + sizing ----------
@@ -1210,7 +1252,7 @@ const BREAK_EVEN_3PICK = {
 function attachSides(picks, mode = 'both') {
   for (const p of picks) {
     const over = clamp(p.prob);
-    const tier = (p.oddsType || 'standard').toLowerCase();
+    const tier = String(p.oddsType || 'standard').toLowerCase();
 
     // PrizePicks offers Over AND Under on the STANDARD line only. Every other
     // line on a prop — the goblin below it and the demons above — is OVER-ONLY:
@@ -1224,8 +1266,18 @@ function attachSides(picks, mode = 'both') {
     // On those lines the only real bet is the over, so that is what it becomes.
     // A weak over then scores as the weak bet it is and drops out of the board
     // on its own merits, which is the correct outcome — no special-casing needed.
-    const underAvailable = tier === 'standard';
+    //
+    // A tier we could not confirm is treated as over-only too. p.oddsType is
+    // null when the judge echoed a line no candidate carried, so we do not know
+    // which of the prop's lines this is. Defaulting an unknown tier to
+    // "standard" is what let an unplaceable under through in the first place —
+    // and the two errors are not symmetric. Assuming no under costs at most one
+    // real bet we skip; assuming an under that does not exist puts a bet on the
+    // board that cannot be placed at all.
+    const tierKnown = !!p.oddsType;
+    const underAvailable = tierKnown && tier === 'standard';
     p.underAvailable = underAvailable;
+    p.tierKnown = tierKnown;
 
     const side = !underAvailable ? 'over'
                : mode === 'over' ? 'over'
