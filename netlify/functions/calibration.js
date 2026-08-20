@@ -85,6 +85,19 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // here is signal the tier does NOT capture. That residual is the whole
     // reason to look.
     byStat: {},
+    // Does the judge add anything BEYOND the tier?
+    //
+    // This is a different question from calibration, and the more important one.
+    // Calibration asks "when it says 65%, does it hit 65%" — whether the numbers
+    // are honest. This asks whether they are USEFUL: within a single tier, do
+    // the props the judge rated highly actually hit more often than the ones it
+    // rated low? If they do not, the judge is only re-reading the tier back to
+    // us and the whole model is doing no work that a one-line rule could not.
+    //
+    // Split within tier rather than across it on purpose. Across all picks the
+    // judge looks like it has signal, but almost all of that is just goblins
+    // scoring above demons — which the tier already told us for free.
+    skill: {},
     byLeague: {},
     bySource: {},                    // board engine vs slip judge, scored apart
     // The judge version that produced each probability — 'psyche' (the original)
@@ -149,6 +162,34 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
 
     if (p.verdict === 'play') { out.plays.n++; out.plays.hits += hit; }
     if (p.verdict === 'play' || p.verdict === 'lean') { out.playsLeans.n++; out.playsLeans.hits += hit; }
+  }
+
+  // Per-leg hit rate a pure-tier 3-pick Power needs to return the stake, from
+  // the real payout tables: goblin 2.0x, standard 4.75x, demon 12.0x. Three legs
+  // is the reference because the ORDERING between tiers holds at every size.
+  const BREAK_EVEN = { goblin: 2.0 ** (-1 / 3), standard: 4.75 ** (-1 / 3), demon: 12.0 ** (-1 / 3) };
+  for (const tier of Object.keys(out.byTier)) {
+    const rows = graded.filter((p) => (p.oddsType || 'unknown') === tier)
+      .sort((x, y) => (Number(y.prob) || 0) - (Number(x.prob) || 0));
+    if (rows.length < 20) continue;              // a half of ten says nothing
+    const half = Math.floor(rows.length / 2);
+    const rate = (arr) => arr.filter((p) => p.hit === true).length / arr.length;
+    const top = rows.slice(0, half), bottom = rows.slice(-half);
+    const base = out.byTier[tier].hits / out.byTier[tier].n;
+    const be = BREAK_EVEN[tier] ?? null;
+    out.skill[tier] = {
+      n: rows.length,
+      topHalf: rate(top), bottomHalf: rate(bottom),
+      // The whole answer in one number: how many points the judge's own ranking
+      // separates the good half from the bad half, inside one tier.
+      lift: rate(top) - rate(bottom),
+      tierRate: base,
+      breakEven: be,
+      // Betting every prop of this tier blind — the thing the engine has to beat
+      // to be worth running at all.
+      baselineClears: be == null ? null : base >= be,
+      bestHalfClears: be == null ? null : rate(top) >= be,
+    };
   }
 
   out.overall = overHits / graded.length;
@@ -288,6 +329,16 @@ function renderHTML(a) {
       <td class="mut">${esc(tierMix)}</td></tr>`;
   }).join('') || '<tr><td colspan="6" class="mut">No graded picks yet.</td></tr>';
 
+  const skillRows = Object.entries(a.skill || {}).map(([t, v]) => {
+    const lift = v.lift * 100;
+    const col = lift >= 5 ? 'var(--grn)' : lift >= 1 ? 'var(--amb)' : 'var(--red)';
+    const clears = v.bestHalfClears ? '<span style="color:var(--grn)">yes</span>'
+      : '<span style="color:var(--red)">no</span>';
+    return `<tr><td>${esc(t)}</td><td>${v.n}</td><td>${pct(v.topHalf)}</td><td>${pct(v.bottomHalf)}</td>
+      <td style="color:${col}">${lift >= 0 ? '+' : ''}${lift.toFixed(1)}</td>
+      <td>${pct(v.tierRate)}</td><td>${pct(v.breakEven)}</td><td>${clears}</td></tr>`;
+  }).join('') || '<tr><td colspan="8" class="mut">Not enough graded picks in any tier yet.</td></tr>';
+
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
   const pendRows = pendDates.map(([d, c], i) =>
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
@@ -366,6 +417,18 @@ function renderHTML(a) {
 
   <h2>By tier</h2>
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
+
+  <h2>Does the judge beat the tier?</h2>
+  <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>its best half</th><th>its worst half</th><th>lift (pts)</th><th>whole tier</th><th>break-even</th><th>bettable</th></tr></thead><tbody>${skillRows}</tbody></table></div>
+  <div class="callout">The question calibration cannot answer. Calibration asks whether the percentages are
+    <i>honest</i>; this asks whether they are <i>useful</i>. Inside a single tier, the judge's own top-rated half
+    is compared against its bottom-rated half. <b>Lift</b> is the gap — if it is near zero the judge is only
+    reading the tier back to us, and a one-line rule would do the same job for free. The split is deliberately
+    kept inside one tier: across all picks the judge looks skilled, but nearly all of that is goblins outscoring
+    demons, which the tier already told us. <b>Break-even</b> is the per-leg rate a pure-tier 3-pick Power needs
+    just to return the stake, and <b>bettable</b> asks whether even the judge's best half clears it. A judge can
+    be perfectly calibrated and still have nothing bettable — being honest about a bad number does not make it a
+    good one.</div>
 
   <h2>By prop type</h2>
   <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>claimed</th><th>actual</th><th>gap (pts)</th><th>tiers</th></tr></thead><tbody>${statRows}</tbody></table></div>
