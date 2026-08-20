@@ -108,4 +108,56 @@ export default async function ({ t }) {
   const html2 = (await cal2.handler({ queryStringParameters: {} })).body;
   t.ok('...but is left out of the table until it has a result',
     !/<td>NFL<\/td>/.test(html2));
+
+  // ---- by prop type -------------------------------------------------------
+  // The question: is the engine wrong about a KIND of prop, rather than about
+  // individual players? PrizePicks already prices rarity into the TIER — a home
+  // run "over 0.5" is unlikely, which is why it posts as standard or demon
+  // rather than goblin — so rarity alone should not surface here. What surfaces
+  // is what the tier does not capture.
+  reset();
+  const stat = (league, name, prob, hit, i, tier = 'standard') => ({
+    ...mk(league, prob, hit, i), stat: name, oddsType: tier,
+  });
+  const rows2 = [];
+  // Honest: claims 60%, hits 60% over 20 picks.
+  for (let i = 0; i < 20; i++) rows2.push(stat('mlb', 'Hits', 0.60, i < 12, i));
+  // Badly overstated, and on enough picks to matter: claims 55%, hits 20%.
+  for (let i = 0; i < 40; i++) rows2.push(stat('mlb', 'Home Runs', 0.55, i < 8, 100 + i));
+  // A big miss on a tiny sample — must NOT outrank the row above.
+  for (let i = 0; i < 4; i++) rows2.push(stat('mlb', 'Triples', 0.80, false, 300 + i));
+  // Same stat NAME, different sport: "Fantasy Score" is an unrelated quantity in
+  // each, and pooling them would average two different things into one row.
+  for (let i = 0; i < 25; i++) rows2.push(stat('wnba', 'Fantasy Score', 0.50, i < 20, 400 + i));
+  for (let i = 0; i < 25; i++) rows2.push(stat('mlb', 'Fantasy Score', 0.50, i < 5, 500 + i));
+  seed('pick-log', DAY, rows2);
+
+  const cal3 = await loadFn('calibration.js');
+  const res3 = JSON.parse((await cal3.handler({ queryStringParameters: { format: 'json' } })).body);
+  const byStat = res3.byStat;
+
+  t.eq('prop types are keyed by league AND stat', Object.keys(byStat).includes('mlb :: Home Runs'), true);
+  t.ok('the same stat name in two sports stays two rows',
+    byStat['mlb :: Fantasy Score'] && byStat['wnba :: Fantasy Score'], Object.keys(byStat).join(' | '));
+  t.eq('...and they are not averaged together',
+    [byStat['mlb :: Fantasy Score'].actual, byStat['wnba :: Fantasy Score'].actual], [0.2, 0.8]);
+
+  t.eq('an honest prop type reports no gap',
+    Math.round(byStat['mlb :: Hits'].overstatement * 100), 0);
+  t.eq('an overstated one reports the gap it earned',
+    Math.round(byStat['mlb :: Home Runs'].overstatement * 100), 35);
+  t.eq('...with the tier mix that produced it', byStat['mlb :: Home Runs'].tiers, { standard: 40 });
+
+  // THE RANKING RULE. Triples is off by 80 points but on 4 picks; Home Runs is
+  // off by 35 on 40. Ranking by percentage would put Triples on top and send you
+  // chasing a rounding error while the row that actually moves the Brier sits
+  // below it.
+  const order = Object.keys(byStat);
+  t.ok('ranked by TOTAL error contributed, not by the biggest percentage miss',
+    order.indexOf('mlb :: Home Runs') < order.indexOf('mlb :: Triples'), order.join(' | '));
+
+  const html3 = (await cal3.handler({ queryStringParameters: {} })).body;
+  t.ok('the prop-type table renders', /By prop type/.test(html3));
+  t.ok('...naming the worst offender', /mlb :: Home Runs/.test(html3));
+  t.ok('...and greys a row too thin to trust', /style="color:var\(--faint\)"><td>mlb :: Triples/.test(html3));
 }

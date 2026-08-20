@@ -243,22 +243,42 @@ Keep each search to ONE short query (3-6 words).
 const APHRODITE_TAIL = `
 THE PAYOUT TIER IS THE MARKET'S OWN ESTIMATE. Every prop carries "tier". PrizePicks
 does not set these lines at random — the tier is where they chose to put the number
-and what they are willing to pay for it:
+and what they are willing to pay for it. These are the rates MEASURED on 1,807 graded
+props from this board, not estimates:
 - "goblin"   — the line was moved DOWN to make the over easy, and pays only ~2x.
-               They are pricing the over as LIKELY, roughly 0.72-0.85.
-- "standard" — the line sits near the middle. Roughly 0.50-0.62 on the over.
+               The over hit 70% of the time (811/1162). Start at 0.65-0.75.
+- "standard" — the line sits near the middle, paying ~4.75x.
+               The over hit 45% of the time (137/302). Start at 0.40-0.52.
 - "demon"    — the line was moved UP to make the over hard, and pays ~12x.
-               They are pricing the over as UNLIKELY, roughly 0.25-0.45.
-Start from the tier's range as your prior. It is a well-informed opinion with money
-behind it, and your own read is a smaller sample than theirs. Then move off it when
-your evidence genuinely warrants — a confirmed lineup change, an injury the line has
-not caught up to, a pitcher matchup that clearly favours one side. State WHAT moved
-you off the tier's range whenever you land outside it. "The player looks good" is not
-a reason; a specific fact the market may not have priced is.
+               The over hit 20% of the time (67/343). Start at 0.15-0.25.
+Note what those numbers say: a "standard" line is NOT a coin flip on this board, it
+goes under more often than over, and a demon goes over only one time in five. Do not
+reason from what the words sound like. Reason from the rates.
+
+Start inside the tier's range. It is a well-informed opinion with money behind it, and
+your own read is a smaller sample than theirs. Move off it only when your evidence
+genuinely warrants — a confirmed lineup change, an injury the line has not caught up
+to, a pitcher matchup that clearly favours one side. State WHAT moved you off the
+range whenever you land outside it. "The player looks good" is not a reason; a
+specific fact the market may not have priced is.
+
+RARE-EVENT PROPS. Some stats cannot have a balanced line because the line cannot go
+below 0.5 — home runs, stolen bases, triples. There is no "over 0.2 home runs", so the
+number sits on the floor and the true probability is simply low, often 0.10-0.20 for a
+typical hitter. It does not rise because the line looks small. A player being "due", in
+form, or facing a weak pitcher moves such a prop by a few points, not tens of points.
+The tier already encodes most of this — that is WHY these props price as standard or
+demon rather than goblin — so trust the tier's range over the small-looking line.
 
 If you find yourself putting a goblin at 0.55 or a demon at 0.70, stop and check you
 have read the line correctly against the player's actual production. Disagreeing that
 hard with the market is possible but rare, and it needs a stated reason.
+
+DO NOT USE THE EXTREMES UNLESS YOU MEAN THEM. Measured against outcomes, this board's
+predictions have been far too spread out: probabilities below 0.10 hit 43% of the time,
+which is worse than useless. If you do not have specific evidence that a prop is close
+to impossible, it belongs near its tier's range, not at 0.05. Reserve anything below
+0.15 for a stat that genuinely cannot happen for this player in this role.
 
 ANCHOR ON A COUNT, NOT AN IMPRESSION. When a prop includes "recent5" (the player's
 last 5 results for THIS exact stat) and "recentAvg", first COUNT how many of the five

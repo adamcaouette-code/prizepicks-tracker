@@ -75,6 +75,16 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     brier: null,
     bands: [],
     byTier: {},
+    // Per PROP TYPE. The question this answers: is the engine systematically
+    // wrong about a KIND of prop rather than about individual players?
+    //
+    // It is not obvious that it should be, because PrizePicks already prices
+    // rarity into the tier — a home run "over 0.5" is rare, which is exactly why
+    // it posts as standard or demon rather than goblin. So the tier ought to
+    // absorb most of what "this prop type is unlikely" means, and any residual
+    // here is signal the tier does NOT capture. That residual is the whole
+    // reason to look.
+    byStat: {},
     byLeague: {},
     bySource: {},                    // board engine vs slip judge, scored apart
     // The judge version that produced each probability — 'psyche' (the original)
@@ -104,6 +114,14 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     const t = (out.byTier[tier] ||= { n: 0, hits: 0 });
     t.n++; t.hits += hit;
 
+    // Keyed by league too: "Fantasy Score" means something completely different
+    // in baseball and basketball, and pooling them would average two unrelated
+    // things into one meaningless row.
+    const st = `${p.league || 'unknown'} :: ${p.stat || 'unknown'}`;
+    const sr = (out.byStat[st] ||= { n: 0, hits: 0, predSum: 0, tiers: {} });
+    sr.n++; sr.hits += hit; sr.predSum += prob;
+    sr.tiers[tier] = (sr.tiers[tier] || 0) + 1;
+
     const lg = p.league || 'unknown';
     const l = (out.byLeague[lg] ||= { n: 0, hits: 0 });
     l.n++; l.hits += hit;
@@ -128,6 +146,18 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
 
   out.overall = overHits / graded.length;
   out.brier = brierSum / graded.length;
+  for (const v of Object.values(out.byStat)) {
+    v.predicted = v.predSum / v.n;
+    v.actual = v.hits / v.n;
+    v.overstatement = v.predicted - v.actual;
+    delete v.predSum;
+  }
+  // Ranked by how much total error each prop type contributes — |gap| times the
+  // number of picks. A 30-point miss on six picks is a curiosity; a 12-point
+  // miss on four hundred is where the Brier score actually goes.
+  out.byStat = Object.fromEntries(Object.entries(out.byStat)
+    .sort((a, b) => Math.abs(b[1].overstatement) * b[1].n - Math.abs(a[1].overstatement) * a[1].n));
+
   for (const v of Object.values(out.byPrompt)) {
     v.brier = v.brierSum / v.n;
     v.predicted = v.predSum / v.n;      // what it claimed, on average
@@ -232,6 +262,22 @@ function renderHTML(a) {
         <td>${v.n < 50 ? '<span style="color:var(--amb)">early</span>' : ''}</td></tr>`;
     }).join('') || '<tr><td colspan="7" class="mut">No graded picks yet.</td></tr>';
 
+  // Prop types, worst total error first. Below ~20 graded a row is mostly noise,
+  // so it is shown greyed rather than dropped — a prop type the engine rates
+  // often but grades rarely is itself worth seeing.
+  const statRows = Object.entries(a.byStat || {}).slice(0, 25).map(([k, v]) => {
+    const gap = v.overstatement * 100;
+    const thin = v.n < 20;
+    const col = thin ? 'var(--faint)'
+      : Math.abs(gap) <= 5 ? 'var(--grn)' : Math.abs(gap) <= 12 ? 'var(--amb)' : 'var(--red)';
+    const tierMix = Object.entries(v.tiers).sort((x, y) => y[1] - x[1])
+      .map(([t, c]) => `${t.slice(0, 3)} ${c}`).join(' · ');
+    return `<tr${thin ? ' style="color:var(--faint)"' : ''}><td>${esc(k)}</td><td>${v.n}</td>
+      <td>${pct(v.predicted)}</td><td>${pct(v.actual)}</td>
+      <td style="color:${col}">${gap >= 0 ? '+' : ''}${gap.toFixed(1)}</td>
+      <td class="mut">${esc(tierMix)}</td></tr>`;
+  }).join('') || '<tr><td colspan="6" class="mut">No graded picks yet.</td></tr>';
+
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
   const pendRows = pendDates.map(([d, c], i) =>
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
@@ -310,6 +356,15 @@ function renderHTML(a) {
 
   <h2>By tier</h2>
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
+
+  <h2>By prop type</h2>
+  <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>claimed</th><th>actual</th><th>gap (pts)</th><th>tiers</th></tr></thead><tbody>${statRows}</tbody></table></div>
+  <div class="callout">Ranked by total error contributed — the gap times the number of picks — so the rows at the
+    top are where the Brier score actually goes, not the largest percentage misses on six picks. <b>Gap</b> is
+    claimed minus actual: positive means the engine talks that prop type up, negative means it talks it down.
+    Rarity alone should NOT show up here: a home run "over 0.5" is unlikely, but that is exactly why PrizePicks
+    prices it as standard or demon, so the tier already carries it. What shows up here is what the tier
+    <i>doesn't</i> capture — a stat the engine misreads on its own terms. Rows under 20 graded are greyed.</div>
 
   <h2>By league</h2>
   <div class="wrap"><table><thead><tr><th>league</th><th>graded</th><th>record</th><th>win rate</th><th>brier</th><th></th></tr></thead><tbody>${leagueRows}</tbody></table></div>

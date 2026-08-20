@@ -71,6 +71,26 @@ export default async function ({ t }) {
   t.ok('aphrodite asks for the count of last-5 that cleared, before the number',
     /"cleared"/.test(aph));
   t.ok('aphrodite explains the tier as the market price', /goblin/.test(aph) && /demon/.test(aph));
+  // The tier ranges are MEASURED, not guessed. The first version of this prompt
+  // carried ranges I derived from payout break-evens — goblin 0.72-0.85,
+  // standard 0.50-0.62, demon 0.25-0.45 — and every one of them sat above what
+  // 1,807 graded picks actually show (70% / 45% / 20%). A prior that biased high
+  // would have pushed the new judge to overstate exactly where it hurts.
+  t.ok('goblin is anchored at the measured rate, not the payout-implied one',
+    /70% of the time \(811\/1162\)/.test(aph) && /0\.65-0\.75/.test(aph));
+  t.ok('standard is anchored below a coin flip, which is what the data says',
+    /45% of the time \(137\/302\)/.test(aph) && /0\.40-0\.52/.test(aph));
+  t.ok('demon is anchored at one in five', /20% of the time \(67\/343\)/.test(aph) && /0\.15-0\.25/.test(aph));
+  t.ok('...and none of the old payout-implied ranges survive',
+    !/0\.72-0\.85/.test(aph) && !/0\.50-0\.62/.test(aph) && !/0\.25-0\.45/.test(aph));
+
+  // The reported bug about rare props: a line that cannot go below 0.5 is not
+  // "nearly a lock because the number is small".
+  t.ok('aphrodite is warned about floor-pinned rare-event lines',
+    /cannot go\s+below 0\.5/.test(aph) && /home runs, stolen bases/.test(aph));
+  // The measured failure: the 0-10% band hit 43% of the time across 93 picks.
+  t.ok('...and told not to reach for the extremes without evidence',
+    /below 0\.10 hit 43% of the time/.test(aph));
   t.ok('...and says which way an error costs, since the top picks are the bet ones',
     /overstatement is the expensive error/.test(aph));
   t.ok('both still demand bare JSON', /ONLY valid\nJSON|ONLY valid JSON/.test(psy) && /ONLY valid JSON/.test(aph));
