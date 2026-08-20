@@ -120,7 +120,14 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     const st = `${p.league || 'unknown'} :: ${p.stat || 'unknown'}`;
     const sr = (out.byStat[st] ||= { n: 0, hits: 0, predSum: 0, tiers: {} });
     sr.n++; sr.hits += hit; sr.predSum += prob;
-    sr.tiers[tier] = (sr.tiers[tier] || 0) + 1;
+    // Hits AND count per tier, not just the count. A prop type's blended rate is
+    // not usable as an anchor on its own: "Hitter Fantasy Score goes over 62% of
+    // the time" is a mix of goblin lines that go over ~70% and demon lines that
+    // go over ~20%, and handing that single number to a judge that already knows
+    // the tier would push it the wrong way on both. The per-tier split is what
+    // can actually be quoted at a specific prop.
+    const tr = (sr.tiers[tier] ||= { n: 0, hits: 0 });
+    tr.n++; tr.hits += hit;
 
     const lg = p.league || 'unknown';
     const l = (out.byLeague[lg] ||= { n: 0, hits: 0 });
@@ -150,6 +157,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     v.predicted = v.predSum / v.n;
     v.actual = v.hits / v.n;
     v.overstatement = v.predicted - v.actual;
+    for (const tr of Object.values(v.tiers)) tr.rate = tr.hits / tr.n;
     delete v.predSum;
   }
   // Ranked by how much total error each prop type contributes — |gap| times the
@@ -270,8 +278,10 @@ function renderHTML(a) {
     const thin = v.n < 20;
     const col = thin ? 'var(--faint)'
       : Math.abs(gap) <= 5 ? 'var(--grn)' : Math.abs(gap) <= 12 ? 'var(--amb)' : 'var(--red)';
-    const tierMix = Object.entries(v.tiers).sort((x, y) => y[1] - x[1])
-      .map(([t, c]) => `${t.slice(0, 3)} ${c}`).join(' · ');
+    // Each tier with its own rate, since that is the number that could be quoted
+    // at a prop. Rates on fewer than 25 are omitted rather than shown thin.
+    const tierMix = Object.entries(v.tiers).sort((x, y) => y[1].n - x[1].n)
+      .map(([t, c]) => `${t.slice(0, 3)} ${c.n}${c.n >= 25 ? ` @${pct(c.rate)}` : ''}`).join(' · ');
     return `<tr${thin ? ' style="color:var(--faint)"' : ''}><td>${esc(k)}</td><td>${v.n}</td>
       <td>${pct(v.predicted)}</td><td>${pct(v.actual)}</td>
       <td style="color:${col}">${gap >= 0 ? '+' : ''}${gap.toFixed(1)}</td>
@@ -364,7 +374,10 @@ function renderHTML(a) {
     claimed minus actual: positive means the engine talks that prop type up, negative means it talks it down.
     Rarity alone should NOT show up here: a home run "over 0.5" is unlikely, but that is exactly why PrizePicks
     prices it as standard or demon, so the tier already carries it. What shows up here is what the tier
-    <i>doesn't</i> capture — a stat the engine misreads on its own terms. Rows under 20 graded are greyed.</div>
+    <i>doesn't</i> capture — a stat the engine misreads on its own terms. Rows under 20 graded are greyed.
+    The <b>tiers</b> column gives each tier's own over-rate where it has 25+ graded picks: a prop type's blended
+    rate mixes goblin lines going over ~70% with demon lines going over ~20%, so only the per-tier number is
+    safe to quote at an individual prop.</div>
 
   <h2>By league</h2>
   <div class="wrap"><table><thead><tr><th>league</th><th>graded</th><th>record</th><th>win rate</th><th>brier</th><th></th></tr></thead><tbody>${leagueRows}</tbody></table></div>

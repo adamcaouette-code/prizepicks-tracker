@@ -146,7 +146,14 @@ export default async function ({ t }) {
     Math.round(byStat['mlb :: Hits'].overstatement * 100), 0);
   t.eq('an overstated one reports the gap it earned',
     Math.round(byStat['mlb :: Home Runs'].overstatement * 100), 35);
-  t.eq('...with the tier mix that produced it', byStat['mlb :: Home Runs'].tiers, { standard: 40 });
+  // The tier split carries its OWN rate, not just a count. A prop type's blended
+  // rate cannot be quoted at an individual prop: it mixes goblin lines that go
+  // over ~70% of the time with demon lines that go over ~20%, so handing a judge
+  // that already knows the tier one averaged number pushes it wrong on both.
+  t.eq('...with the tier mix that produced it, each tier carrying its own rate',
+    byStat['mlb :: Home Runs'].tiers, { standard: { n: 40, hits: 8, rate: 0.2 } });
+  t.eq('a prop type split across tiers reports each one separately',
+    Object.keys(byStat['mlb :: Hits'].tiers), ['standard']);
 
   // THE RANKING RULE. Triples is off by 80 points but on 4 picks; Home Runs is
   // off by 35 on 40. Ranking by percentage would put Triples on top and send you
@@ -160,4 +167,7 @@ export default async function ({ t }) {
   t.ok('the prop-type table renders', /By prop type/.test(html3));
   t.ok('...naming the worst offender', /mlb :: Home Runs/.test(html3));
   t.ok('...and greys a row too thin to trust', /style="color:var\(--faint\)"><td>mlb :: Triples/.test(html3));
+  t.ok('a tier with enough picks shows its rate', /sta 40 @20\.0%/.test(html3));
+  t.ok('...and a tier too thin to trust shows only its count, not a made-up rate',
+    /sta 4(?!0)[^@]/.test(html3.replace(/\s+/g, ' ')) || !/@/.test(html3.split('Triples')[1].slice(0, 120)));
 }
