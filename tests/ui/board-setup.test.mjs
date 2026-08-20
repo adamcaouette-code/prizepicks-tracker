@@ -67,6 +67,15 @@ export default async function ({ t, url, browser }) {
   await page.waitForFunction(() => document.getElementById('leagueInfo').hidden);
   t.ok('warning clears on a fully-researched league', true);
 
+  // ---- the judge picker ---------------------------------------------------
+  // Two judge versions exist so they can be compared. A picker that silently
+  // always sends the same one would make every comparison a comparison of
+  // Aphrodite with itself, and nothing about the page would look wrong.
+  t.eq('both judges are offered, Aphrodite active by default',
+    await page.$$eval('#judges .sidebtn',
+      els => els.map(e => ({ v: e.dataset.v, active: e.classList.contains('active') }))),
+    [{ v: 'aphrodite', active: true }, { v: 'psyche', active: false }]);
+
   // ---- the selection reaches the POST -----------------------------------
   await page.click('#propScroll .propchip[data-v="Hitter Strikeouts"]');
   await page.click('#runBtn');
@@ -74,7 +83,17 @@ export default async function ({ t, url, browser }) {
   t.eq('run posts the selected league', job.sent.league, 'mlb');
   t.eq('run posts the selected prop as stat_type', job.sent.statFilter, 'Hitter Strikeouts');
   t.eq('run posts the active tiers', job.sent.tiers, ['goblin', 'standard']);
+  t.eq('run posts the selected judge', job.sent.prompt, 'aphrodite');
   t.ok('run mints a jobId', typeof job.sent.jobId === 'string' && job.sent.jobId.length > 8, job.sent.jobId);
+
+  // Switching to the original must actually switch it — the whole archive is
+  // pointless if the old judge cannot be reached from the page.
+  await page.click('#judges .sidebtn[data-v="psyche"]');
+  await page.click('#runBtn');
+  await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
+  t.eq('picking Psyche posts Psyche', job.sent.prompt, 'psyche');
+  t.eq('...and is exclusive, not additive',
+    await page.$$eval('#judges .sidebtn.active', els => els.map(e => e.dataset.v)), ['psyche']);
 
   t.eq('no unstubbed API calls', unstubbed, []);
   t.eq('no JS errors', errors, []);

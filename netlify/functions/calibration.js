@@ -77,6 +77,12 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     byTier: {},
     byLeague: {},
     bySource: {},                    // board engine vs slip judge, scored apart
+    // The judge version that produced each probability — 'psyche' (the original)
+    // or 'aphrodite' (the refinement). This is the whole point of naming them:
+    // pooled, two forecasters produce one blended calibration curve that
+    // describes neither, and a prompt change becomes impossible to evaluate.
+    // Rows logged before versioning read as 'psyche (untagged)'.
+    byPrompt: {},
     plays: { n: 0, hits: 0 },        // verdict "play"
     playsLeans: { n: 0, hits: 0 },   // verdict "play" or "lean"
   };
@@ -108,12 +114,27 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     const s = (out.bySource[src] ||= { n: 0, hits: 0, brierSum: 0 });
     s.n++; s.hits += hit; s.brierSum += (prob - hit) ** 2;
 
+    // Per-version Brier AND mean predicted vs actual. The gap between those last
+    // two is the number that answers "are the percentages honest?": a forecaster
+    // averaging 0.68 that hits 0.52 is overstating by 16 points, and no hit rate
+    // on its own shows that.
+    const pv = p.promptVersion || 'psyche (untagged)';
+    const v = (out.byPrompt[pv] ||= { n: 0, hits: 0, brierSum: 0, predSum: 0 });
+    v.n++; v.hits += hit; v.brierSum += (prob - hit) ** 2; v.predSum += prob;
+
     if (p.verdict === 'play') { out.plays.n++; out.plays.hits += hit; }
     if (p.verdict === 'play' || p.verdict === 'lean') { out.playsLeans.n++; out.playsLeans.hits += hit; }
   }
 
   out.overall = overHits / graded.length;
   out.brier = brierSum / graded.length;
+  for (const v of Object.values(out.byPrompt)) {
+    v.brier = v.brierSum / v.n;
+    v.predicted = v.predSum / v.n;      // what it claimed, on average
+    v.actual = v.hits / v.n;            // what happened
+    v.overstatement = v.predicted - v.actual;   // >0 means the numbers are too high
+    delete v.brierSum; delete v.predSum;
+  }
   out.bands = Object.values(bandMap)
     .sort((a, b) => a.lo - b.lo)
     .map((b) => ({ band: `${b.lo}-${b.lo + 10}%`, n: b.n, predicted: b.predSum / b.n, actual: b.hits / b.n }));
@@ -195,6 +216,22 @@ function renderHTML(a) {
     `<tr><td>${esc(k === 'slip' ? 'slip judge' : k + ' engine')}</td><td>${v.n}</td><td>${pct(v.hits / v.n)}</td><td>${(v.brierSum / v.n).toFixed(3)}</td></tr>`).join('') ||
     '<tr><td colspan="4" class="mut">—</td></tr>';
 
+  // Judge head-to-head. The column that matters is "overstated": mean predicted
+  // minus actual. A version can win on hit rate purely by being handed easier
+  // slates, but overstatement is about its OWN claims and is comparable across
+  // nights. Positive means the percentages are too high.
+  const promptRows = Object.entries(a.byPrompt || {})
+    .sort((x, y) => y[1].n - x[1].n)
+    .map(([k, v]) => {
+      const over = v.overstatement;
+      const col = v.n < 50 ? 'var(--dim)'
+        : Math.abs(over) <= 0.04 ? 'var(--grn)' : Math.abs(over) <= 0.10 ? 'var(--amb)' : 'var(--red)';
+      const sign = over >= 0 ? '+' : '';
+      return `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${pct(v.predicted)}</td><td>${pct(v.actual)}</td>
+        <td style="color:${col}">${sign}${(over * 100).toFixed(1)}pts</td><td>${v.brier.toFixed(3)}</td>
+        <td>${v.n < 50 ? '<span style="color:var(--amb)">early</span>' : ''}</td></tr>`;
+    }).join('') || '<tr><td colspan="7" class="mut">No graded picks yet.</td></tr>';
+
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
   const pendRows = pendDates.map(([d, c], i) =>
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
@@ -261,6 +298,15 @@ function renderHTML(a) {
     <tr><td>play</td><td>${a.plays.n}</td><td>${a.plays.n ? pct(a.plays.hits / a.plays.n) : '—'}</td></tr>
     <tr><td>play + lean</td><td>${a.playsLeans.n}</td><td>${a.playsLeans.n ? pct(plWin) : '—'}</td></tr>
   </tbody></table></div>
+
+  <h2>Judge version — head to head</h2>
+  <div class="wrap"><table><thead><tr><th>judge</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th></th></tr></thead><tbody>${promptRows}</tbody></table></div>
+  <div class="callout"><b>Psyche</b> is the original judge; <b>Aphrodite</b> is the refinement. "Claimed" is the
+    average probability the version put on its picks, "actual" is how often they hit. The gap between them is the
+    honest measure of whether the percentages mean anything — a judge claiming 68% on legs that hit 52% is
+    overstating by 16 points, and no win rate on its own shows that. Rows before versioning read as
+    <i>psyche (untagged)</i>. Both need ~50 graded picks each before the comparison is worth acting on, and the
+    cleanest test is running the two on the SAME slate — different nights differ more than the prompts do.</div>
 
   <h2>By tier</h2>
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>

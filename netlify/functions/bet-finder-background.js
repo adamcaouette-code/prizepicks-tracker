@@ -12,6 +12,7 @@ import { getStore } from '@netlify/blobs';
 import { slate as mlbSlate, normKey as mlbNormKey, PP_TO_MLB_ABBR } from './mlb-stats.js';
 import { attachMlbForm } from './mlb-grade.js';
 import { attachEspnForm, markEspnVoids, SLUGS as ESPN_SLUGS_FOR_FORM } from './espn-grade.js';
+import { promptSet, verdictFor } from './judge-prompts.js';
 
 const MODEL = process.env.JUDGE_MODEL || 'claude-opus-4-8';
 const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap web searches so runs don't blow past the timeout
@@ -826,146 +827,6 @@ function groupByGame(items) {
 }
 
 // ---------- judgment: Claude with web search ----------
-const SYSTEM_HEAD = `You are a sports-betting research assistant. You receive a SHORTLIST of
-player props GROUPED BY GAME that already cleared a statistical filter. Each prop
-includes the player's POSITION. Work game by game: for EACH game run ONE web search
-for that matchup's confirmed lineup and team news, then apply it to every player in
-that game. Do NOT search per player. Keep each search to ONE short query (3-6 words).
-`;
-
-const SOCCER_ROLES = `
-Judge every prop against the player's ROLE. A stat must fit the position, or the line
-is a trap no matter how low it looks:
-- Clearances, blocks, interceptions, tackles = DEFENDER / defensive-mid stats. An
-  attacker or winger will rarely clear the threshold. Mark these PASS for attackers.
-- Shots, shots on target, goals, goal+assist = forwards and attacking mids.
-- Crosses, assists = wide players and creators.
-- If a stat does not match the player's role, that alone is reason to PASS.
-
-Also weight rotation/minutes risk heavily (dead rubbers, already-qualified teams
-resting starters, blowout substitutions).
-
-Judge every prop in the context of the OPPONENT, not the player alone. In your
-per-game web search, assess how strong each side is, then adjust:
-- A defender/defensive-mid facing a STRONG attacking team will be under heavy
-  pressure all game, so defensive stats (clearances, blocks, tackles, interceptions)
-  trend UP. A clearances line for a weak team's defender vs an elite side is often
-  LIVE for this reason.
-- An attacker facing a STRONG defense gets smothered, so shots/goals/assists trend
-  DOWN. Be skeptical of attacking props against elite defenses.
-- An attacker facing a WEAK defense gets more chances, so attacking stats trend UP.
-- The same line can be a play or a pass depending purely on the opponent. State the
-  opponent's strength in your reasoning when it drives the verdict.
-`;
-
-const MLB_ROLES = `
-This is BASEBALL. The single biggest driver of any HITTER prop is the OPPOSING STARTING
-PITCHER, which is provided.
-- HITTER props include "oppSP" — the opposing starter's name, throwing hand (throws),
-  and season quality (era, whip, k). A hitter facing an ace (low ERA/WHIP, high K) is
-  marked DOWN; facing a weak or back-end starter, marked UP. Apply the handedness
-  platoon (RHB generally do better vs LHP and vice versa), but the starter's overall
-  quality matters more than hand alone.
-- PITCHER props (e.g. Pitcher Strikeouts, Pitches Thrown) include "selfSP" — that
-  pitcher's own season line (era, whip, k). Combine their season strikeout level with
-  recent form, and weigh the opposing lineup's quality and strikeout tendency.
-- "parkIndex" (100 = neutral, higher = hitter-friendly) adjusts hitting/power props: a
-  high park (e.g. Coors ~112) lifts total bases and home runs; a low park (~92)
-  suppresses them.
-- Confirm the player is in today's lineup, and for pitchers that they are the confirmed
-  starter. A hitter dropped in the order or sitting, or a scratched starter, is a PASS.
-
-IMPORTANT on recent form in baseball: 5 games is a SMALL sample (~20 plate appearances).
-Do not over-trust a hot or cold streak. Weight recent5 alongside the player's season-long
-rate and the matchup context above — never let a 5-game blip override a strong opposing
-pitcher or park signal.
-`;
-
-const WNBA_ROLES = `
-This is the WNBA — the women's professional basketball league. It is NOT the NBA.
-Do not use NBA knowledge, NBA player stats, or NBA scoring levels to judge these props:
-- Games are 40 minutes (four 10-minute quarters), not 48. Team totals run roughly
-  75-90 points, so stat lines are much lower than NBA lines. Judge every line against
-  WNBA production levels, never NBA intuition.
-- These are WNBA players and WNBA teams. In your per-game web search, always include
-  "WNBA" in the query (e.g. "WNBA Aces Liberty lineup today") so you don't pull NBA
-  or college basketball results for similar team or player names.
-
-The biggest drivers of any prop are MINUTES and USAGE.
-- Confirm the player is active and starting (or has a locked bench role). WNBA teams
-  run deep rotations; a questionable tag or a returning starter reshuffling minutes
-  is a PASS. Check for rest days — the schedule has back-to-backs and veterans
-  sometimes sit them.
-- Blowout risk kills overs: a heavy favorite's stars sit the 4th quarter. Use
-  teamWinPct/teamRecord — a lopsided matchup trims star minutes.
-- PACE and OPPONENT defense matter: points/rebounds/assists lines against a
-  fast-paced, weak-defense team trend UP; against elite, slow defenses trend DOWN.
-- Position fit: assists concentrate in guards; rebounds and blocks in forwards/
-  centers; 3-pointers made in perimeter players. A big line off role is suspicious.
-- Combined stat lines here (Pts+Rebs+Asts, Pts+Asts, Rebs+Asts) are SINGLE-player
-  aggregates, not two-player combos — judge them off the player's all-around
-  production, not the combo caution rules.
-
-Recent form (recent5) in basketball is MORE reliable than in baseball — minutes and
-role are sticky. If 4-5 of the last 5 cleared the line and minutes are stable, that
-is a strong signal. But check WHY an outlier happened (blowout, foul trouble,
-opponent) before trusting the average.
-`;
-
-const SYSTEM_TAIL = `
-When a prop includes "recent5" (the player's last 5 results for THIS exact stat) and
-"recentAvg", anchor your probability on it — it's real production, not a guess. Compare
-the line to the recent values: a line well below the player's typical output is more
-likely to hit; a line above what they usually produce is a pass unless the matchup
-strongly favors it. Note how many of the last 5 cleared the line. Recent form is a
-strong signal — weight it heavily, then adjust for opponent and rotation. If recent5
-is absent, fall back to your own knowledge and search.
-
-Some props are COMBO props — two players bundled into one line (names joined by "+",
-stat ends in "(Combo)", flagged combo:true). Treat these with extra caution:
-- There is NO recent5 for a combo — you cannot see either player's recent form, and you
-  must NOT invent one. A combined line is inherently noisier than a single-player line.
-- The total can be carried unevenly: one player may do most of the work while the other
-  contributes little. You cannot see that split, so never assume both pull their weight.
-- Both players must be CONFIRMED starters. If either is doubtful, rested, or benched,
-  that alone is a PASS.
-- Judge combos on confirmed lineups, role fit, and opponent only, and be conservative.
-  Do not rate a combo "play" unless both are confirmed starting AND the line sits well
-  within reach; when unsure, lean or pass.
-- If the two players are in DIFFERENT games, you are stacking two independent
-  uncertainties — default to PASS unless both halves are clearly strong on their own.
-
-When a prop includes "teamWinPct" (the player's team's win probability) and/or
-"teamRecord", use them to gauge the matchup. A heavy favorite tends to control the game
-(its attackers get more chances; the underdog is pinned back); flip it for an underdog.
-Treat these as confirmation/adjustment on top of recent form, not as overriding it.
-
-When a prop includes "oppStatRank" (the opponent's league-wide rank at limiting THIS
-exact stat — 1 means the opponent is the stingiest defense against this stat, a high
-number like 27+ means they give it up easily), use it as matchup context: a high rank
-(weak defense) supports the OVER; a low rank (elite defense) is a reason to fade or
-downgrade. Treat it as an adjustment on top of recent form, never an override — a strong
-recent5 into a soft defense is your best setup; a weak recent5 into an elite defense is a
-clear pass.
-
-Be strict with verdicts — "play" must mean you are GENUINELY CONFIDENT:
-- play  = 62%+ and the stat clearly fits the player's role and matchup
-- lean  = 54-61%, fits the role but with some real doubt
-- pass  = below 54%, OR the stat does not fit the player's position, OR real
-          rotation/minutes risk. When unsure, PASS. Do not inflate probabilities.
-
-Give each prop a CALIBRATED probability (0-1) of going over. Respond with ONLY valid
-JSON, no prose, no fences. key_risk = short flag (8 words max) or "none". reasoning =
-1-2 sentences.
-{"picks":[{"player":"","stat":"","line":0,"verdict":"play|lean|pass","prob":0.0,"key_risk":"","reasoning":""}]}`;
-
-// Each league gets the shared head/tail plus only its own role rules.
-function promptFor(league) {
-  const roles = league === 'mlb' ? MLB_ROLES
-              : league === 'wnba' ? WNBA_ROLES
-              : SOCCER_ROLES;
-  return SYSTEM_HEAD + roles + SYSTEM_TAIL;
-}
 
 function extractBalanced(text) {
   let start = text.indexOf('{');
@@ -1077,18 +938,18 @@ export function attachSource(picks, candidates) {
   return picks;
 }
 
-async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}) {
+async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}, version = null) {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
+  //
+  // WHICH fields go in the per-prop entry belongs to the judge version, not to
+  // this function: Aphrodite adds the payout tier, and a prompt that talks about
+  // a field the payload does not carry is worse than either version alone.
+  const V = promptSet(version);
   const slim = {};
   for (const c of candidates) {
     const key = c.matchup || c.game;
-    const isCombo = / \+ /.test(c.player) || /combo/i.test(c.stat); // "A + B" or "... (Combo)"
-    const entry = {
-      player: c.player, stat: c.stat, line: c.line,
-      position: c.position, team: c.team, opponent: c.opp,
-    };
-    if (isCombo) entry.combo = true;                                    // no per-player form exists
+    const entry = V.entryFor(c);
     if (c.last5) { entry.recent5 = c.last5; entry.recentAvg = c.avg; }  // last 5 for THIS stat
     if (teamRecords[c.team]) entry.teamRecord = teamRecords[c.team];     // e.g. "55-30"
     if (winProbs[c.team] != null) entry.teamWinPct = Math.round(winProbs[c.team] * 100); // favored?
@@ -1115,7 +976,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 16000,
-      system: promptFor(league),
+      system: V.promptFor(league),
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxSearches }],
       messages: [{ role: 'user', content: `League: ${String(league).toUpperCase()}\nShortlist grouped by game:\n` + JSON.stringify(slim, null, 2) }],
     }),
@@ -1125,6 +986,15 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
   recordCost('judge', MODEL, data).catch(() => {});   // best-effort spend metering
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   const picks = parsePicks(text);
+  for (const p of picks) {
+    // The verdict is DERIVED from the probability, never read from the model.
+    // Asking for a label and a number in the same breath lets the label be
+    // chosen first and the number written to justify it. Psyche's own stated
+    // thresholds are the ones applied here, so this does not change how a Psyche
+    // run scores — it only removes a way for the two to disagree.
+    p.verdict = verdictFor(Number(p.prob));
+    p.promptVersion = V.name;    // so calibration can score the versions apart
+  }
   return attachSource(picks, candidates);
 }
 
@@ -1489,6 +1359,10 @@ export const handler = async (event) => {
       sides: ['both', 'over', 'under'].includes(String(body.sides || '').toLowerCase())
         ? String(body.sides).toLowerCase() : 'both',
       maxPicks: body.maxPicks ? Math.max(3, Math.min(60, Number(body.maxPicks))) : null, // cap candidates → faster/cheaper
+      // Which judge version to run: 'psyche' (the original) or 'aphrodite'.
+      // Per-run so the two can be compared on the SAME slate, which is the only
+      // comparison worth much — different nights differ more than the prompts do.
+      prompt: body.prompt ? String(body.prompt).toLowerCase() : null,
     };
 
     // ---- Run timer: timestamped phase log + typical-duration ETA ----------
@@ -1702,7 +1576,12 @@ export const handler = async (event) => {
 
     await tick('Claude researching lineups');
     const judgeStart = Date.now();
-    const judged = await judge(live, teamRecords, odds.teamWinProbs, params.league, oppDef);
+    const judged = await judge(live, teamRecords, odds.teamWinProbs, params.league, oppDef, params.prompt);
+    // Resolve the name back into params so the result payload, the run report
+    // and the page all state which judge actually ran. A version you cannot see
+    // from the output is one you will misattribute results to.
+    const judgeVersion = promptSet(params.prompt).name;
+    params.prompt = judgeVersion;
     pieceMs.judge = Date.now() - judgeStart;
     if (!judged.length) throw new Error('Claude returned no parseable picks.');
     // Keep only picks that tie back to a prop we actually sent. A name the model
@@ -1762,13 +1641,23 @@ export const handler = async (event) => {
       const logStore = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
       const day = new Date().toISOString().slice(0, 10);
       const stamp = new Date().toISOString();
+      // Keyed by LINE as well as player and stat. The same collision fixed in
+      // attachSource lives here: a prop posted at three lines wrote all three log
+      // rows against whichever id came last, so a pick could grade against a line
+      // nobody bet. attachSource has already resolved the right id — prefer it,
+      // and fall back to a line-aware lookup only if it is missing.
       const idByKey = {};
-      for (const c of live) idByKey[`${c.player}|${c.stat}`] = c.id;
+      for (const c of live) idByKey[`${c.player}|${c.stat}|${Number(c.line)}`] = c.id;
       const logged = picks.map((p) => ({
         date: day, loggedAt: stamp, league: params.league,
-        projectionId: idByKey[`${p.player}|${p.stat}`] || null,
+        projectionId: p.projectionId || idByKey[`${p.player}|${p.stat}|${Number(p.line)}`] || null,
         player: p.player, stat: p.stat, line: p.line,
         prob: p.prob, verdict: p.verdict, oddsType: p.oddsType,
+        // Which judge version produced this probability. Without it a prompt
+        // change cannot be evaluated — the log would mix two forecasters and
+        // report one blended, uninterpretable calibration curve.
+        promptVersion: p.promptVersion || judgeVersion,
+        cleared: p.cleared ?? null,     // how many of the last 5 cleared, per the judge
         recentAvg: p.recentAvg ?? null,
         mlbId: p.mlbId ?? null,   // lets the MLB fallback grader skip a name lookup
         image: p.image || null, team: p.team || null, matchup: p.matchupLabel || p.matchup || null, // for the top-picks feed UI
