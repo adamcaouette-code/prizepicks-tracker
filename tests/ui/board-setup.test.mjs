@@ -84,7 +84,9 @@ export default async function ({ t, url, browser }) {
   t.eq('run posts the selected prop as stat_type', job.sent.statFilter, 'Hitter Strikeouts');
   t.eq('run posts the active tiers', job.sent.tiers, ['goblin', 'standard']);
   t.eq('run posts the selected judge', job.sent.prompt, 'aphrodite');
-  t.eq('run posts the selected model', job.sent.model, 'claude-opus-4-8');
+  t.eq('run posts the selected model', job.sent.model, 'claude-haiku-4-5-20251001');
+  t.eq('Vilifiant is the default, and named in the user\'s language not a model id',
+    await page.$eval('#models .sidebtn.active', el => el.textContent.trim()), 'VILIFIANT');
   t.ok('run mints a jobId', typeof job.sent.jobId === 'string' && job.sent.jobId.length > 8, job.sent.jobId);
 
   // Switching to the original must actually switch it — the whole archive is
@@ -96,10 +98,10 @@ export default async function ({ t, url, browser }) {
   // Cheaper models are the only way to buy more graded picks on a fixed budget,
   // so the picker has to actually reach the run — a control that silently always
   // sends Opus would look identical and cost 5x.
-  await page.click('#models .sidebtn[data-v="claude-haiku-4-5"]');
+  await page.click('#models .sidebtn[data-v="claude-opus-4-8"]');
   await page.click('#runBtn');
   await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
-  t.eq('picking a cheaper model posts that model', job.sent.model, 'claude-haiku-4-5');
+  t.eq('the expensive model is still one click away', job.sent.model, 'claude-opus-4-8');
   t.eq('...and is exclusive, not additive',
     await page.$$eval('#judges .sidebtn.active', els => els.map(e => e.dataset.v)), ['psyche']);
 

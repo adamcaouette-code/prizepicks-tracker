@@ -281,6 +281,23 @@ export default async function ({ t }) {
     bad.granularity < 0.05 && good.granularity > bad.granularity * 5,
     `bad ${bad.granularity.toFixed(3)} vs good ${good.granularity.toFixed(3)}`);
 
+  // ---- named models read back by name ------------------------------------
+  // The models are the user's to name, the same as the prompt versions. A report
+  // that answers in model ids makes them translate their own vocabulary back
+  // every time they read it.
+  reset();
+  seed('pick-log', DAY, [
+    ...Array.from({ length: 4 }, (_, i) => ({ ...mk('mlb', 0.7, i < 3, 900 + i), judgeModel: 'claude-haiku-4-5-20251001' })),
+    ...Array.from({ length: 4 }, (_, i) => ({ ...mk('mlb', 0.7, i < 2, 950 + i), judgeModel: 'claude-opus-4-8' })),
+  ]);
+  const cal6 = await loadFn('calibration.js');
+  const res6 = JSON.parse((await cal6.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.eq('a named model is scored under its name', Object.keys(res6.byModel).sort(), ['Vilifiant', 'claude-opus-4-8']);
+  t.eq('...and the name follows it into the behaviour table',
+    Object.keys(res6.behaviour).some((k) => k.endsWith('· Vilifiant')), true);
+  t.eq('an unnamed model still shows its id rather than vanishing',
+    res6.byModel['claude-opus-4-8'].n, 4);
+
   const html5 = (await cal5.handler({ queryStringParameters: {} })).body;
   t.ok('the table renders', /Judge behaviour — readable the same day/.test(html5));
   t.ok('...and names the tier gap as the test that matters', /<b>Tier gap<\/b> is the headline/.test(html5));

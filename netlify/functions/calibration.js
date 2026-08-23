@@ -9,6 +9,9 @@
 // Filter: ?league=mlb   ?days=30
 
 import { getStore } from '@netlify/blobs';
+// Judge models the user has named. Reports read in those names rather than in
+// model ids, the same way the prompt versions do.
+import { modelName } from './bet-finder-background.js';
 
 const isGraded = (p) => p.hit === true || p.hit === false;
 const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
@@ -136,7 +139,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
   for (const p of picks) {
     const prob = Number(p.prob);
     if (!isFinite(prob)) continue;
-    const key = `${p.promptVersion || 'psyche (untagged)'} · ${p.judgeModel || 'untagged'}`;
+    const key = `${p.promptVersion || 'psyche (untagged)'} · ${modelName(p.judgeModel)}`;
     const b = (out.behaviour[key] ||= {
       n: 0, sum: 0, sumSq: 0, round: 0, cleared: 0, distinct: new Set(),
       byTier: {},
@@ -219,7 +222,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     const v = (out.byPrompt[pv] ||= { n: 0, hits: 0, brierSum: 0, predSum: 0 });
     v.n++; v.hits += hit; v.brierSum += (prob - hit) ** 2; v.predSum += prob;
 
-    const jm = p.judgeModel || 'untagged';
+    const jm = modelName(p.judgeModel);
     const mv = (out.byModel[jm] ||= { n: 0, hits: 0, brierSum: 0, predSum: 0 });
     mv.n++; mv.hits += hit; mv.brierSum += (prob - hit) ** 2; mv.predSum += prob;
 
@@ -431,7 +434,7 @@ function renderHTML(a) {
   }).join('') || '<tr><td colspan="7" class="mut">No graded picks yet.</td></tr>';
 
   const runRows = Object.entries(a.spend?.perRun || {}).sort((x, y) => y[1].usd - x[1].usd).map(([k, v]) =>
-    `<tr><td>${esc(k)}</td><td>${v.runs}</td><td>$${v.usdPerRun.toFixed(3)}</td>
+    `<tr><td>${esc(k.replace(/· (\S+)$/, (_, id) => '· ' + modelName(id)))}</td><td>${v.runs}</td><td>$${v.usdPerRun.toFixed(3)}</td>
       <td>${(v.inPerRun / 1000).toFixed(0)}k</td><td>${(v.outPerRun / 1000).toFixed(1)}k</td>
       <td>${v.searchesPerRun}</td><td>${v.inputShare == null ? '—' : pct(v.inputShare)}</td></tr>`).join('')
     || '<tr><td colspan="7" class="mut">no metered calls yet</td></tr>';

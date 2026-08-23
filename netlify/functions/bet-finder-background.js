@@ -14,7 +14,29 @@ import { attachMlbForm } from './mlb-grade.js';
 import { attachEspnForm, markEspnVoids, SLUGS as ESPN_SLUGS_FOR_FORM } from './espn-grade.js';
 import { promptSet, verdictFor } from './judge-prompts.js';
 
-const MODEL = process.env.JUDGE_MODEL || 'claude-opus-4-8';
+// VILIFIANT is the default judge model.
+//
+// It was Opus, at $5/$25 per million, which put a run at $0.687 and a month at
+// $27 before the credits ran out. The case for moving is that Opus has not been
+// earning that: Brier 0.240 against the 0.250 you score by guessing 50% on
+// everything, and the largest single defect in 1,855 graded picks was not a
+// reasoning failure at all — the judge was never told the payout tier, so it
+// priced goblin lines that go over 70% of the time at ~52%. Being told the tier
+// is worth more than any amount of reasoning without it.
+//
+// The real risk is instruction-following, not reasoning: Aphrodite asks for a
+// tier anchor, a count of the last five, full use of the range and strict JSON
+// across 44 props in one shot, and smaller models drop constraints under that
+// load. That is why the behaviour table exists — tier gap, spread, round-number
+// share and whether the required field got filled are all readable the hour a
+// run finishes, with nothing graded. If Vilifiant's tier gap collapses, this
+// decision is visibly wrong the same day rather than a month later.
+//
+// The dated id, not the `claude-haiku-4-5` alias: an id that fails to resolve
+// fails the whole run, and the alias has never been exercised here. Both are
+// priced below so either meters correctly if one is passed explicitly.
+const VILIFIANT = 'claude-haiku-4-5-20251001';
+const MODEL = process.env.JUDGE_MODEL || VILIFIANT;
 const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap web searches so runs don't blow past the timeout
 
 // ---- Spend metering (best-effort, never blocks the run) --------------------
@@ -26,7 +48,16 @@ const PRICES = {
   'claude-sonnet-5': { in: 2, out: 10 },
   'claude-sonnet-4-6': { in: 3, out: 15 },
   'claude-haiku-4-5': { in: 1, out: 5 },
+  'claude-haiku-4-5-20251001': { in: 1, out: 5 },
 };
+
+// Judge models the user has named, so the reports read in their language rather
+// than in model ids. Anything unnamed shows its id.
+export const MODEL_NAMES = {
+  'claude-haiku-4-5': 'Vilifiant',
+  'claude-haiku-4-5-20251001': 'Vilifiant',
+};
+export const modelName = (id) => MODEL_NAMES[id] || id || 'untagged';
 
 // Which models the judge may be asked to run on. The price table IS the
 // allowlist: a model with no price would meter as Opus and quietly misreport

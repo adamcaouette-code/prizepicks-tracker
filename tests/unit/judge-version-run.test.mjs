@@ -120,20 +120,26 @@ export default async function ({ t }) {
   // pick. Opus is the default because it always has been, not because anything
   // cheaper was tried and lost — and at 2.5-5x less per run, a cheaper model
   // that scores the same buys several times more graded data on a fixed budget.
-  t.eq('the default model is Opus', aph.sentModel, 'claude-opus-4-8');
+  // Vilifiant (Haiku) is the default. The DATED id, not the alias: an id that
+  // fails to resolve fails the entire run, and the alias has never been
+  // exercised against the real API here.
+  t.eq('the default model is Vilifiant', aph.sentModel, 'claude-haiku-4-5-20251001');
   t.eq('every logged pick records the model that produced it',
-    [...new Set(aph.log.map((p) => p.judgeModel))], ['claude-opus-4-8']);
+    [...new Set(aph.log.map((p) => p.judgeModel))], ['claude-haiku-4-5-20251001']);
 
-  const cheap = await run({ model: 'claude-haiku-4-5' });
-  t.eq('a cheaper model is actually used', cheap.sentModel, 'claude-haiku-4-5');
+  const dear = await run({ model: 'claude-opus-4-8' });
+  t.eq('the expensive model is still reachable', dear.sentModel, 'claude-opus-4-8');
   t.eq('...and recorded, so the two can be scored apart',
-    [...new Set(cheap.log.map((p) => p.judgeModel))], ['claude-haiku-4-5']);
+    [...new Set(dear.log.map((p) => p.judgeModel))], ['claude-opus-4-8']);
 
-  // An unpriced model would meter as Opus and misreport the bill, which is the
-  // one thing a budget tool must never do — so the price table is the allowlist.
+  // An unpriced model would meter at the wrong rate and misreport the bill,
+  // which is the one thing a budget tool must never do — so the price table is
+  // the allowlist, and both Haiku ids are in it.
   const bogus = await run({ model: 'gpt-9-turbo' });
   t.eq('an unknown model falls back rather than reaching the API',
-    bogus.sentModel, 'claude-opus-4-8');
+    bogus.sentModel, 'claude-haiku-4-5-20251001');
+  t.eq('the alias is priced too, so an explicit one still meters right',
+    (await run({ model: 'claude-haiku-4-5' })).sentModel, 'claude-haiku-4-5');
 
   // ---- searches are bought only where the lineup is still unknown ---------
   // Web searches are 80% of what a run costs: a measured run read 98k input
