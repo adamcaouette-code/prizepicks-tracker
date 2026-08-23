@@ -24,9 +24,13 @@ const props = (rows) => ({
 
 // One goblin and one standard, so the tier the judge is (or is not) told about
 // is actually distinguishable in the payload.
+// TWO games. The search-budget test needs them: one matchup whose lineup gets
+// posted and one whose does not, so "a search per game" and "a search only where
+// the lineup is unknown" give different answers.
 const ROWS = [
   { player: 'Goblin Guy',   team: 'CIN', line: 0.5, opp: 'PIT', tier: 'goblin' },
   { player: 'Standard Guy', team: 'PIT', line: 1.5, opp: 'CIN', tier: 'standard' },
+  { player: 'Late Slate Guy', team: 'LAD', line: 1.5, opp: 'SFG', tier: 'goblin' },
 ];
 // The judge no longer returns a verdict — Aphrodite does not ask for one and the
 // code derives it. This mock therefore omits it, which also proves the pipeline
@@ -34,13 +38,33 @@ const ROWS = [
 const PICKS = [
   { player: 'Goblin Guy',   stat: 'Hits', line: 0.5, prob: 0.77, cleared: 4, key_risk: 'none', reasoning: 'r' },
   { player: 'Standard Guy', stat: 'Hits', line: 1.5, prob: 0.58, cleared: 3, key_risk: 'none', reasoning: 'r' },
+  { player: 'Late Slate Guy', stat: 'Hits', line: 1.5, prob: 0.66, cleared: 2, key_risk: 'none', reasoning: 'r' },
 ];
 
-async function run(body = {}) {
+// A posted MLB lineup for both teams, shaped exactly as the schedule endpoint
+// hydrates it. This is what turns "not voided" into "checked and confirmed" —
+// and therefore what makes a web search for that game redundant.
+const SCHEDULE = {
+  dates: [{ games: [{
+    gamePk: 1, teams: {
+      home: { team: { id: 1, name: 'Reds', abbreviation: 'CIN' },
+        probablePitcher: { id: 9, fullName: 'Some Starter' } },
+      away: { team: { id: 2, name: 'Pirates', abbreviation: 'PIT' },
+        probablePitcher: { id: 8, fullName: 'Other Starter' } },
+    },
+    lineups: {
+      homePlayers: [{ id: 11, fullName: 'Goblin Guy' }],
+      awayPlayers: [{ id: 12, fullName: 'Standard Guy' }],
+    },
+  }] }],
+};
+
+async function run(body = {}, { lineups = false } = {}) {
   reset();
   process.env.ANTHROPIC_API_KEY = 'test-key';
   const mock = mockFetch([
     ['partner-api.prizepicks.com/projections', async () => props(ROWS)],
+    ['statsapi.mlb.com/api/v1/schedule', async () => (lineups ? SCHEDULE : {})],
     [/statsapi|espn|the-odds-api|\/history/, async () => ({})],
     ['api.anthropic.com', async () => ({ content: [{ type: 'text', text: JSON.stringify({ picks: PICKS }) }], usage: {} })],
   ]);
@@ -52,6 +76,7 @@ async function run(body = {}) {
   const sent = call ? JSON.parse(call.init.body) : null;
   return {
     sentModel: sent?.model,
+    maxSearches: sent?.tools?.[0]?.max_uses,
     result: read('bet-jobs', 'jv')?.result || {},
     log: read('pick-log', new Date().toISOString().slice(0, 10)) || [],
     system: sent?.system || '',
@@ -75,14 +100,14 @@ export default async function ({ t }) {
   const entries = Object.values(sent).flat();
   t.eq('every prop reaches the model with its tier',
     entries.map((e) => `${e.player}:${e.tier}`).sort(),
-    ['Goblin Guy:goblin', 'Standard Guy:standard']);
+    ['Goblin Guy:goblin', 'Late Slate Guy:goblin', 'Standard Guy:standard']);
 
   // ---- the tag, which is what makes the change measurable -----------------
   t.eq('the run records which judge produced it', aph.result.params.prompt, 'aphrodite');
   t.eq('every logged pick is tagged with the judge version',
     [...new Set(aph.log.map((p) => p.promptVersion))], ['aphrodite']);
   t.eq('...and keeps the count the judge anchored on',
-    aph.log.map((p) => p.cleared).sort(), [3, 4]);
+    aph.log.map((p) => p.cleared).sort(), [2, 3, 4]);
 
   // Verdict is derived from the probability, not read from the model — the mock
   // never sent one.
@@ -110,6 +135,38 @@ export default async function ({ t }) {
   t.eq('an unknown model falls back rather than reaching the API',
     bogus.sentModel, 'claude-opus-4-8');
 
+  // ---- searches are bought only where the lineup is still unknown ---------
+  // Web searches are 80% of what a run costs: a measured run read 98k input
+  // tokens against 5.5k written, driven by ~6 searches whose stated job is
+  // confirming lineups. Where the official feed already posted the lineup that
+  // work is done — and every candidate that FAILED the check was voided before
+  // the judge ever saw the list, so a confirmed player is in the posted lineup,
+  // not merely probable.
+  t.eq('a slate with no confirmed lineups keeps a search per game',
+    aph.maxSearches, 2);   // two matchups in the fixture, neither confirmed
+
+  const withLineups = await run({}, { lineups: true });
+  t.eq('...and one confirmed game means one fewer search bought',
+    withLineups.maxSearches, 1);
+  const conf = Object.values(JSON.parse(withLineups.payload.slice(withLineups.payload.indexOf('{')))).flat();
+  t.eq('the judge is told exactly which players were already confirmed',
+    conf.filter((e) => e.lineupConfirmed).map((e) => e.player).sort(),
+    ['Goblin Guy', 'Standard Guy']);
+  t.eq('...and the game with no posted lineup is NOT marked, so it keeps its search',
+    conf.find((e) => e.player === 'Late Slate Guy').lineupConfirmed, undefined);
+  t.ok('...and Aphrodite tells it not to spend a search on those',
+    /Do not spend a search confirming one/.test(withLineups.system));
+
+  // The floor of 1 is deliberate. Lineups are not the only thing a search finds
+  // — a late scratch, weather, a bullpen game — so dropping to zero would change
+  // what the judge can KNOW rather than only what it costs.
+  t.ok('the budget never reaches zero', withLineups.maxSearches >= 1);
+
+  // Kept switchable so the saving is measured against the old behaviour rather
+  // than assumed to be free.
+  const always = await run({ searchPolicy: 'always' }, { lineups: true });
+  t.eq('searchPolicy=always restores a search for every game', always.maxSearches, 2);
+
   // ---- psyche is still reachable, unchanged -------------------------------
   const psy = await run({ prompt: 'psyche' });
   t.ok('asking for psyche sends the original prompt',
@@ -129,7 +186,7 @@ export default async function ({ t }) {
 
   // ---- the projectionId collision, fixed in the log too -------------------
   t.eq('each logged pick carries the id of its OWN line',
-    aph.log.map((p) => p.projectionId).sort(), ['pp-0', 'pp-1']);
+    aph.log.map((p) => p.projectionId).sort(), ['pp-0', 'pp-1', 'pp-2']);
 
   if (saved == null) delete process.env.JUDGE_PROMPT; else process.env.JUDGE_PROMPT = saved;
 }

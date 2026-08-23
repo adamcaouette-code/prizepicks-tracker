@@ -235,9 +235,16 @@ not picking winners and you are not being asked for conviction. A prop you mark 
 should hit about 60 times in 100; if your 0.60s hit 45 times in 100 you have failed,
 however sensible each individual call looked.
 
-Work game by game: for EACH game run ONE web search for that matchup's confirmed lineup
-and team news, then apply it to every player in that game. Do NOT search per player.
-Keep each search to ONE short query (3-6 words).
+Work game by game. Some props are marked "lineupConfirmed": those have ALREADY been
+checked against the official league feed, and every player who failed that check was
+removed before you saw this list — so a confirmed player is not merely probable, he is
+in the posted lineup. Do not spend a search confirming one.
+
+For any game NOT marked confirmed, run ONE web search for that matchup's lineup and team
+news, then apply it to every player in that game. Do NOT search per player. Keep each
+search to ONE short query (3-6 words). Your search budget is set to the number of
+unconfirmed games, so a search spent on a confirmed one is taken from a game that
+actually needed it.
 `;
 
 const APHRODITE_TAIL = `

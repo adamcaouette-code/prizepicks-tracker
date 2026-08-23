@@ -954,7 +954,7 @@ export function attachSource(picks, candidates) {
   return picks;
 }
 
-async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}, version = null, model = MODEL) {
+async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}, version = null, model = MODEL, confirmedTeams = null) {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
   //
@@ -976,12 +976,32 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     const oppName = c.oppTeam || c.opp;              // whoever they're facing
     const dr = oppDef?.[oppName]?.[normStat(c.stat)]; // opponent's league rank vs THIS stat
     if (dr != null) entry.oppStatRank = dr;          // 1 = stingiest defense ... high = softest
+    // Already verified against the official feed, and — this is the part worth
+    // stating — every candidate that FAILED the check was voided before the
+    // judge saw it. So a confirmed player is not merely "probably playing", he
+    // is in the posted lineup, and there is nothing for a search to add.
+    if (confirmedTeams?.has(String(c.team || '').toUpperCase())
+        || confirmedTeams?.has(PP_TO_MLB_ABBR[String(c.team || '').toUpperCase()])) {
+      entry.lineupConfirmed = true;
+    }
     (slim[key] ||= []).push(entry);
   }
   // Never allot more searches than there are games — small slates (WNBA nights,
   // late MLB) don't need the full cap, and every search result bills as Opus input.
-  const gameCount = Object.keys(slim).length;
-  const maxSearches = Math.max(1, Math.min(JUDGE_MAX_SEARCHES, gameCount));
+  //
+  // And never allot one to a game whose lineup we already confirmed. The searches
+  // are the single largest line on the bill: a measured run reads 98k input
+  // tokens against 5.5k written, 80% of the cost, driven by ~6 searches whose
+  // stated job is confirming lineups. Where the free MLB feed already posted the
+  // lineup, that work is done and the failures are already voided out.
+  //
+  // The floor of 1 stays. Lineups are not the only thing a search finds — a late
+  // scratch, weather, a bullpen game — and dropping to zero would change what
+  // the judge can know rather than just what it costs.
+  const games = Object.entries(slim);
+  const unconfirmed = games.filter(([, props]) => !props.every((e) => e.lineupConfirmed)).length;
+  const budget = confirmedTeams ? unconfirmed : games.length;
+  const maxSearches = Math.max(1, Math.min(JUDGE_MAX_SEARCHES, budget || 1));
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -1095,6 +1115,22 @@ function markVoids(candidates, mlb) {
     }
   }
 
+  // Which teams we could actually confirm from the official feed. This is the
+  // difference between "checked and fine" and "not posted yet", and the two look
+  // identical from the outside because both leave the candidate un-voided.
+  //
+  // It is worth reporting because the judge's web searches exist almost entirely
+  // to look up confirmed lineups — the prompt tells it to run one per game for
+  // exactly that — and searches are 80% of what a run costs, since results bill
+  // as input tokens. For a team whose lineup IS posted, that search re-answers a
+  // question the free MLB feed already answered, on candidates that were already
+  // filtered by the answer. For a team whose lineup is NOT posted, the search is
+  // the only check there is and must be kept.
+  const confirmedTeams = new Set();
+  for (const abbr of new Set([...Object.keys(starters), ...Object.keys(lineups)])) {
+    if (lineups[abbr]?.size || starters[abbr]?.size) confirmedTeams.add(abbr);
+  }
+
   let inactive = 0, notStarting = 0, notInLineup = 0;
   for (const c of candidates) {
     if (/ \+ /.test(c.player)) continue;                 // combo: no single player to confirm
@@ -1123,7 +1159,7 @@ function markVoids(candidates, mlb) {
     c.voidReason = 'not the confirmed starter — PrizePicks voids this, it does not settle at 0';
     notStarting++;
   }
-  return { inactive, notStarting, notInLineup, total: inactive + notStarting + notInLineup };
+  return { inactive, notStarting, notInLineup, total: inactive + notStarting + notInLineup, confirmedTeams };
 }
 
 // Per-leg hit rate a pure-tier 3-pick Power needs just to return the stake,
@@ -1383,6 +1419,10 @@ export const handler = async (event) => {
       // Which model writes the probabilities. Validated against the price table
       // so an unknown name cannot reach the API or mis-meter the spend.
       model: pickModel(body.model),
+      // 'gaps' (default) buys a web search only for games whose lineup the free
+      // feed could not confirm. 'always' restores a search for every game — kept
+      // so the saving can be measured against it rather than assumed.
+      searchPolicy: body.searchPolicy === 'always' ? 'always' : 'gaps',
     };
 
     // ---- Run timer: timestamped phase log + typical-duration ETA ----------
@@ -1596,7 +1636,8 @@ export const handler = async (event) => {
 
     await tick('Claude researching lineups');
     const judgeStart = Date.now();
-    const judged = await judge(live, teamRecords, odds.teamWinProbs, params.league, oppDef, params.prompt, params.model);
+    const judged = await judge(live, teamRecords, odds.teamWinProbs, params.league, oppDef, params.prompt, params.model,
+      params.searchPolicy === 'always' ? null : voids.confirmedTeams || null);
     // Resolve the name back into params so the result payload, the run report
     // and the page all state which judge actually ran. A version you cannot see
     // from the output is one you will misattribute results to.
