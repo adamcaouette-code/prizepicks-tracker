@@ -68,10 +68,32 @@ export default async function ({ t }) {
   t.eq('a deselected tier stays out of a balanced run',
     Object.keys(count(twoTiers)).sort(), ['goblin', 'standard']);
 
+  // ---- a balanced run should be WIDE -------------------------------------
+  // Sample size is the entire point, and props are the one thing here that is
+  // nearly free: web searches are ~76% of a run's cost and fixed per run, while
+  // all 44 candidates together come to about a penny. A narrow measurement run
+  // costs the same as a wide one and buys a third less data, so the balanced
+  // path takes the widest board allowed unless the caller asked for less.
+  const wide = findCandidates(SLATE, TIERS, 4, 60, null, true);
+  t.eq('a wide balanced board is evenly split across all three tiers',
+    Object.values(count(wide)).sort(), [18, 18, 18]);
+  t.eq('...and takes every prop the slate had to offer', wide.length, 54);
+
+  // The per-GAME cap has to widen too, or it becomes the binding constraint and
+  // the board comes in far under the size asked for: at the betting default of
+  // 4 slots a game, a round-robin yields 2 goblins and 1 of each other tier, so
+  // six games cap out at 24 however large the board cap is.
+  const narrowPerGame = findCandidates(SLATE, TIERS, 4, 60, null, false);
+  t.ok('an unbalanced run keeps the narrow per-game spread',
+    narrowPerGame.length === 24, `${narrowPerGame.length}`);
+
   // ---- within a tier, still the best props -------------------------------
   // Balancing decides HOW MANY of each tier, never WHICH. Inside a tier the
   // per-matchup spread and ranking are untouched.
-  const games = new Set(bal.map((r) => r.matchup));
-  t.ok('a balanced board still spreads across games rather than stacking one',
-    games.size >= 3, [...games].join(','));
+  // Measured on the wide board, which is what a balanced run actually takes.
+  // A cap of 12 against 9 slots a game can only reach two games by arithmetic,
+  // so asserting spread there would be testing the fixture, not the code.
+  const games = new Set(wide.map((r) => r.matchup));
+  t.eq('a balanced board still spreads across every game rather than stacking one',
+    games.size, 6);
 }

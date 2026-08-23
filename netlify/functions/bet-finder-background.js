@@ -845,7 +845,11 @@ function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = nu
     (hasExact ? namesOf(r).includes(wantStat) : namesOf(r).some((n) => n.includes(wantStat)));
   // When filtering to one prop type, widen the net so the BEST available shows even
   // if probabilities are low (you've already chosen the prop; you just want the top of it).
-  const pg = wantStat ? 8 : perGame;
+  // A balanced run needs enough slots PER GAME for three tiers to appear in
+  // each. At the betting default of 4 the round-robin yields 2 goblins, 1
+  // standard, 1 demon and the per-game cap — not the board cap — becomes the
+  // binding constraint, so the board comes in far under the size asked for.
+  const pg = wantStat ? 8 : balance ? 9 : perGame;
   const max = wantStat ? 60 : maxTotal;
 
   const byMatchup = {};
@@ -1591,7 +1595,14 @@ export const handler = async (event) => {
       : Promise.resolve(null)));
 
     const rows = await rowsP;
-    const candidates = findCandidates(rows, params.tiers, 4, params.maxPicks || 44, params.statFilter, params.balance);
+    // A balanced run takes the widest board allowed unless the caller said
+    // otherwise. Its whole purpose is sample size, and props are the one thing
+    // here that is nearly free: web searches are ~76% of a run's cost and are
+    // fixed per run, while all 44 candidates together are about a penny. Taking
+    // 44 instead of 60 on a measurement run saves nothing and costs a third of
+    // the sample.
+    const cap = params.maxPicks || (params.balance ? 60 : 44);
+    const candidates = findCandidates(rows, params.tiers, 4, cap, params.statFilter, params.balance);
     const traps = rows
       .filter((r) => !positionAllows(r.position, r.stat, r.league))
       .slice(0, 15)
