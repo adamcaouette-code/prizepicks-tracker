@@ -84,6 +84,7 @@ export default async function ({ t, url, browser }) {
   t.eq('run posts the selected prop as stat_type', job.sent.statFilter, 'Hitter Strikeouts');
   t.eq('run posts the active tiers', job.sent.tiers, ['goblin', 'standard']);
   t.eq('run posts the selected judge', job.sent.prompt, 'aphrodite');
+  t.eq('a normal run does NOT ask for balancing', job.sent.balance, undefined);
   t.eq('run posts the selected model', job.sent.model, 'claude-haiku-4-5-20251001');
   t.eq('Vilifiant is the default, and named in the user\'s language not a model id',
     await page.$eval('#models .sidebtn.active', el => el.textContent.trim()), 'VILIFIANT');
@@ -102,6 +103,28 @@ export default async function ({ t, url, browser }) {
   await page.click('#runBtn');
   await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
   t.eq('the expensive model is still one click away', job.sent.model, 'claude-opus-4-8');
+
+  // ---- the balanced calibration run --------------------------------------
+  // Demon is deliberately NOT active by default in the tier chips, so a normal
+  // run produces no demons and the tier gap — the whole point of the behaviour
+  // table — cannot be computed. The balanced run has to override that itself,
+  // or it silently measures nothing.
+  t.eq('demon is off by default, which is why a balanced run must override it',
+    await page.$eval('#tiers .tier[data-v="demon"]', el => el.classList.contains('active')), false);
+
+  await page.click('#calBtn');
+  await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
+  t.eq('a balanced run asks for it explicitly', job.sent.balance, true);
+  t.eq('...and forces all three tiers regardless of the chips',
+    job.sent.tiers.slice().sort(), ['demon', 'goblin', 'standard']);
+
+  // One run only. A sticky flag would quietly turn every later search into a
+  // measurement sample, which is a worse board to bet from.
+  await page.click('#runBtn');
+  await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
+  t.eq('the next ordinary run is not balanced', job.sent.balance, undefined);
+  t.eq('...and goes back to the chips the user actually picked',
+    job.sent.tiers, ['goblin', 'standard']);
   t.eq('...and is exclusive, not additive',
     await page.$$eval('#judges .sidebtn.active', els => els.map(e => e.dataset.v)), ['psyche']);
 

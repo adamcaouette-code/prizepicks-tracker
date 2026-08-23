@@ -828,7 +828,7 @@ function propIdentity(r) {
   return `${players}|${stat}|${r.line}|${r.oddsType}`;
 }
 
-function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = null) {
+function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = null, balance = false) {
   const allow = new Set(tiers && tiers.length ? tiers : ['goblin', 'standard']);
   // Optional prop-type filter. The UI now sends PrizePicks' own stat_type (sourced
   // live via pp-stats.js), so prefer an exact match when the board actually carries
@@ -861,10 +861,59 @@ function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = nu
   }
   const out = [];
   for (const m in byMatchup) {
-    const top = byMatchup[m].sort((a, b) => b.fairProb - a.fairProb).slice(0, pg);
-    out.push(...top);                              // every matchup gets represented
+    const ordered = byMatchup[m].sort((a, b) => b.fairProb - a.fairProb);
+    // The per-matchup cap carries the same tier bias as the global one, so a
+    // balanced run has to be balanced HERE too. Capping each game at its top 4
+    // by fairProb takes four goblins and the round-robin below never sees a
+    // demon to pick.
+    out.push(...(balance ? roundRobinByTier(ordered, pg) : ordered.slice(0, pg)));
   }
-  return out.sort((a, b) => b.fairProb - a.fairProb).slice(0, max);
+  const ranked = out.sort((a, b) => b.fairProb - a.fairProb);
+  if (!balance) return ranked.slice(0, max);
+
+  // BALANCED sampling, for calibration runs.
+  //
+  // fairProb is ODDS_PRIOR[tier] — a CONSTANT per tier, 0.62 / 0.55 / 0.45. So
+  // the ranking above is not a ranking of props at all, it is a ranking of
+  // tiers, and the slice takes goblins until it runs out. On a normal slate that
+  // means a 44-candidate board can contain zero demons even with demons
+  // selected, and the pick log bears it out: 1162 goblins against 343 demons.
+  //
+  // For betting that bias is harmless, arguably right — goblins are the tier
+  // closest to break-even. For MEASURING it is fatal. The behaviour table's
+  // headline is the tier gap, mean P(over) on goblins minus demons, and a sample
+  // with no demons cannot produce one at all. So a balanced run takes the tiers
+  // round-robin: each contributes its own best props, equally, until the cap.
+  return roundRobinByTier(ranked, max);
+}
+
+/**
+ * Take up to `cap` rows, cycling goblin -> standard -> demon so each tier is
+ * represented as evenly as the slate allows.
+ *
+ * Order WITHIN a tier is preserved, so this decides how many of each tier, never
+ * which — the best props of each still win their own slots. A tier with nothing
+ * posted is skipped rather than reserved, so the others take up the slack and
+ * the board never comes up short. Tiers the caller filtered out never arrive
+ * here at all: this changes the split, never the permission.
+ */
+function roundRobinByTier(rows, cap) {
+  const byTier = {};
+  for (const r of rows) (byTier[r.oddsType] ||= []).push(r);
+  const order = ['goblin', 'standard', 'demon'].filter((t) => byTier[t]?.length);
+  const picked = [];
+  for (let i = 0; picked.length < cap; i++) {
+    let addedAny = false;
+    for (const t of order) {
+      const r = byTier[t][i];
+      if (!r) continue;
+      picked.push(r);
+      addedAny = true;
+      if (picked.length >= cap) break;
+    }
+    if (!addedAny) break;             // every tier exhausted
+  }
+  return picked;
 }
 
 function groupByGame(items) {
@@ -1454,6 +1503,12 @@ export const handler = async (event) => {
       // feed could not confirm. 'always' restores a search for every game — kept
       // so the saving can be measured against it rather than assumed.
       searchPolicy: body.searchPolicy === 'always' ? 'always' : 'gaps',
+      // A calibration run: sample the tiers evenly instead of letting the
+      // fairProb ranking fill the board with goblins. Costs the same as any
+      // other run — the searches dominate, and props are ~1 cent for all 44 —
+      // but produces a sample every diagnostic on /api/calibration can actually
+      // read, the tier gap above all.
+      balance: body.balance === true,
     };
 
     // ---- Run timer: timestamped phase log + typical-duration ETA ----------
@@ -1536,7 +1591,7 @@ export const handler = async (event) => {
       : Promise.resolve(null)));
 
     const rows = await rowsP;
-    const candidates = findCandidates(rows, params.tiers, 4, params.maxPicks || 44, params.statFilter);
+    const candidates = findCandidates(rows, params.tiers, 4, params.maxPicks || 44, params.statFilter, params.balance);
     const traps = rows
       .filter((r) => !positionAllows(r.position, r.stat, r.league))
       .slice(0, 15)

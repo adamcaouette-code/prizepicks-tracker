@@ -69,6 +69,12 @@ export function jobRoutes(name, result, { runningPolls = 1 } = {}) {
   return {
     sent,
     [`**/api/${name}-background`]: (route, request) => {
+      // Reflect the LAST post, not the union of every post. Merging made an
+      // absent field indistinguishable from one carried over from an earlier
+      // run, so a flag that was correctly dropped still read as set — which is
+      // exactly the bug a "is this sticky?" test is trying to catch. The object
+      // identity is kept because callers hold a reference to it.
+      for (const k of Object.keys(sent)) delete sent[k];
       Object.assign(sent, JSON.parse(request.postData() || '{}'));
       route.fulfill({ status: 202, contentType: 'application/json', body: '{}' });
     },
