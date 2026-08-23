@@ -171,31 +171,36 @@ export default async function ({ t }) {
   t.ok('...and a tier too thin to trust shows only its count, not a made-up rate',
     /sta 4(?!0)[^@]/.test(html3.replace(/\s+/g, ' ')) || !/@/.test(html3.split('Triples')[1].slice(0, 120)));
 
-  // ---- does the judge beat the tier? -------------------------------------
-  // The question calibration cannot answer. A judge can be perfectly honest and
-  // still useless: if the props it rates highly hit no more often than the ones
-  // it rates low, it is only reading the payout tier back to us and a one-line
-  // rule would do the same job for nothing.
+  // ---- does the judge beat the tier, and does the signal concentrate? -----
+  // Two different questions. LIFT asks whether the judge separates its own good
+  // picks from its bad ones inside one tier — whether it has any signal at all
+  // beyond reading the payout tier back to us. The TOP SLICES ask whether that
+  // signal is enough: if you only ever bet its very best picks, does the rate
+  // climb far enough to clear the payout? A judge can have real, measurable lift
+  // and still have nothing bettable at any threshold.
   reset();
   const sk = (prob, hit, i, tier) => ({ ...mk('mlb', prob, hit, i), oddsType: tier });
   const rows4 = [];
-  // GOBLIN: the judge ranks well. Its top half hits 80%, its bottom half 40%.
-  for (let i = 0; i < 20; i++) rows4.push(sk(0.75, i < 16, i, 'goblin'));         // top half
-  for (let i = 0; i < 20; i++) rows4.push(sk(0.55, i < 8, 100 + i, 'goblin'));    // bottom half
-  // DEMON: the judge ranks at random. Both halves hit 30% — no information.
-  for (let i = 0; i < 20; i++) rows4.push(sk(0.40, i < 6, 200 + i, 'demon'));
-  for (let i = 0; i < 20; i++) rows4.push(sk(0.20, i < 6, 300 + i, 'demon'));
-  // STANDARD: too few to say anything, and must not be guessed at.
-  for (let i = 0; i < 10; i++) rows4.push(sk(0.60, i < 5, 400 + i, 'standard'));
+  // GOBLIN: signal that CONCENTRATES. Probabilities descend 0.90 -> 0.60 and the
+  // hit rate falls with them, so a narrower slice is a better one.
+  //   top 10% (30)  27 hit  90%      top 30% (90)   72 hit  80%
+  //   top 20% (60)  51 hit  85%      top 50% (150) 102 hit  68%
+  const gRate = (i) => (i < 30 ? i < 27 : i < 60 ? i < 54 : i < 90 ? i < 81 : i < 150 ? i < 120 : i < 195);
+  for (let i = 0; i < 300; i++) rows4.push(sk(0.9 - i * 0.001, gRate(i), i, 'goblin'));
+  // DEMON: honest numbers, no ranking signal. Every slice hits 30%, so narrowing
+  // buys nothing and no threshold can rescue it.
+  for (let i = 0; i < 300; i++) rows4.push(sk(0.9 - i * 0.001, i % 10 < 3, 1000 + i, 'demon'));
+  // STANDARD: too few to split, and must not be guessed at.
+  for (let i = 0; i < 10; i++) rows4.push(sk(0.60, i < 5, 2000 + i, 'standard'));
   seed('pick-log', DAY, rows4);
 
   const cal4 = await loadFn('calibration.js');
   const res4 = JSON.parse((await cal4.handler({ queryStringParameters: { format: 'json' } })).body);
 
   t.eq('a judge that ranks well shows real lift inside the tier',
-    Math.round(res4.skill.goblin.lift * 100), 40);
+    Math.round(res4.skill.goblin.lift * 100), 38);
   t.eq('...separating its best half from its worst',
-    [res4.skill.goblin.topHalf, res4.skill.goblin.bottomHalf], [0.8, 0.4]);
+    [res4.skill.goblin.topHalf, res4.skill.goblin.bottomHalf], [0.68, 0.3]);
   t.eq('a judge that ranks at random shows none, however honest its numbers are',
     res4.skill.demon.lift, 0);
   t.eq('a tier too thin to split is left out rather than guessed at',
@@ -204,17 +209,28 @@ export default async function ({ t }) {
   // The split is kept INSIDE a tier on purpose. Pooled, this judge looks skilled
   // — its goblins beat its demons — but that is the tier talking, not the judge.
   t.ok('the comparison never crosses tiers, where the tier would do the work',
-    res4.skill.goblin.tierRate === 0.6 && res4.skill.demon.tierRate === 0.3);
+    res4.skill.goblin.tierRate === 0.49 && res4.skill.demon.tierRate === 0.3);
 
-  // Honest and useless are different failures, and this is the column that
-  // separates them: a goblin needs 79.4% a leg on a 3-pick just to return the
-  // stake, so an 80% best half clears and a 60% whole tier does not.
+  // Honest and useless are different failures, and this is what separates them:
+  // a goblin needs 79.4% a leg on a 3-pick just to return the stake.
   t.ok('break-even is the real payout table, not a round number',
     Math.abs(res4.skill.goblin.breakEven - 0.7937) < 0.001, String(res4.skill.goblin.breakEven));
   t.eq('betting the whole tier blind does not clear it', res4.skill.goblin.baselineClears, false);
-  t.eq('...but the judge picking its best half does', res4.skill.goblin.bestHalfClears, true);
-  t.eq('a demon best half at 30% is nowhere near its 43.7% break-even',
-    res4.skill.demon.bestHalfClears, false);
+  t.eq('...and neither does its best half here', res4.skill.goblin.bestHalfClears, false);
+
+  // THE POINT: the half is not bettable, but the signal keeps concentrating, so
+  // a stricter threshold IS a route to a bettable board. That is the finding a
+  // lift number alone cannot give you.
+  const gob = res4.skill.goblin.topSlices.map((x) => [x.pctile, x.n, x.rate, x.clears]);
+  t.eq('the rate climbs as the slice narrows', gob.map((x) => x[2]), [0.9, 0.85, 0.8, 0.68]);
+  t.eq('...and the narrow slices clear break-even where the half did not',
+    gob.map((x) => x[3]), [true, true, true, false]);
+
+  // A judge with no ranking signal stays flat however hard you filter it — the
+  // outcome that says no threshold will help and the fix is better information.
+  t.eq('flat slices mean no threshold rescues it',
+    res4.skill.demon.topSlices.map((x) => x.rate), [0.3, 0.3, 0.3, 0.3]);
+  t.eq('...and none of them clear', res4.skill.demon.topSlices.every((x) => x.clears === false), true);
 
   const html4 = (await cal4.handler({ queryStringParameters: {} })).body;
   t.ok('the table renders', /Does the judge beat the tier\?/.test(html4));

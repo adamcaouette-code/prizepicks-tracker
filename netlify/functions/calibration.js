@@ -200,6 +200,23 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
       // to be worth running at all.
       baselineClears: be == null ? null : base >= be,
       bestHalfClears: be == null ? null : rate(top) >= be,
+      // The half-split proves signal EXISTS. This asks whether it is enough:
+      // if you only ever bet the judge's very best picks, does the rate climb
+      // far enough to clear the payout?
+      //
+      // This is the question the whole app turns on. A half-split lift of +6pts
+      // on goblins is real and still 6pts short of break-even, so the only route
+      // to a bettable board is that the signal keeps CONCENTRATING — that the
+      // top tenth is meaningfully better than the top half. If the rate is flat
+      // across these slices the signal is broad and weak, no threshold rescues
+      // it, and the answer is better information rather than a stricter filter.
+      topSlices: [10, 20, 30, 50].map((pctile) => {
+        const k = Math.floor(rows.length * (pctile / 100));
+        if (k < 25) return { pctile, n: k, rate: null, clears: null };   // too thin to mean anything
+        const slice = rows.slice(0, k);
+        const r = rate(slice);
+        return { pctile, n: k, rate: r, clears: be == null ? null : r >= be };
+      }),
     };
   }
 
@@ -345,9 +362,12 @@ function renderHTML(a) {
     const col = lift >= 5 ? 'var(--grn)' : lift >= 1 ? 'var(--amb)' : 'var(--red)';
     const clears = v.bestHalfClears ? '<span style="color:var(--grn)">yes</span>'
       : '<span style="color:var(--red)">no</span>';
-    return `<tr><td>${esc(t)}</td><td>${v.n}</td><td>${pct(v.topHalf)}</td><td>${pct(v.bottomHalf)}</td>
+    const slices = (v.topSlices || []).map((sl) => sl.rate == null
+      ? `<td class="mut">n=${sl.n}</td>`
+      : `<td style="color:${sl.clears ? 'var(--grn)' : 'var(--dim)'}">${pct(sl.rate)}</td>`).join('');
+    return `<tr><td>${esc(t)}</td><td>${v.n}</td>${slices}<td>${pct(v.topHalf)}</td>
       <td style="color:${col}">${lift >= 0 ? '+' : ''}${lift.toFixed(1)}</td>
-      <td>${pct(v.tierRate)}</td><td>${pct(v.breakEven)}</td><td>${clears}</td></tr>`;
+      <td>${pct(v.breakEven)}</td><td>${clears}</td></tr>`;
   }).join('') || '<tr><td colspan="8" class="mut">Not enough graded picks in any tier yet.</td></tr>';
 
   const modelRows = Object.entries(a.byModel || {}).sort((x, y) => y[1].n - x[1].n).map(([k, v]) => {
@@ -452,7 +472,7 @@ function renderHTML(a) {
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
 
   <h2>Does the judge beat the tier?</h2>
-  <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>its best half</th><th>its worst half</th><th>lift (pts)</th><th>whole tier</th><th>break-even</th><th>bettable</th></tr></thead><tbody>${skillRows}</tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>top 10%</th><th>top 20%</th><th>top 30%</th><th>top 50%</th><th>vs worst half</th><th>lift (pts)</th><th>break-even</th><th>bettable</th></tr></thead><tbody>${skillRows}</tbody></table></div>
   <div class="callout">The question calibration cannot answer. Calibration asks whether the percentages are
     <i>honest</i>; this asks whether they are <i>useful</i>. Inside a single tier, the judge's own top-rated half
     is compared against its bottom-rated half. <b>Lift</b> is the gap — if it is near zero the judge is only
@@ -461,7 +481,13 @@ function renderHTML(a) {
     demons, which the tier already told us. <b>Break-even</b> is the per-leg rate a pure-tier 3-pick Power needs
     just to return the stake, and <b>bettable</b> asks whether even the judge's best half clears it. A judge can
     be perfectly calibrated and still have nothing bettable — being honest about a bad number does not make it a
-    good one.</div>
+    good one.
+    <br><br>The <b>top 10/20/30/50%</b> columns are the decision: if you only ever bet the judge's very best
+    picks, does the rate climb far enough to clear the payout? A half-split lift proves signal exists; these
+    columns say whether it is <i>enough</i>. If the number keeps rising as the slice narrows, a stricter
+    threshold is a real route to a bettable board. If it is flat across all four, the signal is broad and weak,
+    no threshold rescues it, and the fix is better information rather than a harsher filter. Green means that
+    slice clears its break-even.</div>
 
   <h2>By prop type</h2>
   <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>claimed</th><th>actual</th><th>gap (pts)</th><th>tiers</th></tr></thead><tbody>${statRows}</tbody></table></div>
