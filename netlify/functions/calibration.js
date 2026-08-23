@@ -113,9 +113,61 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // cheaper model that scores the same is not a small saving, it is several
     // times more graded data for the same budget.
     byModel: {},
+    // How the judge BEHAVED, measured on every logged pick whether it has been
+    // graded or not.
+    //
+    // Everything else on this page waits for games to settle, which means weeks
+    // before a prompt or model change can be judged. But most of what goes wrong
+    // is visible the moment a run returns: a judge that ignores the payout tier,
+    // or clusters every answer at 0.65, or stops filling in the fields it was
+    // asked for, is already broken and no outcome is needed to see it.
+    //
+    // This matters most for the model question. The worry about a cheaper model
+    // is that it follows a demanding prompt less faithfully — Aphrodite asks it
+    // to anchor on the tier, count the last five, use the full range and return
+    // strict JSON. Those are all checkable against zero graded picks, on the day.
+    behaviour: {},
     plays: { n: 0, hits: 0 },        // verdict "play"
     playsLeans: { n: 0, hits: 0 },   // verdict "play" or "lean"
   };
+  // Behaviour runs over ALL picks, not just graded ones — that is the whole
+  // point of it. Keyed by version AND model, because "did the instruction land"
+  // is a question about the pair.
+  for (const p of picks) {
+    const prob = Number(p.prob);
+    if (!isFinite(prob)) continue;
+    const key = `${p.promptVersion || 'psyche (untagged)'} · ${p.judgeModel || 'untagged'}`;
+    const b = (out.behaviour[key] ||= {
+      n: 0, sum: 0, sumSq: 0, round: 0, cleared: 0, distinct: new Set(),
+      byTier: {},
+    });
+    b.n++; b.sum += prob; b.sumSq += prob * prob;
+    // A probability landing exactly on a multiple of 0.05 is weak evidence on
+    // its own and strong in aggregate: it is what a model produces when it picks
+    // a verdict first and writes a number to match.
+    if (Math.abs(prob * 20 - Math.round(prob * 20)) < 1e-9) b.round++;
+    if (p.cleared != null) b.cleared++;
+    b.distinct.add(prob.toFixed(2));
+    const t = (b.byTier[p.oddsType || 'unknown'] ||= { n: 0, sum: 0 });
+    t.n++; t.sum += prob;
+  }
+  for (const b of Object.values(out.behaviour)) {
+    b.meanProb = b.sum / b.n;
+    b.spread = Math.sqrt(Math.max(0, b.sumSq / b.n - b.meanProb ** 2));
+    b.roundShare = b.round / b.n;
+    b.clearedShare = b.cleared / b.n;
+    b.granularity = b.distinct.size / b.n;
+    for (const t of Object.values(b.byTier)) t.meanProb = t.sum / t.n;
+    // THE headline number. Aphrodite's central instruction is that a goblin line
+    // is priced as likely and a demon as unlikely, so a judge that read it puts
+    // a wide gap between the two. Psyche was never told the tier at all and
+    // averaged ~52% on everything, which is what a zero here looks like.
+    const g = b.byTier.goblin?.meanProb, d = b.byTier.demon?.meanProb;
+    b.tierGap = g != null && d != null ? g - d : null;
+    delete b.sum; delete b.sumSq; delete b.round; delete b.cleared; delete b.distinct;
+    for (const t of Object.values(b.byTier)) delete t.sum;
+  }
+
   if (!graded.length) return out;
 
   let overHits = 0, brierSum = 0;
@@ -384,6 +436,17 @@ function renderHTML(a) {
       <td>${v.searchesPerRun}</td><td>${v.inputShare == null ? '—' : pct(v.inputShare)}</td></tr>`).join('')
     || '<tr><td colspan="7" class="mut">no metered calls yet</td></tr>';
 
+  const behRows = Object.entries(a.behaviour || {}).sort((x, y) => y[1].n - x[1].n).map(([k, v]) => {
+    const gapCol = v.tierGap == null ? 'var(--dim)'
+      : v.tierGap >= 0.25 ? 'var(--grn)' : v.tierGap >= 0.10 ? 'var(--amb)' : 'var(--red)';
+    const rndCol = v.roundShare <= 0.35 ? 'var(--grn)' : v.roundShare <= 0.6 ? 'var(--amb)' : 'var(--red)';
+    return `<tr><td>${esc(k)}</td><td>${v.n}</td>
+      <td style="color:${gapCol}">${v.tierGap == null ? '—' : (v.tierGap * 100).toFixed(0) + 'pts'}</td>
+      <td>${(v.spread * 100).toFixed(1)}</td>
+      <td style="color:${rndCol}">${pct(v.roundShare)}</td>
+      <td>${pct(v.clearedShare)}</td><td>${pct(v.granularity)}</td></tr>`;
+  }).join('') || '<tr><td colspan="7" class="mut">No logged picks yet.</td></tr>';
+
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
   const pendRows = pendDates.map(([d, c], i) =>
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
@@ -459,6 +522,21 @@ function renderHTML(a) {
     overstating by 16 points, and no win rate on its own shows that. Rows before versioning read as
     <i>psyche (untagged)</i>. Both need ~50 graded picks each before the comparison is worth acting on, and the
     cleanest test is running the two on the SAME slate — different nights differ more than the prompts do.</div>
+
+  <h2>Judge behaviour — readable the same day</h2>
+  <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>filled "cleared"</th><th>distinct values</th></tr></thead><tbody>${behRows}</tbody></table></div>
+  <div class="callout">Everything else on this page waits for games to settle — weeks before a prompt or model
+    change can be judged. This does not: it reads every logged pick, graded or not, so a run can be checked the
+    hour it finishes.
+    <br><br><b>Tier gap</b> is the headline, and the direct test of whether a cheaper model still follows a
+    demanding prompt. Aphrodite's central instruction is that a goblin line is priced as likely (~70%) and a
+    demon as unlikely (~20%), so a judge that actually read it puts a wide gap between the two. Psyche was never
+    told the tier and averaged ~52% on everything — a gap near zero is what that looks like. <b>Spread</b> and
+    <b>distinct values</b> say whether the judge uses the full range or hedges toward the middle; a high share of
+    <b>round numbers</b> (multiples of 0.05) is what you get when a model picks a verdict first and writes a
+    number to justify it. <b>Filled "cleared"</b> is plain instruction-following: Aphrodite requires the count of
+    last-five that beat the line, and a model quietly dropping the field is a model quietly dropping other
+    instructions too.</div>
 
   <h2>Model — head to head</h2>
   <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>

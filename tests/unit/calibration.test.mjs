@@ -236,4 +236,52 @@ export default async function ({ t }) {
   t.ok('the table renders', /Does the judge beat the tier\?/.test(html4));
   t.ok('...and says plainly that honest is not the same as bettable',
     /being honest about a bad number does not make it a\s+good one/.test(html4));
+
+  // ---- judge behaviour, readable before a single game settles -------------
+  // The worry about a cheaper model is not that it reasons worse in the
+  // abstract, it is that it follows a demanding prompt less faithfully. That is
+  // checkable the hour a run finishes, against zero graded picks — which is the
+  // difference between deciding the model question on Monday and deciding it in
+  // three weeks.
+  reset();
+  const beh = (prob, tier, i, extra = {}) =>
+    ({ ...mk('mlb', prob, null, i), oddsType: tier, hit: null, gradedAt: null, ...extra });
+  const rows5 = [];
+  // A judge that READ the tier instruction: goblins high, demons low, a real
+  // spread, unrounded numbers, and the required field filled in.
+  for (let i = 0; i < 30; i++) rows5.push(beh(0.68 + i * 0.003, 'goblin', i, { promptVersion: 'aphrodite', judgeModel: 'good', cleared: 4 }));
+  for (let i = 0; i < 30; i++) rows5.push(beh(0.18 + i * 0.003, 'demon', 100 + i, { promptVersion: 'aphrodite', judgeModel: 'good', cleared: 1 }));
+  // A judge that IGNORED it: everything at a coin flip regardless of tier, every
+  // answer a round number, the required field dropped. This is what a prompt
+  // failing to land looks like, and none of it needs an outcome to see.
+  for (let i = 0; i < 30; i++) rows5.push(beh(0.55, 'goblin', 200 + i, { promptVersion: 'aphrodite', judgeModel: 'bad' }));
+  for (let i = 0; i < 30; i++) rows5.push(beh(0.50, 'demon', 300 + i, { promptVersion: 'aphrodite', judgeModel: 'bad' }));
+  seed('pick-log', DAY, rows5);
+
+  const cal5 = await loadFn('calibration.js');
+  const res5 = JSON.parse((await cal5.handler({ queryStringParameters: { format: 'json' } })).body);
+  const good = res5.behaviour['aphrodite · good'], bad = res5.behaviour['aphrodite · bad'];
+
+  t.eq('behaviour is measured with nothing graded at all', res5.graded, 0);
+  t.eq('...on every logged pick', [good.n, bad.n], [60, 60]);
+
+  // THE headline: did the tier instruction land?
+  t.eq('a judge that read the tier separates goblins from demons', Math.round(good.tierGap * 100), 50);
+  t.eq('one that ignored it prices them almost the same', Math.round(bad.tierGap * 100), 5);
+
+  t.ok('...and hedges toward the middle instead of using the range',
+    bad.spread < good.spread, `${bad.spread.toFixed(3)} vs ${good.spread.toFixed(3)}`);
+  t.eq('every answer a round number is what verdict-first reasoning looks like',
+    [Math.round(bad.roundShare * 100), Math.round(good.roundShare * 100)], [100, 0]);
+  t.eq('a dropped required field is instruction-following failing in the open',
+    [bad.clearedShare, good.clearedShare], [0, 1]);
+  // Two values across sixty picks versus a real distribution — an order of
+  // magnitude apart, which is the shape of the claim rather than any one number.
+  t.ok('a judge repeating two values has almost no granularity',
+    bad.granularity < 0.05 && good.granularity > bad.granularity * 5,
+    `bad ${bad.granularity.toFixed(3)} vs good ${good.granularity.toFixed(3)}`);
+
+  const html5 = (await cal5.handler({ queryStringParameters: {} })).body;
+  t.ok('the table renders', /Judge behaviour — readable the same day/.test(html5));
+  t.ok('...and names the tier gap as the test that matters', /<b>Tier gap<\/b> is the headline/.test(html5));
 }
