@@ -294,4 +294,69 @@ export default async function ({ t }) {
   t.eq('an unconfirmed tier is treated as over-only', orphan[0].underAvailable, false);
   t.eq('...so a weak over stays a weak over instead of becoming a 70% under',
     [orphan[0].side, orphan[0].sideProb], ['over', 0.3]);
+
+  // ---- PrizePicks now offers both sides on most alt lines -----------------
+  // The board used to be one-sided outside the standard line, and the engine
+  // encoded that as a rule: under exists only where tier === 'standard'. That
+  // rule was true when written and is now wrong in BOTH directions.
+  //
+  // Measured on a live 6,203-prop MLB board: 676 goblins and 2,144 demons accept
+  // an under, all of which the engine was refusing outright — and 85 STANDARD
+  // lines are over-only, which it was happily recommending unders on. The second
+  // half is the Messick bug again from the opposite direction: a bet with no
+  // button on the card.
+  //
+  // PrizePicks states it directly per projection, so the feed is the authority
+  // and the heuristic is gone.
+  const wagers = [
+    { player: 'Two-Sided Goblin', stat: 'TB', line: 0.5, prob: 0.25, oddsType: 'goblin', wagerTypes: 'under_or_over' },
+    { player: 'Two-Sided Demon', stat: 'TB', line: 5.5, prob: 0.25, oddsType: 'demon', wagerTypes: 'under_or_over' },
+    { player: 'Over Only Standard', stat: 'TB', line: 2.5, prob: 0.25, oddsType: 'standard', wagerTypes: 'over' },
+    { player: 'Two-Sided Standard', stat: 'TB', line: 2.5, prob: 0.25, oddsType: 'standard', wagerTypes: 'under_or_over' },
+  ];
+  mod.attachSides(wagers, 'both');
+  const byW = (n) => wagers.find((p) => p.player === n);
+
+  t.eq('a goblin that accepts an under gets one', byW('Two-Sided Goblin').underAvailable, true);
+  t.eq('...and is surfaced as the under it should be', byW('Two-Sided Goblin').side, 'under');
+  t.eq('a demon that accepts an under gets one too', byW('Two-Sided Demon').side, 'under');
+  // The dangerous direction, and the one a tier heuristic could never catch.
+  t.eq('a STANDARD line that is over-only does not get an under',
+    byW('Over Only Standard').underAvailable, false);
+  t.eq('...and is offered as the over it really is', byW('Over Only Standard').side, 'over');
+  t.eq('a standard that does accept both is unchanged', byW('Two-Sided Standard').side, 'under');
+
+  // ---- but the payout for that under is not known yet --------------------
+  // Each side carries its own tier in the PrizePicks UI, while the API sends one
+  // odds_type for the whole projection. Pricing an under on a goblin line at the
+  // goblin multiplier would quote 2.0x on what is really the expensive side —
+  // and mispriced payouts have already cost this app once.
+  t.eq('an under on an alt line is flagged as unpriced',
+    byW('Two-Sided Goblin').sidePriceUnverified, true);
+  t.eq('...as is an under on a demon', byW('Two-Sided Demon').sidePriceUnverified, true);
+  t.eq('an under on a STANDARD line is priced normally',
+    byW('Two-Sided Standard').sidePriceUnverified, false);
+  t.eq('...and so is any over', byW('Over Only Standard').sidePriceUnverified, false);
+
+  // Shown on the board, where the probability is honest and useful — but kept
+  // out of a slip that quotes EV off a multiplier nobody has confirmed.
+  const priced = mod.selectLegs([
+    ...wagers.map((p) => ({ ...p, matchup: p.player })),
+    { player: 'Clean A', stat: 'TB', line: 1.5, prob: 0.70, oddsType: 'standard', wagerTypes: 'over', matchup: 'A' },
+    { player: 'Clean B', stat: 'TB', line: 1.5, prob: 0.68, oddsType: 'standard', wagerTypes: 'over', matchup: 'B' },
+  ].map((p) => { mod.attachSides([p], 'both'); return p; }), 4);
+  t.ok('an unpriced under never reaches the recommended slip',
+    !priced.some((p) => p.sidePriceUnverified), priced.map((p) => p.player).join(', '));
+
+  // ---- pre-rollout props fall back to the old rule ------------------------
+  // The field is absent on ~15% of the board, all with older board_times. For
+  // those the old heuristic is still the best evidence there is, because it
+  // described the world they were posted into.
+  const legacy = [
+    { player: 'Old Goblin', stat: 'TB', line: 0.5, prob: 0.25, oddsType: 'goblin' },
+    { player: 'Old Standard', stat: 'TB', line: 2.5, prob: 0.25, oddsType: 'standard' },
+  ];
+  mod.attachSides(legacy, 'both');
+  t.eq('a pre-rollout goblin stays over-only', legacy[0].side, 'over');
+  t.eq('...and a pre-rollout standard keeps its under', legacy[1].side, 'under');
 }

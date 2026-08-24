@@ -276,6 +276,12 @@ async function fetchProps(leagueTag, opts = {}) {
       today: typeof a.today === 'boolean' ? a.today : null,
       image: pa.image_url || '',
       oddsType: (a.odds_type || 'standard').toLowerCase(),
+      // PrizePicks' own statement of which sides this line accepts:
+      // "under_or_over" or "over". This replaces the tier heuristic that used to
+      // stand in for it — see attachSides. Absent on ~15% of the board, all of
+      // them with older board_times, so the field looks like a rollout in
+      // progress rather than something only some props ever carry.
+      wagerTypes: String(a.allowed_wager_types || '').toLowerCase() || null,
       team: team || '(unknown)',
       opp: opp || '',
       matchup: team && opp ? [team, opp].sort().join(' vs ') : opp || team || '(unknown game)',
@@ -1023,6 +1029,9 @@ export function attachSource(picks, candidates) {
     // an id for a different line is worse than no id, because it grades cleanly
     // against the wrong number.
     if (exact?.id) p.projectionId ??= exact.id;
+    // Line-specific, exactly like the tier and the id: the 0.5 line and the 5.5
+    // line of one prop can accept different sides.
+    p.wagerTypes ??= exact?.wagerTypes || null;
     p.game ??= src.game || '(unknown game)';
     p.oddsType ??= exact?.oddsType || null;        // so the board can show the tier
     p.team ??= src.team || '';                      // for team dropdowns
@@ -1294,7 +1303,22 @@ function attachSides(picks, mode = 'both') {
     // real bet we skip; assuming an under that does not exist puts a bet on the
     // board that cannot be placed at all.
     const tierKnown = !!p.oddsType;
-    const underAvailable = tierKnown && tier === 'standard';
+    // PrizePicks now offers BOTH sides on most alt lines, and the board says so
+    // directly: allowed_wager_types is "under_or_over" or "over".
+    //
+    // The old rule — under exists only on a standard line — was true when it was
+    // written and is now wrong in both directions. Measured on a live 6,203-prop
+    // MLB board: 676 goblins and 2,144 demons accept an under, which the app was
+    // refusing outright; and 85 STANDARD lines are over-only, which the app was
+    // happily recommending unders on. That second half is the Messick bug again,
+    // just from the opposite direction.
+    //
+    // The field is absent on ~15% of props, all with older board_times. For those
+    // the old heuristic is still the best evidence available, since it described
+    // the world they were posted into.
+    const underAvailable = p.wagerTypes
+      ? p.wagerTypes === 'under_or_over'
+      : tierKnown && tier === 'standard';
     p.underAvailable = underAvailable;
     p.tierKnown = tierKnown;
 
@@ -1310,6 +1334,20 @@ function attachSides(picks, mode = 'both') {
     // not exist. Mark it so the selector skips it rather than silently serving
     // an over the user did not ask for.
     p.sideUnavailable = mode === 'under' && !underAvailable;
+
+    // WHAT AN UNDER ON AN ALT LINE PAYS IS NOT KNOWN.
+    //
+    // Each side now carries its own tier in the PrizePicks UI — the 0.5 line
+    // shows a green goblin on More and a red demon on Less — but the API sends
+    // ONE odds_type for the whole projection, so which multiplier applies to the
+    // under side cannot be read from the feed. Pricing it as the projection's
+    // tier would quote a goblin's 2.0x on what is really the expensive side.
+    //
+    // Mispriced payouts have already cost this app once: the recommended-slip
+    // box reported +70% EV on goblin slips returning -32%. So these are shown on
+    // the board, where the probability is still honest and useful, and kept out
+    // of the auto-built slip until the real multiplier is confirmed from a card.
+    p.sidePriceUnverified = side === 'under' && tier !== 'standard';
 
     // REAL edge: how far the probability clears what the tier has to pay for.
     //
@@ -1337,6 +1375,9 @@ function selectLegs(picks, n, opts = {}) {
     .filter((p) => !p.voidReason)
     // In unders-only mode, an alt line has no under to take — see attachSides.
     .filter((p) => !p.sideUnavailable)
+    // See attachSides: an under on an alt line is placeable but its payout is
+    // not yet known, so it must not reach a slip that quotes EV.
+    .filter((p) => !p.sidePriceUnverified)
     .sort((a, b) => {
       const q = (x) => (x.sideProb != null ? x.sideProb : clamp(x.prob));
       if (q(b) !== q(a)) return q(b) - q(a);
@@ -1833,6 +1874,7 @@ export const handler = async (event) => {
         promptVersion: p.promptVersion || judgeVersion,
         judgeModel: p.judgeModel || params.model,
         cleared: p.cleared ?? null,     // how many of the last 5 cleared, per the judge
+        wagerTypes: p.wagerTypes ?? null,   // which sides PrizePicks accepted on this line
         recentAvg: p.recentAvg ?? null,
         mlbId: p.mlbId ?? null,   // lets the MLB fallback grader skip a name lookup
         image: p.image || null, team: p.team || null, matchup: p.matchupLabel || p.matchup || null, // for the top-picks feed UI
