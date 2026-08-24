@@ -22,10 +22,15 @@ const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || 
 function dedupe(picks) {
   const m = new Map();
   for (const p of picks) {
-    // Source is part of the identity: the same projection can be predicted once by
-    // the board engine and again by the slip judge on the same day. Those are two
-    // separate predictions and both deserve to be scored.
-    const key = `${p.source || 'board'}|${p.projectionId || `${p.date}|${p.player}|${p.stat}|${p.line}`}`;
+    // Source AND judge config are part of the identity: the same projection can
+    // be predicted by the board engine and again by the slip judge, or by two
+    // different judge versions or models on the same slate. Those are separate
+    // forecasts and every one of them deserves to be scored — collapsing them
+    // would throw away exactly the comparison the versioning exists to make.
+    const key = [
+      p.source || 'board', p.promptVersion || '', p.judgeModel || '',
+      p.projectionId || `${p.date}|${p.player}|${p.stat}|${p.line}`,
+    ].join('|');
     const prev = m.get(key);
     if (!prev) { m.set(key, p); continue; }
     if (isGraded(p) && !isGraded(prev)) m.set(key, p); // prefer a graded copy

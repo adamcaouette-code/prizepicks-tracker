@@ -1845,7 +1845,21 @@ export const handler = async (event) => {
       // An already-graded entry is preserved over a fresh (ungraded) re-log.
       // Source-scoped so a re-run only replaces this engine's own rows — slip-judge
       // entries for the same projection are separate predictions and must survive.
-      const keyOf = (p) => `${p.source || 'board'}|${p.projectionId || `${p.player}|${p.stat}|${p.line}`}`;
+      // Identity includes WHICH JUDGE made the prediction, not just which prop it
+      // was about. Two configs judging the same prop on the same slate are two
+      // separate forecasts — exactly as the board engine and the slip judge
+      // already are, which is why `source` was here first.
+      //
+      // Without this, running Aphrodite/Opus and then Aphrodite/Haiku on one
+      // slate silently discards the first: same projectionId, same source, second
+      // write wins. That is precisely the A/B this versioning exists to support,
+      // and it would have quietly produced a log with half the experiment in it.
+      // Re-running the SAME config still dedupes, which is the behaviour that
+      // mattered originally.
+      const keyOf = (p) => [
+        p.source || 'board', p.promptVersion || '', p.judgeModel || '',
+        p.projectionId || `${p.player}|${p.stat}|${p.line}`,
+      ].join('|');
       const byKey = new Map();
       for (const p of existing) byKey.set(keyOf(p), p);
       for (const p of logged) {

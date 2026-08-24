@@ -173,6 +173,43 @@ export default async function ({ t }) {
   const always = await run({ searchPolicy: 'always' }, { lineups: true });
   t.eq('searchPolicy=always restores a search for every game', always.maxSearches, 2);
 
+  // ---- two configs on one slate must both survive -------------------------
+  // The whole point of naming the versions is running them against each other,
+  // and the cleanest comparison is the SAME slate — different nights differ more
+  // than the prompts do. That only works if the log keeps both.
+  //
+  // It nearly did not. A logged pick's identity was source + projectionId, so a
+  // second run over the same props overwrote the first: same projection, same
+  // source, last write wins. The experiment would have quietly ended up with
+  // half of itself in the log and no error anywhere.
+  reset();
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  {
+    const { handler } = await loadFn('bet-finder-background.js');
+    const post = async (body) => {
+      const mock = mockFetch([
+        ['partner-api.prizepicks.com/projections', async () => props(ROWS)],
+        [/statsapi|espn|the-odds-api|\/history/, async () => ({})],
+        ['api.anthropic.com', async () => ({ content: [{ type: 'text', text: JSON.stringify({ picks: PICKS }) }], usage: {} })],
+      ]);
+      try { await handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'ab', league: 'mlb', legs: 2, ...body }) }); }
+      finally { mock.restore(); }
+    };
+    await post({ model: 'claude-opus-4-8' });
+    await post({ model: 'claude-haiku-4-5-20251001' });
+    const log = read('pick-log', new Date().toISOString().slice(0, 10)) || [];
+    t.eq('both judge configs survive a shared slate', log.length, PICKS.length * 2);
+    t.eq('...tagged apart, so calibration can score them separately',
+      [...new Set(log.map((p) => p.judgeModel))].sort(),
+      ['claude-haiku-4-5-20251001', 'claude-opus-4-8']);
+
+    // Re-running the SAME config must still dedupe — that was the original
+    // reason for merging rather than appending, and it has to keep working.
+    await post({ model: 'claude-opus-4-8' });
+    const again = read('pick-log', new Date().toISOString().slice(0, 10)) || [];
+    t.eq('...but re-running one config does not duplicate it', again.length, PICKS.length * 2);
+  }
+
   // ---- psyche is still reachable, unchanged -------------------------------
   const psy = await run({ prompt: 'psyche' });
   t.ok('asking for psyche sends the original prompt',
