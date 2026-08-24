@@ -13,6 +13,9 @@ import { slate as mlbSlate, normKey as mlbNormKey, PP_TO_MLB_ABBR } from './mlb-
 import { attachMlbForm } from './mlb-grade.js';
 import { attachEspnForm, markEspnVoids, SLUGS as ESPN_SLUGS_FOR_FORM } from './espn-grade.js';
 import { promptSet, verdictFor } from './judge-prompts.js';
+// The real PrizePicks payout tables. Imported rather than duplicated — see the
+// note where the old local copy used to be.
+import { tablesForSlip } from './bet-finder-size.js';
 
 // VILIFIANT is the default judge model.
 //
@@ -153,16 +156,25 @@ async function resolveLeagueId(leagueTag) {
   const hit = catalog.find((l) => l.tag === tag);
   return hit ? hit.id : null;
 }
-const ODDS_PRIOR = { goblin: 0.62, standard: 0.55, demon: 0.45 };
+// Shortlist ranking only. This is a CONSTANT per tier, so it orders the tiers
+// against each other and says nothing about an individual prop — see the note in
+// findCandidates about the bias that creates. The values are now the rates
+// actually measured on this board's 1,855 graded picks rather than the earlier
+// guesses (0.62 / 0.55 / 0.45); the ordering is unchanged, so nothing about
+// selection moves, but the numbers no longer read as fact when they were not.
+const ODDS_PRIOR = { goblin: 0.70, standard: 0.45, demon: 0.20 };
 
-// PrizePicks payout tables (typical — adjust if your region differs)
-const POWER = { 2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 25.0 };
-const FLEX = {
-  3: { 3: 2.25, 2: 1.25 },
-  4: { 4: 5.0, 3: 1.5 },
-  5: { 5: 10.0, 4: 2.0, 3: 0.4 },
-  6: { 6: 25.0, 5: 2.0, 4: 0.4 },
-};
+// Payout tables live in bet-finder-size.js and are imported, never copied.
+//
+// There used to be a second set here, and it was wrong in the most expensive
+// direction possible: untiered, so every slip was priced as though it paid 5.0x
+// on a 3-pick and 20x on a 5-pick. A pure goblin 3-pick actually pays 2.0x. The
+// recommended-slip box on the board therefore reported +70% EV on exactly the
+// kind of slip the engine most likes to build, when the real number is -32%;
+// a goblin 5-pick read +231% against a true -57%.
+//
+// That is the whole reason the edge work matters and it was being undone one
+// box further down the page. One table, one answer.
 
 // ---------- data: pull + trim PrizePicks props (all pages) ----------
 // Shared PrizePicks fetch with real throttle handling. The old inline retry used a
@@ -1299,11 +1311,6 @@ function attachSides(picks, mode = 'both') {
     // an over the user did not ask for.
     p.sideUnavailable = mode === 'under' && !underAvailable;
 
-    // Kept for the payout note: our multiplier tables are captured per tier, not
-    // per tier+side. Only a standard-line under can now be "against the grain",
-    // because the alt lines no longer produce unders at all.
-    p.tierAgainstSide = false;
-
     // REAL edge: how far the probability clears what the tier has to pay for.
     //
     // The board sorted by raw probability and called it "EDGE %", which is
@@ -1450,15 +1457,25 @@ function sizeParlay(legs, { bankroll, floor, maxStake }) {
   if (n < 2) return { error: `Only ${n} playable leg(s) — need 2+.` };
   if (n > 6) return { error: `${n} legs exceeds PrizePicks max of 6.` };
   const dist = hitDistribution(probs);
-  const out = { legs, hitDistribution: dist, entries: {} };
+  // Tier-aware, from the one real table. A slip's payout depends on WHICH tiers
+  // its legs are, not only how many there are.
+  const tables = tablesForSlip(legs);
+  const out = { legs, hitDistribution: dist, entries: {}, mixed: tables.mixed };
   let best = null, bestG = -Infinity;
   for (const entry of ['power', 'flex']) {
-    if (entry === 'flex' && n < 3) continue;
-    const table = entry === 'power' ? { [n]: POWER[n] } : FLEX[n];
+    if (entry === 'flex' && (n < 3 || !tables.flex)) continue;
+    const table = entry === 'power' ? tables.power : tables.flex;
     const rec = priceEntry(probs, table, bankroll, floor, maxStake, entry.toUpperCase());
-    rec.payouts = Object.entries(table)
-      .map(([hits, m]) => ({ hits: Number(hits), pays: Math.round(rec.stake * m * 100) / 100 }))
+    // The MULTIPLIER is the fact; a payout is only that multiplier times a
+    // stake. Kelly returns a stake of 0 whenever EV is non-positive — which,
+    // at the rates this board actually hits, is most slips — so payouts alone
+    // collapse to a column of $0.00 and the real price becomes unrecoverable.
+    // bet-finder-size carries both for the same reason.
+    rec.multipliers = Object.entries(table)
+      .map(([hits, m]) => ({ hits: Number(hits), mult: m }))
       .sort((a, b) => b.hits - a.hits);
+    rec.payouts = rec.multipliers
+      .map(({ hits, mult }) => ({ hits, pays: Math.round(rec.stake * mult * 100) / 100 }));
     out.entries[entry] = rec;
     if (rec.stake > 0) {
       const g = expectedLogGrowth(probs, table, rec.stake / bankroll);
@@ -1762,7 +1779,7 @@ export const handler = async (event) => {
       player: p.player, stat: p.stat, statDisplay: p.statDisplay, line: p.line,
       prob: p.sideProb != null ? p.sideProb : p.prob,   // P(the side we're recommending)
       probOver: p.prob, pick: p.side || 'over', verdict: p.sideVerdict || p.verdict,
-      oddsType: p.oddsType, tierAgainstSide: !!p.tierAgainstSide,
+      oddsType: p.oddsType,
       edge: p.edge, breakEven: p.breakEven,
       team: p.team, matchup: p.matchupLabel || p.matchup,
       projectionId: p.projectionId || null, start: p.start || null,
@@ -1776,7 +1793,6 @@ export const handler = async (event) => {
       shortfall: chosen.shortfall || 0,
       poolSize: chosen.poolSize || 0,
       sides: params.sides,
-      againstTier: parlayLegs.filter((l) => l.tierAgainstSide).length,
     };
     // Normally the board shows only plays/leans. But when the user filtered to a
     // specific prop type, show ALL of them sorted by prob (best on top) — they've
@@ -1873,4 +1889,5 @@ export {
   recordCost, PRICES,
   filterToday, findCandidates, positionAllows, propIdentity,   // pure helpers, exported for tests
   attachSides, selectLegs, sideVerdictFor, markVoids,
+  sizeParlay,                                                  // priced against the real tables — see tablesForSlip
 };

@@ -52,8 +52,16 @@ function slipTiers(legs) {
   return { tiers, pure: uniq.length === 1 ? uniq[0] : null };
 }
 
-// Build the POWER + FLEX multiplier tables for THIS specific slip.
-function tablesForSlip(legs) {
+/**
+ * Build the POWER + FLEX multiplier tables for THIS specific slip.
+ *
+ * Exported because it is the ONLY correct answer to "what does this slip pay",
+ * and bet-finder-background used to carry its own untiered copy that disagreed
+ * badly — quoting 5.0x on a 3-pick and 20x on a 5-pick regardless of tier, when
+ * a pure goblin 3-pick pays 2.0x. Any second table is a second answer, and the
+ * wrong one is always the flattering one.
+ */
+export function tablesForSlip(legs) {
   const n = legs.length;
   const { tiers, pure } = slipTiers(legs);
   if (pure && POWER_PURE[pure]?.[n]) {
