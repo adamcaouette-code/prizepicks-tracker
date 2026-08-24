@@ -301,4 +301,59 @@ export default async function ({ t }) {
   const html5 = (await cal5.handler({ queryStringParameters: {} })).body;
   t.ok('the table renders', /Judge behaviour — readable the same day/.test(html5));
   t.ok('...and names the tier gap as the test that matters', /<b>Tier gap<\/b> is the headline/.test(html5));
+
+  // ---- how close, not just whether ---------------------------------------
+  // Two losses that a Brier score cannot tell apart: over 3.5 finishing on 3 was
+  // nearly right and broke the wrong way; over 6.5 finishing on 1 was never in
+  // it. Both are hit=false with an identical penalty, and that identical penalty
+  // discards the most informative thing in the log.
+  //
+  // Grading itself stays binary on purpose — PrizePicks pays the same nothing
+  // for either — so this is a diagnostic, never a score.
+  reset();
+  const mg = (stat, line, res, i, tier = 'standard') => ({
+    ...mk('mlb', 0.6, res > line, 700 + i), stat, line, result: res, oddsType: tier,
+  });
+  const rows7 = [];
+  // A prop the engine READS WELL: results cluster right around the line, and the
+  // losses are all within touching distance.
+  for (let i = 0; i < 20; i++) rows7.push(mg('Pitcher Strikeouts', 5.5, i % 2 ? 6 : 5, i));
+  // A prop it does NOT understand: the line is 6.5 and results come in around 1.
+  // Every loss is a blowout, none would be saved by a lower line.
+  for (let i = 0; i < 20; i++) rows7.push(mg('Home Runs', 6.5, i % 2 ? 1 : 0, 100 + i));
+  // Too few to trust: a spread computed from six points is not a spread.
+  for (let i = 0; i < 6; i++) rows7.push(mg('Rare Prop', 2.5, 2, 200 + i));
+  seed('pick-log', DAY, rows7);
+
+  const cal7 = await loadFn('calibration.js');
+  const res7 = JSON.parse((await cal7.handler({ queryStringParameters: { format: 'json' } })).body);
+  const near = res7.margins['mlb :: Pitcher Strikeouts'];
+  const far = res7.margins['mlb :: Home Runs'];
+
+  t.eq('a prop that lands on its line reads as near misses', near.nearMissShare, 1);
+  t.eq('...and none of them as blowouts', near.blowoutShare, 0);
+  t.eq('a prop that lands nowhere near its line reads as blowouts', far.blowoutShare, 1);
+  t.eq('...and none of ITS losses as near misses', far.nearMissShare, 0);
+  t.ok('...with a mean margin far below the line', far.meanMargin < -5, String(far.meanMargin));
+  t.ok('...while the well-read prop sits on it', Math.abs(near.meanMargin) < 0.6, String(near.meanMargin));
+
+  // The actionable column: the 5.5 losses came in at 5, so a line one unit lower
+  // would have won every one of them. The 6.5 losses came in at 0-1 and nothing
+  // a whole unit lower would have saved them.
+  t.eq('losses that a lower line would have saved are counted', near.savedByLowerLine, 1);
+  t.eq('...and losses nothing could have saved are not', far.savedByLowerLine, 0);
+
+  t.ok('a stat with too few picks gets no spread invented for it',
+    res7.margins['mlb :: Rare Prop'] === undefined);
+
+  // Margins are z-scored per stat before being pooled. Raw, a miss of 0.5 on a
+  // home-run line and a miss of 0.5 on a Fantasy Score line of 25 are the same
+  // number and mean nothing alike.
+  t.ok('the tier view pools only after z-scoring', res7.marginByTier.standard.meanZ != null);
+  t.eq('...over every stat that qualified', res7.marginByTier.standard.n, 40);
+
+  const html7 = (await cal7.handler({ queryStringParameters: {} })).body;
+  t.ok('the table renders', /How close, not just whether/.test(html7));
+  t.ok('...and says plainly that grading stays binary',
+    /Grading is binary and stays that way/.test(html7));
 }

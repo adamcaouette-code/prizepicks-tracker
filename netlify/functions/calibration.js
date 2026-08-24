@@ -130,6 +130,28 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // to anchor on the tier, count the last five, use the full range and return
     // strict JSON. Those are all checkable against zero graded picks, on the day.
     behaviour: {},
+    // HOW CLOSE, not just whether.
+    //
+    // Grading is binary and must stay that way: PrizePicks pays the same nothing
+    // for missing over 3.5 with 3 as for missing over 6.5 with 1, so a scoring
+    // rule that rewarded being close would be scoring something nobody pays for.
+    //
+    // But those two misses say completely different things about the JUDGE. The
+    // first was nearly right — the distribution sat right on the line and the
+    // night broke the wrong way. The second was not remotely right; the model
+    // did not understand the prop. Both land as hit=false with an identical
+    // Brier penalty, and that identical penalty is throwing away the single most
+    // informative thing in the log.
+    //
+    // It also carries far more statistical power than a coin flip does. 1,855
+    // binary outcomes barely separate three tiers; 1,855 MARGINS estimate a whole
+    // distribution per stat, which is what distinguishes variance from a broken
+    // model — losing by 0.5 repeatedly is luck, losing by 5 repeatedly is not.
+    //
+    // Margins are never pooled raw across stats: a miss of 0.5 is everything on a
+    // home-run line and nothing on a Fantasy Score line of 25. Each stat is
+    // z-scored against its own spread before anything is combined.
+    margins: {},
     plays: { n: 0, hits: 0 },        // verdict "play"
     playsLeans: { n: 0, hits: 0 },   // verdict "play" or "lean"
   };
@@ -172,6 +194,52 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
   }
 
   if (!graded.length) return out;
+
+  // --- how close, per stat -------------------------------------------------
+  const rawMargins = {};
+  for (const p of graded) {
+    const line = Number(p.line), res = Number(p.result);
+    if (!isFinite(line) || !isFinite(res)) continue;
+    const key = `${(p.league || 'unknown').toLowerCase()} :: ${p.stat || 'unknown'}`;
+    (rawMargins[key] ||= []).push({ m: res - line, hit: p.hit === true, tier: p.oddsType || 'unknown', line, res });
+  }
+  const zAll = [];
+  for (const [key, rows] of Object.entries(rawMargins)) {
+    if (rows.length < 12) continue;                 // a spread from ten points is not a spread
+    const ms = rows.map((r) => r.m);
+    const mean = ms.reduce((a, b) => a + b, 0) / ms.length;
+    const sd = Math.sqrt(ms.reduce((a, b) => a + (b - mean) ** 2, 0) / ms.length) || 1;
+    const losses = rows.filter((r) => !r.hit);
+    out.margins[key] = {
+      n: rows.length,
+      // Positive means the actual result lands ABOVE the line on average — the
+      // overs on this prop are live and the line is set low.
+      meanMargin: Math.round(mean * 100) / 100,
+      sd: Math.round(sd * 100) / 100,
+      losses: losses.length,
+      // Of the ones that LOST: how many were within half a standard deviation of
+      // flipping, and how many were never in it at all.
+      nearMissShare: losses.length ? losses.filter((r) => Math.abs(r.m) <= sd).length / losses.length : null,
+      blowoutShare: losses.length ? losses.filter((r) => Math.abs(r.m) > 2 * sd).length / losses.length : null,
+      // The directly actionable one: of the overs that lost, how many would have
+      // won at a line one whole unit lower — which is roughly where the goblin
+      // alt line sits on the same prop.
+      savedByLowerLine: losses.length ? losses.filter((r) => r.res > r.line - 1).length / losses.length : null,
+    };
+    for (const r of rows) zAll.push({ z: (r.m - 0) / sd, hit: r.hit, tier: r.tier });
+  }
+  // Pooled only after z-scoring, and split by tier — the question "is a demon
+  // line even in reach" is exactly a margin question and cannot be asked of a
+  // hit rate.
+  out.marginByTier = {};
+  for (const r of zAll) {
+    const t = (out.marginByTier[r.tier] ||= { n: 0, sum: 0 });
+    t.n++; t.sum += r.z;
+  }
+  for (const t of Object.values(out.marginByTier)) {
+    t.meanZ = Math.round((t.sum / t.n) * 100) / 100;
+    delete t.sum;
+  }
 
   let overHits = 0, brierSum = 0;
   const bandMap = {}; // lo(0..90) -> { n, hits, predSum }
@@ -450,6 +518,21 @@ function renderHTML(a) {
       <td>${pct(v.clearedShare)}</td><td>${pct(v.granularity)}</td></tr>`;
   }).join('') || '<tr><td colspan="7" class="mut">No logged picks yet.</td></tr>';
 
+  const marginRows = Object.entries(a.margins || {}).sort((x, y) => y[1].n - x[1].n).slice(0, 18).map(([k, v]) => {
+    const mCol = v.meanMargin > 0 ? 'var(--grn)' : v.meanMargin < 0 ? 'var(--red)' : 'var(--dim)';
+    const nCol = v.nearMissShare >= 0.5 ? 'var(--amb)' : 'var(--dim)';
+    return `<tr><td>${esc(k)}</td><td>${v.n}</td>
+      <td style="color:${mCol}">${v.meanMargin > 0 ? '+' : ''}${v.meanMargin}</td>
+      <td>${v.sd}</td><td>${v.losses}</td>
+      <td style="color:${nCol}">${v.nearMissShare == null ? '—' : pct(v.nearMissShare)}</td>
+      <td>${v.blowoutShare == null ? '—' : pct(v.blowoutShare)}</td>
+      <td>${v.savedByLowerLine == null ? '—' : pct(v.savedByLowerLine)}</td></tr>`;
+  }).join('') || '<tr><td colspan="8" class="mut">No graded picks with a numeric result yet.</td></tr>';
+
+  const mtRows = Object.entries(a.marginByTier || {}).sort((x, y) => y[1].n - x[1].n).map(([t, v]) =>
+    `<tr><td>${esc(t)}</td><td>${v.n}</td><td style="color:${v.meanZ >= 0 ? 'var(--grn)' : 'var(--red)'}">${v.meanZ > 0 ? '+' : ''}${v.meanZ}</td></tr>`).join('')
+    || '<tr><td colspan="3" class="mut">—</td></tr>';
+
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
   const pendRows = pendDates.map(([d, c], i) =>
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
@@ -569,6 +652,23 @@ function renderHTML(a) {
     threshold is a real route to a bettable board. If it is flat across all four, the signal is broad and weak,
     no threshold rescues it, and the fix is better information rather than a harsher filter. Green means that
     slice clears its break-even.</div>
+
+  <h2>How close, not just whether</h2>
+  <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>mean margin</th><th>spread</th><th>losses</th><th>near miss</th><th>not close</th><th>saved by −1</th></tr></thead><tbody>${marginRows}</tbody></table></div>
+  <div class="wrap" style="margin-top:12px"><table><thead><tr><th>tier</th><th>n</th><th>mean margin (σ)</th></tr></thead><tbody>${mtRows}</tbody></table></div>
+  <div class="callout">Grading is binary and stays that way — PrizePicks pays the same nothing for missing over 3.5
+    with 3 as for missing over 6.5 with 1, so scoring closeness would be scoring something nobody pays for. But
+    those two misses say completely different things about the <i>judge</i>, and a Brier score cannot tell them
+    apart.
+    <br><br><b>Mean margin</b> is how far the real result lands from the line, in that stat's own units: positive
+    means the overs are live and the line is set low. <b>Near miss</b> is the share of losses that came within
+    half a spread of flipping — high means variance, and the read was basically right. <b>Not close</b> is the
+    share that were never in it, which is the signature of a prop the engine does not understand rather than one
+    that broke badly. <b>Saved by −1</b> is the directly actionable column: of the overs that lost, how many
+    would have won a whole unit lower, which is roughly where the goblin alt line sits on the same prop.
+    <br><br>Margins are never pooled raw — a miss of 0.5 is everything on a home-run line and nothing on a
+    Fantasy Score line of 25 — so each stat is z-scored against its own spread before the tier table combines
+    them. Stats with fewer than 12 graded picks are left out rather than given a spread computed from noise.</div>
 
   <h2>By prop type</h2>
   <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>claimed</th><th>actual</th><th>gap (pts)</th><th>tiers</th></tr></thead><tbody>${statRows}</tbody></table></div>
