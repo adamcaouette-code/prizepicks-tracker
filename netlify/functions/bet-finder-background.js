@@ -1357,8 +1357,27 @@ function attachSides(picks, mode = 'both') {
     // standard pays 4.75x and needs 59.5%. So an 80% goblin is worth about
     // +0.6pp while a 65% standard is worth +5.5pp, roughly nine times more —
     // and sorting on probability floated the goblin to the top every time.
-    p.breakEven = BREAK_EVEN_3PICK[tier] ?? BREAK_EVEN_3PICK.standard;
-    p.edge = Math.round((p.sideProb - p.breakEven) * 10000) / 10000;
+    // An edge is only computable when we know what THIS SIDE pays.
+    //
+    // odds_type describes the OVER side — confirmed on a real card: a goblin
+    // line's More priced at a per-leg factor of 1.289 against the goblin table's
+    // 1.260, 2.3% off. The UNDER side of that same line came out at 1.961, which
+    // is nothing like the demon's 2.289. It is a fourth price the tables do not
+    // model, worth roughly 7.5x on a 3-pick against goblin 2.0 / standard 4.75 /
+    // demon 12.0.
+    //
+    // So using the line's tier for an under is not slightly off, it is the
+    // opposite side of the bet. It ranked "Messick under 9.5" at 80% against the
+    // DEMON break-even of 43.7% for a +36pp edge and put it top of the board,
+    // when 9.5 is a demon only on the over — the under there is the cheap side
+    // and needs far more than 80% to be worth taking.
+    //
+    // Rather than guess, an unknown side price yields no edge at all. Those legs
+    // still show, ranked below everything priced, saying plainly that the payout
+    // is unknown instead of borrowing a number from the other side.
+    const priceKnown = !p.sidePriceUnverified;
+    p.breakEven = priceKnown ? (BREAK_EVEN_3PICK[tier] ?? BREAK_EVEN_3PICK.standard) : null;
+    p.edge = priceKnown ? Math.round((p.sideProb - p.breakEven) * 10000) / 10000 : null;
   }
   return picks;
 }

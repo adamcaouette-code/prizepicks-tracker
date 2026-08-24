@@ -75,6 +75,16 @@ export default async function ({ t, url, browser }) {
   // "EDGE %" label floated the worst-paying tier to the top of every board.
   t.eq('default order is edge over break-even, not raw probability',
     await names(), ['No Extras Guy', 'Junk Time Guy', 'Elly De La Cruz', 'Corbin Carroll']);
+  // The EDGE % sort ranks on a number the board never showed: edgeHtml was
+  // built and then dropped on the floor, never inserted into the row markup. So
+  // the sort was correct and looked broken — a 65% ahead of an 80% with nothing
+  // on screen explaining why.
+  const edges = await page.$$eval('#searchResults .edgeval', els => els.map(e => e.textContent.trim()));
+  t.eq('every row shows the number it is ranked by', edges.length, 4);
+  t.ok('...as points against break-even, not a repeat of the percentage',
+    edges.every((e) => /pp$|price \?/.test(e)), edges.join(' | '));
+  t.eq('the goblin at 68% is shown as barely above water', edges[2], '-11.4pp');
+
   const pct = await page.$$eval('#searchResults .pct', els => els.map(e => e.className));
   t.eq('board-mode "pass" is styled as fade, not left bare', pct[await rowAt('Corbin Carroll')], 'pct fade');
   t.ok('probabilities render as percentages', /68%/.test(await page.textContent('#searchResults')));

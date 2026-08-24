@@ -336,6 +336,30 @@ export default async function ({ t }) {
   t.eq('...as is an under on a demon', byW('Two-Sided Demon').sidePriceUnverified, true);
   t.eq('an under on a STANDARD line is priced normally',
     byW('Two-Sided Standard').sidePriceUnverified, false);
+
+  // ---- and therefore has NO edge, rather than a borrowed one -------------
+  // This is what put "Messick under 9.5" at the top of the board: 9.5 is a demon
+  // ON THE OVER, so the under was scored against the demon break-even of 43.7%
+  // for a +36pp edge, when the under there is the cheap side and needs far more
+  // than 80% to be worth taking. Ranking a bet by the price of its opposite side
+  // is worse than not ranking it.
+  t.eq('an under on a demon line gets no edge at all', byW('Two-Sided Demon').edge, null);
+  t.eq('...and no break-even either', byW('Two-Sided Demon').breakEven, null);
+  t.eq('an under on a goblin line is the same', byW('Two-Sided Goblin').edge, null);
+  t.ok('an under on a STANDARD line still gets a real edge',
+    typeof byW('Two-Sided Standard').edge === 'number', String(byW('Two-Sided Standard').edge));
+  t.ok('...and every over does', typeof byW('Over Only Standard').edge === 'number');
+
+  // The specific shape of the bug: 80% on a demon line's under must NOT come out
+  // ahead of a modest priced over.
+  const rank = [
+    { player: 'Fake Top', stat: 'K', line: 9.5, prob: 0.20, oddsType: 'demon', wagerTypes: 'under_or_over' },
+    { player: 'Real Edge', stat: 'K', line: 4.5, prob: 0.65, oddsType: 'standard', wagerTypes: 'over' },
+  ];
+  mod.attachSides(rank, 'both');
+  t.eq('the 80% under is surfaced as an under', [rank[0].side, rank[0].sideProb], ['under', 0.8]);
+  t.eq('...but carries no edge to rank on', rank[0].edge, null);
+  t.ok('...while the 65% over does', rank[1].edge > 0, String(rank[1].edge));
   t.eq('...and so is any over', byW('Over Only Standard').sidePriceUnverified, false);
 
   // Shown on the board, where the probability is honest and useful — but kept
