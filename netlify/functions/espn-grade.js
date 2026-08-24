@@ -67,6 +67,7 @@ const SLUGS = {
 
 import { normKey, buildIndex, matchPlayer } from './player-match.js';
 import { fantasyKind, basketballFantasy, nflFantasy } from './fantasy-score.js';
+import { settle } from './grade-picks.js';   // one push rule, shared
 
 const store = () => {
   try { return getStore({ name: 'espn-cache', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN }); }
@@ -397,7 +398,7 @@ export async function gradeFromEspn({ league, player, date, stat, line }) {
     if (!m) continue;
     const value = read(m.value);
     if (value == null || !isFinite(Number(value))) continue;
-    return { result: Number(value), hit: Number(value) > Number(line), source: 'espn', matchedVia: m.how };
+    return { ...settle(value, line), source: 'espn', matchedVia: m.how };
   }
   return null;
 }

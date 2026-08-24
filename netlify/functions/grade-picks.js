@@ -87,14 +87,37 @@ function pickGame(pick, games) {
     Math.abs(Date.parse(a.game_start_time || a.start_time) - ref) - Math.abs(Date.parse(b.game_start_time || b.start_time) - ref))[0];
 }
 
+/**
+ * Settle one value against one line — including the PUSH.
+ *
+ * PrizePicks now posts WHOLE-NUMBER lines (Points 19, Rebs+Asts 11): 1.1% of a
+ * live MLB board and 6.3% of a WNBA one, every single one flagged refundable.
+ * On those a tie is not a loss, it is a refund — the leg is removed and the slip
+ * repriced around it.
+ *
+ * `hit = actual > line` scores that tie as a MISS, which is wrong twice over: it
+ * charges the forecaster for an outcome nobody lost money on, and it drags the
+ * calibration curve down by exactly the picks that landed closest to the line.
+ * A half-point line cannot tie, so this only ever fires where a push is real.
+ */
+export function settle(actual, line) {
+  // null and '' both become 0 under Number(), so an absent value would settle as
+  // a genuine zero — which is the DNP-scored-as-a-loss failure this pipeline
+  // already fights elsewhere. Absent means "no answer", never "he got none".
+  if (actual == null || actual === '' || line == null || line === '') return null;
+  const a = Number(actual), l = Number(line);
+  if (!isFinite(a) || !isFinite(l)) return null;
+  if (a === l) return { result: a, hit: null, push: true };
+  return { result: a, hit: a > l };
+}
+
 function gradeOne(pick, history) {
   if (!history) return null;
   const game = pickGame(pick, history.games || history.data);
   if (!game) return null;
   const actual = Number(game.stat_value ?? game.value ?? game.score);
   if (!isFinite(actual)) return null;
-  const hit = actual > Number(pick.line);
-  return { result: actual, hit };
+  return settle(actual, pick.line);
 }
 
 export const handler = async (event) => {
@@ -215,6 +238,10 @@ export const handler = async (event) => {
           pick.result = g.result; pick.hit = g.hit;
           pick.gradedAt = new Date().toISOString();
           pick.gradedVia = g.source || 'prizepicks';
+          // A push is SETTLED, not pending. Left with hit=null and no marker it
+          // would be retried every morning forever and read as permanently
+          // ungraded, which is how a refund becomes a phantom backlog.
+          if (g.push) pick.ungradeable = 'push — landed exactly on the line, PrizePicks refunds it';
           // How the player name was resolved. An exact match needs no scrutiny;
           // a suffix or initial match is right far more often than not but stays
           // labelled so it can be audited rather than assumed.

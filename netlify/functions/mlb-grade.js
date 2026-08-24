@@ -23,6 +23,7 @@ const LOG_TTL = 6 * 60 * 60 * 1000;
 
 import { normKey, buildIndex, matchPlayer } from './player-match.js';
 import { fantasyKind, mlbHitterFantasy, mlbPitcherFantasy, MLB_VERIFIED } from './fantasy-score.js';
+import { settle } from './grade-picks.js';   // one push rule, shared
 
 const store = () => {
   try { return getStore({ name: 'mlb-cache', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN }); }
@@ -217,7 +218,7 @@ export async function gradeFromMlb({ player, mlbId, date, stat, line, allowUnver
   // when asked for: fantasy-check needs it to tell a genuine 0-for-4 from a
   // lookup that found the wrong game, and a computed 0 looks identical either way
   // without it.
-  return { result: value, hit: value > Number(line), source: 'mlb', matchedVia: how || 'exact',
+  return { ...settle(value, line), source: 'mlb', matchedVia: how || 'exact',
     ...(debug ? { statLine: pick.stat, gameDate: pick.date } : {}) };
 }
 
