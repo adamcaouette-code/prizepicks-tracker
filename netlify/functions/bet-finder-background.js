@@ -1612,8 +1612,9 @@ export const handler = async (event) => {
       sides: ['both', 'over', 'under'].includes(String(body.sides || '').toLowerCase())
         ? String(body.sides).toLowerCase() : 'both',
       maxPicks: body.maxPicks ? Math.max(3, Math.min(60, Number(body.maxPicks))) : null, // cap candidates → faster/cheaper
-      // Which judge version to run: 'psyche' (the original) or 'aphrodite'.
-      // Per-run so the two can be compared on the SAME slate, which is the only
+      // Which judge version to run: 'psyche' (the original), 'aphrodite', or
+      // 'themis' (a tail-only variant of aphrodite — see judge-prompts.js).
+      // Per-run so versions can be compared on the SAME slate, which is the only
       // comparison worth much — different nights differ more than the prompts do.
       prompt: body.prompt ? String(body.prompt).toLowerCase() : null,
       // Which model writes the probabilities. Validated against the price table
@@ -2000,6 +2001,7 @@ export const handler = async (event) => {
         promptVersion: p.promptVersion || judgeVersion,
         judgeModel: p.judgeModel || params.model,
         cleared: p.cleared ?? null,     // how many of the last 5 cleared, per the judge
+        standout: p.standout ?? null,  // THEMIS only: did the judge move this 0.10+ off tier rate
         wagerTypes: p.wagerTypes ?? null,   // which sides PrizePicks accepted on this line
         recentAvg: p.recentAvg ?? null,
         mlbId: p.mlbId ?? null,   // lets the MLB fallback grader skip a name lookup
@@ -2068,7 +2070,7 @@ export {
   fetchMlbStarters, attachStarters, mlbRole, mlbStatKind,
   fetchTeamRecords, resolveRecords, fetchTeamFullNames,
   fetchWinProbs, fetchOppDefense, normStat, normKey, americanToProb,
-  recordCost, PRICES,
+  recordCost, PRICES, ODDS_PRIOR,
   filterToday, findCandidates, positionAllows, propIdentity, parsePicks,   // pure helpers, exported for tests
   attachSides, selectLegs, sideVerdictFor, markVoids,
   sizeParlay,                                                  // priced against the real tables — see tablesForSlip

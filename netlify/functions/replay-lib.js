@@ -83,16 +83,16 @@ export const searchesIssued = (content) =>
 
 // The same identity the pipeline uses. Two lines of one prop are different
 // props, so the line is part of the key.
-const keyOf = (p) => `${p.player}|${p.stat}|${Number(p.line)}`;
+export const keyOf = (p) => `${p.player}|${p.stat}|${Number(p.line)}`;
 
-const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+export const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 const sd = (a) => {
   if (a.length < 2) return null;
   const m = mean(a);
   return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (a.length - 1));
 };
 
-function pearson(xs, ys) {
+export function pearson(xs, ys) {
   if (xs.length < 2) return null;
   const mx = mean(xs), my = mean(ys);
   let num = 0, dx = 0, dy = 0;

@@ -418,4 +418,66 @@ export const MUTATIONS = [
     what: 'a failed run answers the caller\'s empty 202 and writes nothing, so a poller waits forever — the platform discards the return value, so the store IS the answer',
     from: "    if (jobId) await jobs.setJSON(jobId, { status: 'error', message: String(err.message || err) });",
     to: '    if (false) await jobs.setJSON(jobId, {});' },
+
+  // ======================================================================
+  // variant-lib.js — Phase 1 of a tail-only prompt variant test (THEMIS).
+  // The headline number here is standout replication, so the mutations lean
+  // hardest on things that would make that number lie: counting an empty
+  // agreement as perfect, or reporting a chance-level baseline as real signal.
+  // ======================================================================
+  { id: 'variant-jaccard-empty-is-one', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'two runs that flag NOTHING are scored as perfectly agreeing, instead of "nothing to compare"',
+    from: '  return union ? inter / union : null;',
+    to: '  return union ? inter / union : 1;' },
+
+  { id: 'variant-standout-set-wrong-flag', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'every prop is treated as a standout, not just the ones the judge flagged',
+    from: "const standoutSet = (run) => new Set(run.picks.filter((p) => p.standout === true).map(keyOf));",
+    to: "const standoutSet = (run) => new Set(run.picks.map(keyOf));" },
+
+  { id: 'variant-histogram-wrong-bucket', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'a prop flagged in 2 of 5 runs is counted as if it were flagged in all 5',
+    from: '  for (const s of sets) for (const key of s) counts.set(key, (counts.get(key) || 0) + 1);',
+    to: '  for (const s of sets) for (const key of s) counts.set(key, sets.length);' },
+
+  { id: 'variant-move-includes-nonstandouts', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'the move distribution includes props the judge did NOT flag as standout, diluting the whole point of the metric',
+    from: '      if (p.standout !== true) continue;',
+    to: '      if (false) continue;' },
+
+  { id: 'variant-move-no-tiers-fallback', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'the move distribution never resolves a tier, since the judge\'s own output never carries one — this is the exact bug the endpoint test caught before shipping',
+    from: '      const rate = tierRates[String(p.oddsType || p.tier || tiers[keyOf(p)] || \'\').toLowerCase()];',
+    to: '      const rate = tierRates[String(p.oddsType || p.tier || \'\').toLowerCase()];' },
+
+  { id: 'variant-rank-correlation-on-raw-values', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'rank correlation is computed on raw probabilities instead of ranks, so it stops being Spearman and starts being sensitive to how far apart the numbers are, not just their order',
+    from: '  return { n: shared.length, spearman: pearson(ranks(xs), ranks(ys)) };',
+    to: '  return { n: shared.length, spearman: pearson(xs, ys) };' },
+
+  { id: 'variant-pairwise-not-symmetric', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'pairwiseAll double-counts every pair (i,j) and (j,i), inflating every averaged statistic',
+    from: '    for (let j = i + 1; j < runs.length; j++) pairs.push(comparePair(runs[i], runs[j]));',
+    to: '    for (let j = 0; j < runs.length; j++) { if (j === i) continue; pairs.push(comparePair(runs[i], runs[j])); }' },
+
+  { id: 'variant-system-not-swapped', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'runVariant sends the SNAPSHOT\'s original system prompt instead of building one from the variant — silently turns every variant test into another Aphrodite A/A run',
+    from: '  const req = buildRequest({ ...snap, system });',
+    to: '  const req = buildRequest(snap);' },
+
+  // ======================================================================
+  // judge-variant-background.js / judge-variant-status.js — the server-side
+  // transport. The one failure mode unique to this endpoint (not shared with
+  // judge-replay-background.js) is silently running the WRONG prompt when an
+  // unknown or misspelled variant name is given.
+  // ======================================================================
+  { id: 'jvb-unknown-variant-silent', suite: 'judge-variant-endpoint', file: 'netlify/functions/judge-variant-background.js',
+    what: 'an unknown variant name falls back to some default instead of failing the job — a typo would silently test the wrong prompt',
+    from: "    if (!variant) throw new Error(`unknown variant \"${body.variant}\" — known: ${Object.keys(PROMPTS).join(', ')}`);",
+    to: '    const _v = variant;' },
+
+  { id: 'jvb-k-unbounded', suite: 'judge-variant-endpoint', file: 'netlify/functions/judge-variant-background.js',
+    what: 'k is trusted verbatim from the request body, so one bad request fires unlimited paid calls',
+    from: '    const k = Math.max(2, Math.min(10, Number(body.k) || 5));',
+    to: '    const k = Number(body.k) || 5;' },
 ];

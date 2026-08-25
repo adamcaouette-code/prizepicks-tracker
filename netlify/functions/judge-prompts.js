@@ -357,6 +357,147 @@ export const APHRODITE = {
   },
 };
 
+// ===========================================================================
+// THEMIS — a TAIL-ONLY variant of Aphrodite. Same head, same role blocks, same
+// search policy and budget, same entryFor. See docs/judge-measurement.md,
+// "THEMIS: tier anchoring bought calibration and cost discrimination" for the
+// measured rationale (item J: a 20-goblin band gave 0.5 points of separation
+// per prop against a 4.9-point noise floor — rank1-rank3 gap of 0.01, five
+// props within 0.02 of third place).
+//
+// Aphrodite told the model two things that pull against each other: "start
+// inside the tier's [0.65-0.75-style] range" and, a few paragraphs later, "use
+// the whole range, do not cluster — a slate of forty props should produce a
+// spread." Told to stay in a 10-point band AND spread out inside it, twenty
+// goblins get smeared across ~0.5 points apiece — underneath the judge's own
+// run-to-run noise, which is why the top of the board turned out to be a
+// cluster of near-ties rather than a real ranking.
+//
+// THEMIS replaces both instructions with one: put ordinary props AT the
+// tier's rate, and reserve movement for props with a stated, specific reason,
+// flagged "standout". It only makes sense to remove ONE of the two pulling
+// instructions if you remove BOTH — leaving "use the whole range" in place
+// would tell the model to spread out the very props THEMIS just told it were
+// unremarkable, and the standout signal Phase 1 is trying to measure would be
+// contaminated by exactly the drift THEMIS is trying to stop. So both are
+// gone here. Everything else — the goblin/demon sanity-check paragraph, the
+// rare-event floor-effect paragraph, the count-anchoring paragraph, the
+// asymmetric-cost paragraph, combo handling — is unchanged from Aphrodite,
+// left in place and re-typed rather than shared, so the two prompts can never
+// silently drift together.
+// ===========================================================================
+
+const THEMIS_TAIL = `
+THE PAYOUT TIER IS THE MARKET'S OWN ESTIMATE. Every prop carries "tier". PrizePicks
+does not set these lines at random — the tier is where they chose to put the number
+and what they are willing to pay for it. These are the rates MEASURED on 1,807 graded
+props from this board, not estimates:
+- "goblin"   — the line was moved DOWN to make the over easy, and pays only ~2x.
+               The over hit 70% of the time (811/1162).
+- "standard" — the line sits near the middle, paying ~4.75x.
+               The over hit 45% of the time (137/302).
+- "demon"    — the line was moved UP to make the over hard, and pays ~12x.
+               The over hit 20% of the time (67/343).
+Note what those numbers say: a "standard" line is NOT a coin flip on this board, it
+goes under more often than over, and a demon goes over only one time in five. Do not
+reason from what the words sound like. Reason from the rates.
+
+MOST PROPS ARE UNREMARKABLE. PUT THEM AT THEIR TIER'S RATE. The tier is the market's
+own estimate and it is usually right. For the majority of props you will have nothing
+that beats it, and the correct answer is that tier's measured rate, plus or minus a
+couple of points.
+
+A FEW PROPS ARE GENUINELY DIFFERENT, AND THOSE ARE THE WHOLE JOB. When you have a
+specific fact the tier has not priced — a confirmed lineup change, an injury, a
+pitcher matchup that clearly cuts one way — move that prop DECISIVELY: at least 0.10
+off the tier rate, up or down, and name the fact in your reasoning. A move smaller
+than 0.10 is not worth making; it will not survive the noise in your own estimates.
+
+Set "standout": true on every prop you moved 0.10 or more off its tier's measured
+rate, false otherwise.
+
+Expect few standouts. On a typical slate it is two to five out of forty. If this
+slate has none, return none — every prop at its tier rate and standout false
+throughout is a legitimate and useful answer. Do not manufacture standouts to fill a
+quota, and do not spread the ordinary props apart to look decisive. A confident
+ranking you cannot justify is worse than an honest flat one.
+
+RARE-EVENT PROPS. Some stats cannot have a balanced line because the line cannot go
+below 0.5 — home runs, stolen bases, triples. There is no "over 0.2 home runs", so the
+number sits on the floor and the true probability is simply low, often 0.10-0.20 for a
+typical hitter. It does not rise because the line looks small. A player being "due", in
+form, or facing a weak pitcher moves such a prop by a few points, not tens of points.
+The tier already encodes most of this — that is WHY these props price as standard or
+demon rather than goblin — so trust the tier's rate over the small-looking line.
+
+If you find yourself putting a goblin at 0.55 or a demon at 0.70, stop and check you
+have read the line correctly against the player's actual production. Disagreeing that
+hard with the market is possible but rare, and it needs a stated reason.
+
+DO NOT USE THE EXTREMES UNLESS YOU MEAN THEM. Measured against outcomes, this board's
+predictions have been far too spread out: probabilities below 0.10 hit 43% of the time,
+which is worse than useless. If you do not have specific evidence that a prop is close
+to impossible, it belongs near its tier's rate, not at 0.05. Reserve anything below
+0.15 for a stat that genuinely cannot happen for this player in this role.
+
+ANCHOR ON A COUNT, NOT AN IMPRESSION. When a prop includes "recent5" (the player's
+last 5 results for THIS exact stat) and "recentAvg", first COUNT how many of the five
+cleared the line and put that number in the "cleared" field. Start your probability
+from that count, then adjust for the tier, the opponent, and rotation risk. Five games
+is a small sample — 3 of 5 is not 0.60, it is weak evidence for something near the
+player's season rate — so let the count set the direction and the tier set the scale.
+If recent5 is absent, set "cleared" to null and lean harder on the tier and your search.
+
+BE HONEST ABOUT WHICH WAY AN ERROR COSTS. The board bets your HIGHEST numbers — they
+are sorted and the top few get taken. That means any prop you overstate is far more
+likely to be bet than one you understate, so overstatement is the expensive error and
+understatement is nearly free. When two numbers seem equally defensible, write the
+lower one.
+
+Some props are COMBO props — two players bundled into one line (names joined by "+",
+stat ends in "(Combo)", flagged combo:true). Treat these with extra caution:
+- There is NO recent5 for a combo — you cannot see either player's recent form, and you
+  must NOT invent one. A combined line is inherently noisier than a single-player line.
+- The total can be carried unevenly: one player may do most of the work while the other
+  contributes little. You cannot see that split, so never assume both pull their weight.
+- Both players must be CONFIRMED starters. If either is doubtful, rested, or benched,
+  that alone drops the probability sharply.
+- If the two players are in DIFFERENT games, you are stacking two independent
+  uncertainties. Stay near or below the tier's floor unless both halves are clearly
+  strong on their own.
+
+When a prop includes "teamWinPct" (the player's team's win probability) and/or
+"teamRecord", use them to gauge the matchup. A heavy favorite tends to control the game
+(its attackers get more chances; the underdog is pinned back); flip it for an underdog.
+Treat these as adjustment on top of the tier and recent form, not as overriding them.
+
+When a prop includes "oppStatRank" (the opponent's league-wide rank at limiting THIS
+exact stat — 1 means the opponent is the stingiest defense against this stat, a high
+number like 27+ means they give it up easily), use it as matchup context: a high rank
+(weak defense) supports the OVER; a low rank (elite defense) is a reason to fade or
+downgrade. Treat it as an adjustment, never an override.
+
+A stat that does not fit the player's role is not a low probability, it is a near-zero
+one. Say so with the number rather than with a label.
+
+Respond with ONLY valid JSON, no prose, no fences.
+- prob     = your probability the prop goes OVER the line, 0 to 1. Two decimals.
+             This is the whole answer; everything else is supporting detail.
+- cleared  = how many of the last 5 cleared this line (0-5), or null if recent5 was
+             not provided. Count it before you write prob.
+- standout = true if you moved this prop 0.10 or more off its tier's measured rate,
+             false otherwise. Most props are false.
+- key_risk = short flag (8 words max) or "none".
+- reasoning = 1-2 sentences. If this is a standout, the fact that moved you off the
+             tier rate goes here.
+{"picks":[{"player":"","stat":"","line":0,"prob":0.0,"cleared":null,"standout":false,"key_risk":"","reasoning":""}]}`;
+
+export const THEMIS = {
+  name: 'themis',
+  promptFor: (league) => APHRODITE_HEAD + rolesFor(league) + THEMIS_TAIL,
+  entryFor: (c) => APHRODITE.entryFor(c),   // identical to Aphrodite — see the header note
+};
+
 // ---------------------------------------------------------------------------
 // Verdict is DERIVED, never taken from the model.
 //
@@ -367,7 +508,7 @@ export const APHRODITE = {
 // comparable rather than merely different.
 export const verdictFor = (prob) => (prob >= 0.62 ? 'play' : prob >= 0.54 ? 'lean' : 'pass');
 
-export const PROMPTS = { psyche: PSYCHE, aphrodite: APHRODITE };
+export const PROMPTS = { psyche: PSYCHE, aphrodite: APHRODITE, themis: THEMIS };
 
 /**
  * Which judge version to run. Explicit argument (a ?prompt= query param) beats

@@ -5,7 +5,7 @@
 // the versions must reach the model intact, the payload must carry what the
 // prompt talks about, and every logged pick must say which one produced it.
 
-import { PSYCHE, APHRODITE, PROMPTS, promptSet, verdictFor } from '../../netlify/functions/judge-prompts.js';
+import { PSYCHE, APHRODITE, THEMIS, PROMPTS, promptSet, verdictFor } from '../../netlify/functions/judge-prompts.js';
 
 const CAND = {
   player: 'Parker Messick', stat: 'Pitcher Strikeouts', line: 3.5,
@@ -25,7 +25,7 @@ export default async function ({ t }) {
   t.eq('an unknown name falls back rather than throwing', promptSet('athena').name, 'aphrodite');
   if (saved == null) delete process.env.JUDGE_PROMPT; else process.env.JUDGE_PROMPT = saved;
 
-  t.eq('both versions are registered', Object.keys(PROMPTS).sort(), ['aphrodite', 'psyche']);
+  t.eq('all three versions are registered', Object.keys(PROMPTS).sort(), ['aphrodite', 'psyche', 'themis']);
 
   // ---- the payload difference is the point --------------------------------
   // Aphrodite's central change is that the judge is told the payout tier, which
@@ -106,4 +106,77 @@ export default async function ({ t }) {
   t.eq('0.53 is a pass', verdictFor(0.539), 'pass');
   t.ok('psyche stated these same thresholds',
     psy.includes('play  = 62%+') && psy.includes('lean  = 54-61%'));
+
+  // ---- THEMIS: a TAIL-ONLY variant of Aphrodite ---------------------------
+  // The whole point is that head, role blocks, search policy/budget, and
+  // entryFor are IDENTICAL — only the tier-anchoring section and the output
+  // schema differ. If anything else drifted, a THEMIS-vs-Aphrodite comparison
+  // would be measuring more than one change at once.
+  const them = THEMIS.promptFor('mlb');
+
+  t.eq('THEMIS is registered and selectable', promptSet('themis').name, 'themis');
+
+  // The HEAD — the search-policy paragraph, verbatim — is shared, not copied.
+  const searchPolicyLine = 'Your search budget is set to the number of';
+  t.ok('THEMIS carries the identical head', them.includes(searchPolicyLine) && aph.includes(searchPolicyLine));
+  const headEnd = aph.indexOf('This is BASEBALL');   // start of the shared MLB role block
+  t.eq('...byte-identical up to the role block', them.slice(0, headEnd), aph.slice(0, headEnd));
+
+  // entryFor is identical in behaviour, not merely similar.
+  t.eq('THEMIS payload is identical to Aphrodite\'s',
+    JSON.stringify(THEMIS.entryFor(CAND)), JSON.stringify(APHRODITE.entryFor(CAND)));
+  t.eq('...tier included', THEMIS.entryFor(CAND).tier, 'goblin');
+  t.ok('...combos still flagged', THEMIS.entryFor(combo).combo === true);
+
+  // The measured tier rates survive UNCHANGED — only the anchoring instruction
+  // around them changes.
+  t.ok('THEMIS keeps the measured goblin rate', /70% of the time \(811\/1162\)/.test(them));
+  t.ok('...the measured standard rate', /45% of the time \(137\/302\)/.test(them));
+  t.ok('...the measured demon rate', /20% of the time \(67\/343\)/.test(them));
+
+  // But the old "start inside the range" anchoring, its numeric ranges, AND the
+  // "use the whole range, do not cluster" instruction are all gone — leaving
+  // one and not the other would tell the model to do both at once.
+  t.ok('the old "start inside the range" instruction is gone', !/Start inside the tier's range/.test(them));
+  t.ok('...and its numeric ranges do not survive',
+    !/0\.65-0\.75/.test(them) && !/0\.40-0\.52/.test(them) && !/0\.15-0\.25/.test(them));
+  t.ok('the contradicting "use the whole range" instruction is also gone',
+    !/USE THE WHOLE RANGE/.test(them) && !/[Dd]o not cluster/.test(them));
+
+  // The new instruction: most props at the tier rate, a few decisive standouts.
+  t.ok('THEMIS tells the judge most props are unremarkable',
+    /PUT THEM AT THEIR TIER'S RATE/.test(them));
+  t.ok('...and a standout needs a decisive, named move',
+    /at least 0\.10\s+off the tier rate/.test(them) && /name the fact/.test(them));
+  t.ok('...expects few standouts, and says a flat slate is a legitimate answer',
+    /two to five out of forty/.test(them) && /legitimate and useful answer/.test(them));
+
+  // Output schema: standout added, everything else the same shape.
+  t.ok('THEMIS asks for "standout" in the schema', /"standout"/.test(them));
+  t.ok('...and the JSON template carries it', /"standout":false/.test(them));
+  t.ok('...alongside "cleared", unchanged', /"cleared"/.test(them));
+
+  // Everything NOT named as changing is identical, verbatim, to Aphrodite —
+  // checked as substrings so a a stray edit anywhere else in the tail is caught.
+  const sharedTailPassages = [
+    'RARE-EVENT PROPS. Some stats cannot have a balanced line',
+    'stop and check you\nhave read the line correctly',
+    'DO NOT USE THE EXTREMES UNLESS YOU MEAN THEM',
+    'ANCHOR ON A COUNT, NOT AN IMPRESSION',
+    'BE HONEST ABOUT WHICH WAY AN ERROR COSTS',
+    'Some props are COMBO props',
+    'teamWinPct',
+    'oppStatRank',
+    'A stat that does not fit the player\'s role is not a low probability',
+  ];
+  for (const s of sharedTailPassages) {
+    t.ok(`unrelated passage carried over unchanged: "${s.slice(0, 40)}..."`,
+      aph.includes(s) && them.includes(s));
+  }
+
+  // Aphrodite itself must be untouched by THEMIS's existence.
+  t.ok('Aphrodite still asks the model to spread out, unlike THEMIS',
+    /USE THE WHOLE RANGE/.test(aph));
+  t.ok('...and still anchors inside the old numeric ranges',
+    /Start inside the tier's range/.test(aph) && /0\.65-0\.75/.test(aph));
 }

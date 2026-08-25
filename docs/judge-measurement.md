@@ -145,6 +145,62 @@ prop's probability, but if the true gap between competing props really is
 meaningful. This is a property of what the judge outputs at the top of a
 slate, independent of the replay harness.
 
+## THEMIS — a tail-only variant testing whether tier anchoring caused the churn
+
+**Rationale.** Aphrodite tells the judge two things that pull against each
+other: "start inside the tier's range" (goblin 0.65-0.75, standard 0.40-0.52,
+demon 0.15-0.25) and, a few paragraphs later, "use the whole range, do not
+cluster — a slate of forty props should produce a spread." Told to stay in a
+10-point band AND spread out inside it, 20 goblins on a balanced slate get
+smeared across roughly 0.5 points apiece — underneath the ~4.9-point per-run
+noise floor measured in item G/J. That is the mechanism item J's diagnosis
+pointed at directly: a rank1-rank3 gap of 0.01 and five props within 0.02 of
+third place is exactly what "0.5 points of true separation, 4.9 points of
+noise" produces. **Tier anchoring bought calibration and cost discrimination.**
+
+**The change.** THEMIS is Aphrodite with ONE instruction instead of two: put
+ordinary props at the tier's measured rate (± a couple of points), and
+reserve movement for props with a specific, stated reason — moved decisively
+(≥0.10), flagged `standout: true`. Removing only "start inside the range" and
+leaving "use the whole range" in place would have told the model to spread
+out the very props THEMIS just called unremarkable, contaminating the
+standout signal Phase 1 exists to measure — so both were removed together.
+Nothing else changed: same head, same role blocks, same search policy and
+budget, same `entryFor`, same measured tier rates (70%/45%/20%), same
+rare-event/extremes/count-anchoring/asymmetric-cost/combo paragraphs, carried
+over verbatim rather than shared, so the two prompts can never silently drift
+together. See `netlify/functions/judge-prompts.js`'s `THEMIS` block for the
+exact text and the full accounting of what was and wasn't touched.
+
+Selected the same way Aphrodite is — `JUDGE_PROMPT=themis` or `?prompt=themis`
+— alongside Aphrodite, not in place of it.
+
+**Phase 1 tooling.** `netlify/functions/variant-lib.js` runs k independent
+calls of a variant's prompt against a snapshot's FIXED payload and search
+context (`runVariant`), then analyses them symmetrically — no run is a
+privileged "original" the way replay-lib.js's A/A design has one, because
+THEMIS has never run live. `judge-variant-background.js` /
+`judge-variant-status.js` expose this as the same POST-202-then-poll job
+pattern as every other background job in this app. Reports: standout
+replication (pairwise Jaccard overlap of standout sets, a flag-count histogram,
+and a disclosed-as-approximate chance baseline), the distribution of how far
+flagged standouts moved from their tier's rate, per-tier calibration survival,
+top-N churn among the k runs, and rank correlation against the real live
+Aphrodite response the snapshot actually recorded.
+
+**Interpretation, written down before running it:**
+- standouts replicate well above the chance baseline → real signal; proceed to
+  Phase 2 (AUC and hit rate on the standout subset, once picks grade)
+- standouts near the chance baseline → the judge is generating noise with
+  confident wording — an answer, not a null result
+- zero standouts across all runs → also informative: the judge has nothing to
+  add over the tier on this slate, stated honestly, which THEMIS's own prompt
+  explicitly allows as "a legitimate and useful answer"
+
+Phase 2 needs settled games and cannot be replayed. Phase 1 accelerates the
+BEHAVIOURAL loop to minutes; the OUTCOME loop is still two weeks, and Phase 1
+results must not be read as standing in for it.
+
 ## Why AUC and not lift
 
 `lift` is a median half-split, which keeps only which side of the middle each
