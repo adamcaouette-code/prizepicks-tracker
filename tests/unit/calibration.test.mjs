@@ -356,4 +356,93 @@ export default async function ({ t }) {
   t.ok('the table renders', /How close, not just whether/.test(html7));
   t.ok('...and says plainly that grading stays binary',
     /Grading is binary and stays that way/.test(html7));
+
+  // ---- the tier-only baseline: the bar the judge has to clear -------------
+  // A Brier score on its own has no scale. 0.240 is meaningless until you know
+  // what the cheapest possible predictor scores on the same picks — output each
+  // tier's own base rate and nothing else, no player, no matchup, no model.
+  // Until that number is on the page there is nothing for a change to beat.
+  reset();
+  const bl = (tier, hit, i, prob) => ({ ...mk('mlb', prob, hit, 800 + i), oddsType: tier });
+  const rows8 = [];
+  // goblin: 70 of 100 hit. A tier lookup says 0.70 on all of them and scores
+  // 0.70*0.30 = 0.2100.  The judge says a flat 0.70 too, so it must TIE.
+  for (let i = 0; i < 100; i++) rows8.push(bl('goblin', i < 70, i, 0.70));
+  // demon: 20 of 100 hit -> lookup scores 0.20*0.80 = 0.1600. The judge says
+  // 0.50 on every one, which is much worse, so it must LOSE overall.
+  for (let i = 0; i < 100; i++) rows8.push(bl('demon', i < 20, 200 + i, 0.50));
+  seed('pick-log', DAY, rows8);
+
+  const cal8 = await loadFn('calibration.js');
+  const res8 = JSON.parse((await cal8.handler({ queryStringParameters: { format: 'json' } })).body);
+
+  // Count-weighted mean of p(1-p): (100*0.21 + 100*0.16) / 200 = 0.1850
+  t.ok('the baseline is the count-weighted p(1-p) across tiers',
+    Math.abs(res8.baseline - 0.185) < 1e-9, String(res8.baseline));
+  // Judge: goblin rows score 0.70*0.30 = 0.21 exactly (it matched the rate);
+  // demon rows guess 0.50 against a 0.20 rate -> 0.8*0.25 + 0.2*0.25 = 0.25.
+  t.ok('the judge is scored on the same rows', Math.abs(res8.brier - 0.23) < 1e-9, String(res8.brier));
+  t.ok('the delta is stated as a loss when the judge is behind',
+    Math.abs(res8.baselineDelta - 0.045) < 1e-9, String(res8.baselineDelta));
+  t.eq('...and says plainly that the lookup table won', res8.beatsBaseline, false);
+
+  // A judge that matches every tier's rate exactly ties the lookup — it cannot
+  // beat it, which is what makes this a floor rather than a target.
+  reset();
+  const tie = [];
+  for (let i = 0; i < 100; i++) tie.push(bl('goblin', i < 70, i, 0.70));
+  for (let i = 0; i < 100; i++) tie.push(bl('demon', i < 20, 200 + i, 0.20));
+  seed('pick-log', DAY, tie);
+  const cal9 = await loadFn('calibration.js');
+  const res9 = JSON.parse((await cal9.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.ok('a judge that only reproduces the tier rate exactly ties the baseline',
+    Math.abs(res9.baselineDelta) < 1e-9, String(res9.baselineDelta));
+
+  // Real skill — separating winners from losers INSIDE a tier — is the only
+  // thing that beats it.
+  reset();
+  const skilled = [];
+  for (let i = 0; i < 100; i++) skilled.push(bl('goblin', i < 70, i, i < 70 ? 0.9 : 0.3));
+  for (let i = 0; i < 100; i++) skilled.push(bl('demon', i < 20, 200 + i, i < 20 ? 0.9 : 0.1));
+  seed('pick-log', DAY, skilled);
+  const cal10 = await loadFn('calibration.js');
+  const res10 = JSON.parse((await cal10.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.eq('a judge with real within-tier skill beats it', res10.beatsBaseline, true);
+  t.ok('...and the delta is reported as a gain', res10.baselineDelta < 0, String(res10.baselineDelta));
+
+  // ---- per config, on its own rows ---------------------------------------
+  // Two configs judge different slates with different tier mixes, so a baseline
+  // fitted on somebody else's picks is not the bar either of them faced.
+  reset();
+  const split = [];
+  for (let i = 0; i < 60; i++) split.push({ ...bl('goblin', i < 42, i, 0.70), promptVersion: 'psyche' });
+  for (let i = 0; i < 60; i++) split.push({ ...bl('demon', i < 12, 300 + i, 0.50), promptVersion: 'aphrodite' });
+  seed('pick-log', DAY, split);
+  const cal11 = await loadFn('calibration.js');
+  const res11 = JSON.parse((await cal11.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.ok('psyche is scored against a goblin-only baseline',
+    Math.abs(res11.byPrompt.psyche.baseline - 0.21) < 1e-9, String(res11.byPrompt.psyche.baseline));
+  t.ok('aphrodite against a demon-only one',
+    Math.abs(res11.byPrompt.aphrodite.baseline - 0.16) < 1e-9, String(res11.byPrompt.aphrodite.baseline));
+  t.eq('...and each gets its own verdict',
+    [res11.byPrompt.psyche.beatsBaseline, res11.byPrompt.aphrodite.beatsBaseline], [false, false]);
+
+  // A config with barely any rows must not be handed a baseline: a tiny sample
+  // drives the tier rate to 0 or 1, where p(1-p) is zero and nothing could beat
+  // it — a number that would read as a real result.
+  reset();
+  const thin = [];
+  for (let i = 0; i < 60; i++) thin.push({ ...bl('goblin', i < 42, i, 0.7), promptVersion: 'psyche' });
+  for (let i = 0; i < 3; i++) thin.push({ ...bl('goblin', true, 400 + i, 0.7), promptVersion: 'aphrodite' });
+  seed('pick-log', DAY, thin);
+  const cal12 = await loadFn('calibration.js');
+  const res12 = JSON.parse((await cal12.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.eq('a config with too few rows gets no baseline rather than a fake one',
+    res12.byPrompt.aphrodite.baseline, null);
+  t.eq('...and no verdict either', res12.byPrompt.aphrodite.beatsBaseline, null);
+
+  const html8 = (await cal12.handler({ queryStringParameters: {} })).body;
+  t.ok('the baseline is on the page next to the brier it judges',
+    /tier-only baseline/.test(html8));
+  t.ok('...and says which side is winning', /judge BEHIND by|judge ahead by/.test(html8));
 }

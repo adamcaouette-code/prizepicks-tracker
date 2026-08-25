@@ -55,6 +55,56 @@ export const EXCLUDED_LEAGUES = new Set(['world_cup', 'fifa_world_cup']);
 
 const isExcluded = (p) => EXCLUDED_LEAGUES.has(String(p.league || '').toLowerCase());
 
+/**
+ * What a three-row lookup table would have scored on these same picks.
+ *
+ * The predictor is: output the tier's own base rate for every pick in that tier,
+ * and nothing else — no player, no matchup, no model. It is the cheapest thing
+ * that could possibly work, and it is the bar the judge has to clear to justify
+ * existing at all. Until this number is on the page there is nothing for a
+ * change to beat, only a Brier score with no scale attached to it.
+ *
+ * When a predictor outputs exactly the empirical rate p of the rows it is scored
+ * on, its Brier collapses to p(1-p) — the misses contribute p² at weight (1-p),
+ * the hits (1-p)² at weight p, and the two sum to p(1-p). So this is the
+ * count-weighted mean of p(1-p) across tiers, computed directly rather than by
+ * summing squared errors, which also makes it obvious that the baseline is
+ * exactly the variance the tier alone cannot explain.
+ *
+ * Fitted on the rows being scored, deliberately. That hands the baseline the
+ * benefit of hindsight on those exact picks and makes it HARDER to beat, which
+ * is the right direction for a bar the judge is supposed to clear.
+ */
+const BASELINE_MIN_N = 30;
+function tierBaseline(rows) {
+  // Below this the tier rates are noise, and a tiny sample can drive p to 0 or 1
+  // where p(1-p) is zero — a baseline nothing could beat, reported as if it were
+  // a real result.
+  if (rows.length < BASELINE_MIN_N) return null;
+  const byTier = {};
+  for (const p of rows) {
+    const b = (byTier[p.oddsType || 'unknown'] ||= { n: 0, hits: 0 });
+    b.n++; if (p.hit === true) b.hits++;
+  }
+  let sum = 0;
+  for (const b of Object.values(byTier)) {
+    const rate = b.hits / b.n;
+    sum += b.n * rate * (1 - rate);
+  }
+  return sum / rows.length;
+}
+
+/** Attach baseline, delta and verdict to any scored bucket. */
+function scoreAgainstBaseline(target, rows) {
+  const base = tierBaseline(rows);
+  target.baseline = base;
+  // Brier is a loss, so a POSITIVE delta means the judge lost to a lookup table.
+  target.baselineDelta = base == null || target.brier == null ? null
+    : Math.round((target.brier - base) * 10000) / 10000;
+  target.beatsBaseline = target.baselineDelta == null ? null : target.baselineDelta < 0;
+  return target;
+}
+
 function aggregate(rawPicks, { perLeague = true } = {}) {
   const picks = dedupe(rawPicks).filter((p) => !isExcluded(p));
   const graded = picks.filter(isGraded);
@@ -370,6 +420,21 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     v.overstatement = v.predicted - v.actual;   // >0 means the numbers are too high
     delete v.brierSum; delete v.predSum;
   }
+
+  // The bar, overall and per config. Each config is scored against a baseline
+  // built from ITS OWN rows rather than the pooled one: two configs judge
+  // different slates with different tier mixes, and a baseline fitted on
+  // somebody else's picks is not the bar either of them actually faced.
+  scoreAgainstBaseline(out, graded);
+  const bucket = (key) => {
+    const rows = {};
+    for (const p of graded) (rows[key(p)] ||= []).push(p);
+    return rows;
+  };
+  const promptRows = bucket((p) => p.promptVersion || 'psyche (untagged)');
+  for (const [k, v] of Object.entries(out.byPrompt)) scoreAgainstBaseline(v, promptRows[k] || []);
+  const modelRows = bucket((p) => modelName(p.judgeModel));
+  for (const [k, v] of Object.entries(out.byModel)) scoreAgainstBaseline(v, modelRows[k] || []);
   out.bands = Object.values(bandMap)
     .sort((a, b) => a.lo - b.lo)
     .map((b) => ({ band: `${b.lo}-${b.lo + 10}%`, n: b.n, predicted: b.predSum / b.n, actual: b.hits / b.n }));
@@ -464,8 +529,11 @@ function renderHTML(a) {
       const sign = over >= 0 ? '+' : '';
       return `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${pct(v.predicted)}</td><td>${pct(v.actual)}</td>
         <td style="color:${col}">${sign}${(over * 100).toFixed(1)}pts</td><td>${v.brier.toFixed(3)}</td>
+        <td>${v.baseline == null ? '<span class="mut">—</span>' : v.baseline.toFixed(4)}</td>
+        <td style="color:${v.beatsBaseline == null ? 'var(--dim)' : v.beatsBaseline ? 'var(--grn)' : 'var(--red)'}">${
+          v.baselineDelta == null ? '—' : (v.baselineDelta > 0 ? '+' : '') + v.baselineDelta.toFixed(4)}</td>
         <td>${v.n < 50 ? '<span style="color:var(--amb)">early</span>' : ''}</td></tr>`;
-    }).join('') || '<tr><td colspan="7" class="mut">No graded picks yet.</td></tr>';
+    }).join('') || '<tr><td colspan="9" class="mut">No graded picks yet.</td></tr>';
 
   // Prop types, worst total error first. Below ~20 graded a row is mostly noise,
   // so it is shown greyed rather than dropped — a prop type the engine rates
@@ -503,8 +571,11 @@ function renderHTML(a) {
     const col = v.n < 50 ? 'var(--dim)' : Math.abs(over) <= 0.04 ? 'var(--grn)' : Math.abs(over) <= 0.10 ? 'var(--amb)' : 'var(--red)';
     return `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${pct(v.predicted)}</td><td>${pct(v.actual)}</td>
       <td style="color:${col}">${sign}${(over * 100).toFixed(1)}pts</td><td>${v.brier.toFixed(3)}</td>
+      <td>${v.baseline == null ? '<span class="mut">—</span>' : v.baseline.toFixed(4)}</td>
+      <td style="color:${v.beatsBaseline == null ? 'var(--dim)' : v.beatsBaseline ? 'var(--grn)' : 'var(--red)'}">${
+        v.baselineDelta == null ? '—' : (v.baselineDelta > 0 ? '+' : '') + v.baselineDelta.toFixed(4)}</td>
       <td>${v.n < 50 ? '<span style="color:var(--amb)">early</span>' : ''}</td></tr>`;
-  }).join('') || '<tr><td colspan="7" class="mut">No graded picks yet.</td></tr>';
+  }).join('') || '<tr><td colspan="9" class="mut">No graded picks yet.</td></tr>';
 
   const runRows = Object.entries(a.spend?.perRun || {}).sort((x, y) => y[1].usd - x[1].usd).map(([k, v]) =>
     `<tr><td>${esc(k.replace(/· (\S+)$/, (_, id) => '· ' + modelName(id)))}</td><td>${v.runs}</td><td>$${v.usdPerRun.toFixed(3)}</td>
@@ -589,7 +660,26 @@ function renderHTML(a) {
     ${card(record, 'plays+leans W–L', plWin != null ? pct(plWin) + ' win rate' : '')}
     ${card(pct(a.overall), 'over rate', 'all graded picks')}
     ${card(a.brier == null ? '—' : a.brier.toFixed(3) + (early ? ' <span style="font-size:11px;color:var(--amb)">n=' + n + '</span>' : ''), 'brier ↓', early ? 'early — mostly noise' : 'lower is better')}
+    ${card(
+      a.baseline == null ? '—'
+        : `<span style="color:${a.beatsBaseline ? 'var(--grn)' : 'var(--red)'}">${a.baseline.toFixed(4)}</span>`,
+      'tier-only baseline',
+      a.baselineDelta == null ? 'not enough graded picks'
+        : a.beatsBaseline
+          ? `judge ahead by ${Math.abs(a.baselineDelta).toFixed(4)}`
+          : `judge BEHIND by ${a.baselineDelta.toFixed(4)}`)}
   </div>
+  <div class="callout${a.beatsBaseline === false ? ' amber' : ''}">The <b>tier-only baseline</b> is what a three-row
+    lookup table would have scored on these exact picks — output the tier's own base rate for every pick in that
+    tier, and use nothing else. No player, no matchup, no model. It is the cheapest thing that could possibly
+    work, and it is the bar the judge has to clear to justify existing.
+    ${a.beatsBaseline === false
+      ? '<b>The judge is currently behind it.</b> Every point of the model\'s reasoning is, so far, costing accuracy rather than adding it — so the first job of any change is to close that gap, not to look clever.'
+      : a.beatsBaseline === true
+        ? 'The judge is ahead of it, which is the minimum condition for the model earning its cost.'
+        : ''}
+    Fitted on the rows it is scored against, which hands it hindsight and makes it harder to beat — the right
+    direction for a bar.</div>
   ${stateNote}
 
   <h2>By engine <a href="/api/calibration?format=json">json ↗</a></h2>
@@ -606,7 +696,7 @@ function renderHTML(a) {
   </tbody></table></div>
 
   <h2>Judge version — head to head</h2>
-  <div class="wrap"><table><thead><tr><th>judge</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th></th></tr></thead><tbody>${promptRows}</tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>judge</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${promptRows}</tbody></table></div>
   <div class="callout"><b>Psyche</b> is the original judge; <b>Aphrodite</b> is the refinement. "Claimed" is the
     average probability the version put on its picks, "actual" is how often they hit. The gap between them is the
     honest measure of whether the percentages mean anything — a judge claiming 68% on legs that hit 52% is
@@ -630,7 +720,7 @@ function renderHTML(a) {
     instructions too.</div>
 
   <h2>Model — head to head</h2>
-  <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>
   <div class="callout">Scored exactly like the judge versions, and for the same reason: the judge runs on Opus
     because it always has, not because anything cheaper was tried and lost. Sonnet costs 2.5x less per run and
     Haiku 5x, so a cheaper model that scores the same is not a small saving — it is several times more graded
