@@ -201,6 +201,71 @@ Phase 2 needs settled games and cannot be replayed. Phase 1 accelerates the
 BEHAVIOURAL loop to minutes; the OUTCOME loop is still two weeks, and Phase 1
 results must not be read as standing in for it.
 
+### Phase 1 result (2026-08-25, snapshot 9391fb8e, k=5): near-chance replication
+
+**Verdict: standouts are near the chance baseline. Do not proceed to Phase 2
+on this evidence, and do not touch the prompt in response — this is a
+measurement, not a fix.**
+
+| | |
+|---|---|
+| standout set sizes across the 5 runs | 31, 3, 8, 18, 2 (out of 60) |
+| pairwise Jaccard overlap (10 pairs) | 0, 0.06, 0.06, 0.08, 0.18, 0.18, 0.22, 0.22, 0.25, **0.67** |
+| mean pairwise Jaccard | 0.176 |
+| expected under independent random flagging (same set sizes) | 0.115 |
+| ratio | 1.52× chance (the reporting threshold for "real signal" was 2×) |
+| flagged in exactly 1 of 5 runs / 2 / 3 / 4 / 5 | 27 props / 12 / 1 / 2 / **0** |
+| standout move distribution (n=62 flagged instances) | mean 0.081, min **0**, max 0.48 |
+| top-3 / top-5 / top-10 churn | 80% / 68% / 49% (Aphrodite: 67% / — / 41%) |
+| tierGap across the 5 runs | 0.44-0.47 (Aphrodite original: 0.44) |
+| per-tier mean vs measured rate | goblin ±0.01-0.02, standard +0.02-0.05, demon +0.01-0.06 |
+| Spearman vs the real Aphrodite original | 0.85-0.93 |
+
+**No prop was flagged standout in all 5 runs.** The set sizes alone contradict
+THEMIS's own stated expectation ("two to five out of forty") — one run flagged
+31 of 60, another flagged 2. **The move distribution is the sharpest finding:**
+mean move for a FLAGGED standout is 0.081, below the prompt's own 0.10 floor,
+and the minimum is 0 — some props were flagged `standout: true` with no
+displacement from the tier rate at all. That is not "noise in a real signal",
+it is the judge not reliably following the instruction it was just given,
+structurally the same failure mode item 5 found in `cleared` fill: an
+instruction that depends on the model checking its own work is not being
+checked reliably.
+
+**Calibration survived.** tierGap stayed in the same 0.44-0.48 band Aphrodite
+itself showed on this snapshot, and per-tier means sit within a few points of
+the measured rates across all 5 runs — THEMIS did not break the thing item 5
+said would end the experiment regardless of what the standouts did.
+
+**Top-3/top-5 churn got WORSE, not better** (80%/68% vs Aphrodite's 67%),
+though this number carries a real confound: one of the five runs (`run-2`)
+issued a live web search instead of staying on the replayed context — see
+below. That run's disagreement with the other four is genuine new information,
+not pure sampling noise, and it is folded into the churn/Jaccard numbers
+above without being separated out. The qualitative conclusion (near-chance
+replication) does not turn on this one run, but the exact churn percentages
+should be read as having one contaminated leg among five.
+
+**A live search leaked through the replay.** `run-2` issued 1 live web search
+despite the prefilled-turn design meant to keep replays offline (`buildRequest`
+still declares the tool so the prefilled blocks validate — see
+replay-lib.js — and the model is not FORBIDDEN from calling it again, only
+given no obvious reason to). This is the first time this has been observed
+across G, I, J and this run; it did not happen in the 10 total replays from
+item G. Worth watching, not yet worth changing anything about — one occurrence
+in 15 replays is not a pattern.
+
+**Per the pre-registered interpretation:** this is the "near chance overlap"
+branch — "the judge is generating noise with confident wording, and that is
+the answer to the original question." The original question was whether tier
+anchoring, specifically, was the cause of Aphrodite's top-3 churn. This result
+does not confirm that: replacing the anchoring instruction did not produce a
+more consistent top-of-board ranking, and by the crudest measure (top-3 churn)
+made it slightly worse. What it does show is a SEPARATE, real problem — the
+judge cannot reliably execute a "flag decisively-moved props" instruction —
+which is worth knowing regardless of what it says about the original tier-
+anchoring hypothesis.
+
 ## Why AUC and not lift
 
 `lift` is a median half-split, which keeps only which side of the middle each
