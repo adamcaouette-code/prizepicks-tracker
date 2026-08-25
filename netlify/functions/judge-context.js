@@ -44,27 +44,71 @@ const RETAIN_DAYS = Number(process.env.JUDGE_CONTEXT_DAYS) || 30;
 
 export const keyFor = (day, runId) => `${day}/${runId}`;
 
-/** Pull the web_search_tool_result blocks out of an Anthropic response. */
+/**
+ * Pull the search turn out of an Anthropic response — BOTH halves of it.
+ *
+ * A web search leaves two kinds of block in the assistant turn: the
+ * `server_tool_use` that issued the query, and the `web_search_tool_result` that
+ * came back. Only the results used to be kept, which was enough to READ what the
+ * judge saw and not enough to replay it: reconstructing the assistant turn for a
+ * replay needs the tool_use block its result answers, or the turn is malformed.
+ * Kept in response order, because the turn has to be rebuilt in that order.
+ */
 export function searchBlocks(content) {
   return (content || [])
-    .filter((b) => b && typeof b.type === 'string' && b.type.includes('web_search'))
-    .map((b) => ({ type: b.type, tool_use_id: b.tool_use_id, content: b.content ?? b.input ?? null }));
+    .filter((b) => b && typeof b.type === 'string'
+      && (b.type.includes('web_search') || (b.type === 'server_tool_use' && b.name === 'web_search')))
+    .map((b) => (b.type === 'server_tool_use'
+      ? { type: b.type, id: b.id, name: b.name, input: b.input ?? null }
+      : { type: b.type, tool_use_id: b.tool_use_id, content: b.content ?? b.input ?? null }));
 }
+
+/** The id that ties a server_tool_use to the web_search_tool_result answering it. */
+const pairId = (b) => b.tool_use_id || b.id || null;
 
 /**
  * Trim search results to fit the cap, oldest-last, and say so.
  * Truncating silently would produce replays that look faithful and are not.
  */
 export function capSearch(blocks) {
+  // Sized in PAIRS. A result kept without the tool_use it answers — or the other
+  // way round — is a malformed assistant turn, so half a search is worth nothing
+  // and storing it only makes the truncation harder to read.
+  const groups = new Map();
+  const order = [];
+  for (const b of blocks) {
+    const id = pairId(b) || `anon-${order.length}`;
+    if (!groups.has(id)) { groups.set(id, []); order.push(id); }
+    groups.get(id).push(b);
+  }
   const out = [];
   let bytes = 0, dropped = 0;
-  for (const b of blocks) {
-    const size = JSON.stringify(b).length;
-    if (bytes + size > MAX_SEARCH_BYTES) { dropped++; continue; }
-    bytes += size; out.push(b);
+  for (const id of order) {
+    const pair = groups.get(id);
+    const size = JSON.stringify(pair).length;
+    if (bytes + size > MAX_SEARCH_BYTES) { dropped += pair.length; continue; }
+    bytes += size; out.push(...pair);
   }
   return { blocks: out, bytes, dropped };
 }
+
+/**
+ * Can this snapshot reproduce the call it recorded?
+ *
+ * A snapshot that lost search blocks to the cap CANNOT. Replaying it would send
+ * the model less context than the original call had, and every difference in the
+ * output would be attributed to whatever the replay was testing. That is a
+ * measurement that reads as a finding, which is worse than no measurement.
+ *
+ * Written into the snapshot at save time so readers do not each re-derive it,
+ * and re-derived here anyway for snapshots written before the field existed —
+ * same discipline as `psyche (untagged)` in calibration.
+ */
+export const isReplayable = (snap) => !!snap
+  && snap.replayable !== false
+  && !snap.searchTruncated
+  && typeof snap.system === 'string'
+  && typeof snap.userContent === 'string';
 
 /**
  * Best-effort, exactly like recordCost: a snapshot that fails to write must
@@ -74,7 +118,9 @@ export function capSearch(blocks) {
 export async function saveContext(snap) {
   try {
     const day = (snap.at || new Date().toISOString()).slice(0, 10);
-    const gz = gzipSync(Buffer.from(JSON.stringify(snap), 'utf8')).toString('base64');
+    // Stamped at save time, in the one place that knows what was dropped.
+    const record = { ...snap, replayable: !snap.searchTruncated };
+    const gz = gzipSync(Buffer.from(JSON.stringify(record), 'utf8')).toString('base64');
     await STORE().setJSON(keyFor(day, snap.runId), { v: 1, gz });
     // Pruning rides along with the write rather than needing its own schedule.
     // Failing to prune is harmless; failing to write is what matters, so it is
@@ -138,6 +184,8 @@ export const handler = async (event) => {
           // GAME and applies it to every player in it.
           search: snap.search,
           searchTruncated: snap.searchTruncated,
+          // Stated, not implied: a truncated snapshot is not a replayable one.
+          replayable: isReplayable(snap),
         }, null, 2) };
       }
       return { statusCode: 404, headers: HEADERS, body: JSON.stringify({ error: 'no snapshot carries that projectionId', scanned: Math.min(keys.length, Number(q.scan) || 60) }) };

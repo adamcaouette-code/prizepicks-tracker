@@ -33,7 +33,13 @@ const PICKS = ROWS.map((r, i) => ({ player: r.player, stat: 'Hits', line: r.line
 
 // A response carrying live search results, which is the part that cannot be
 // reconstructed later.
+// BOTH halves of the search turn, in the order the API returns them: the query
+// the model issued and the result that came back. Rebuilding this turn for a
+// replay needs both — a result without its tool_use is a malformed assistant
+// message, so keeping only the results made the snapshot readable but not
+// replayable.
 const SEARCH = [
+  { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'Reds lineup today' } },
   { type: 'web_search_tool_result', tool_use_id: 'srv_1',
     content: [{ type: 'web_search_result', title: 'CIN lineup', url: 'https://x/1', page_age: null,
       encrypted_content: 'CONFIRMED-LINEUP-TEXT-FOR-CIN' }] },
@@ -59,6 +65,9 @@ async function run(body = {}) {
 
 export default async function ({ t }) {
   const { sent } = await run();
+  // parsePicks is the parser production uses; the replay has to use the same one
+  // or a formatting difference reads as a probability difference.
+  const bfb = await loadFn('bet-finder-background.js');
 
   // ---- it was written, under a date-prefixed key ------------------------
   const day = new Date().toISOString().slice(0, 10);
@@ -89,6 +98,20 @@ export default async function ({ t }) {
   t.ok('the live search results are retained verbatim',
     JSON.stringify(got.search).includes('CONFIRMED-LINEUP-TEXT-FOR-CIN'));
   t.eq('...and nothing was dropped to fit the cap', got.searchTruncated, 0);
+  t.eq('...so the snapshot says it can be replayed', got.replayable, true);
+  // The query as well as its answer, in the order the turn was built.
+  t.eq('the search turn is stored whole, both halves in order',
+    snap.search.map((b) => b.type), ['server_tool_use', 'web_search_tool_result']);
+  t.eq('...with the tool_use id that ties them together',
+    [snap.search[0].id, snap.search[1].tool_use_id], ['srv_1', 'srv_1']);
+  t.eq('...and the query it issued', snap.search[0].input.query, 'Reds lineup today');
+
+  // What the model SAID, kept verbatim beside what it was told. A replay
+  // compared against the pick log would be comparing raw output to rows that
+  // have been through attachSource, the side logic and verdict derivation.
+  t.eq('the response text is stored verbatim', snap.responseText, JSON.stringify({ picks: PICKS }));
+  t.eq('...and re-parses to the probabilities the model actually returned',
+    bfb.parsePicks(snap.responseText).map((p) => p.prob), PICKS.map((p) => p.prob));
 
   // Every candidate is indexed, not only the ones the judge returned picks for.
   t.eq('every prop sent is retrievable', Object.keys(snap.props).sort(), ['pp-0', 'pp-1']);
@@ -112,6 +135,36 @@ export default async function ({ t }) {
   t.ok('an oversized search payload is trimmed', capped.blocks.length < big.length);
   t.ok('...and says how many blocks it dropped', capped.dropped > 0, String(capped.dropped));
   t.ok('...staying under the cap', capped.bytes <= 800_000, String(capped.bytes));
+
+  // ---- and a trimmed snapshot is not a replayable one --------------------
+  // Replaying with less context than the original call received attributes the
+  // difference to whatever the replay was testing. That is a measurement that
+  // reads as a finding, so the harness has to be able to refuse it.
+  t.eq('a snapshot that hit the cap is marked unreplayable',
+    ctx.isReplayable({ system: 's', userContent: 'u', searchTruncated: 3, replayable: false }), false);
+  t.eq('...and one that did not is replayable',
+    ctx.isReplayable({ system: 's', userContent: 'u', searchTruncated: 0, replayable: true }), true);
+  // Snapshots written before the flag existed are judged on what they carry,
+  // the same way calibration handles psyche (untagged).
+  t.eq('a snapshot from before the flag is judged on its truncation count',
+    ctx.isReplayable({ system: 's', userContent: 'u', searchTruncated: 0 }), true);
+  t.eq('...and refused on that count alone when it lost blocks',
+    ctx.isReplayable({ system: 's', userContent: 'u', searchTruncated: 3 }), false);
+  t.eq('...and refused when it is missing the prompt it would have to resend',
+    ctx.isReplayable({ userContent: 'u', searchTruncated: 0 }), false);
+
+  // The cap drops PAIRS. Half a search — a result with no query, or a query
+  // with no result — cannot be rebuilt into a valid assistant turn.
+  const pairs = [];
+  for (let i = 0; i < 40; i++) {
+    pairs.push({ type: 'server_tool_use', id: `s${i}`, name: 'web_search', input: { query: 'q' } });
+    pairs.push({ type: 'web_search_tool_result', tool_use_id: `s${i}`, content: [{ encrypted_content: 'x'.repeat(50_000) }] });
+  }
+  const cappedPairs = ctx.capSearch(pairs);
+  const ids = cappedPairs.blocks.filter((b) => b.type === 'server_tool_use').map((b) => b.id);
+  const answered = cappedPairs.blocks.filter((b) => b.type === 'web_search_tool_result').map((b) => b.tool_use_id);
+  t.eq('every query kept still has its answer', ids, answered);
+  t.eq('...and the dropped count is in blocks, not pairs', cappedPairs.dropped % 2, 0);
 
   // ---- a failed snapshot must never take the run down --------------------
   // A missing snapshot costs one replay. A thrown error costs the slate.
@@ -140,6 +193,9 @@ export default async function ({ t }) {
 
   // ---- search blocks are picked out of a mixed response -----------------
   t.eq('only search blocks are kept, not the model text',
-    ctx.searchBlocks([{ type: 'text', text: 'hello' }, ...SEARCH]).length, 1);
+    ctx.searchBlocks([{ type: 'text', text: 'hello' }, ...SEARCH]).map((b) => b.type),
+    ['server_tool_use', 'web_search_tool_result']);
+  t.eq('...and a server tool that is not web search is left out too',
+    ctx.searchBlocks([{ type: 'server_tool_use', id: 'c1', name: 'code_execution', input: {} }]).length, 0);
   t.eq('an empty response yields none', ctx.searchBlocks(undefined).length, 0);
 }

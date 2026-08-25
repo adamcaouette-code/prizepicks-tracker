@@ -286,8 +286,8 @@ export const MUTATIONS = [
 
   { id: 'jc-not-compressed', suite: 'judge-context', file: 'netlify/functions/judge-context.js',
     what: 'snapshots are stored uncompressed, where search text dominates the size',
-    from: "    const gz = gzipSync(Buffer.from(JSON.stringify(snap), 'utf8')).toString('base64');",
-    to: "    const gz = Buffer.from(JSON.stringify(snap), 'utf8').toString('base64');" },
+    from: "    const gz = gzipSync(Buffer.from(JSON.stringify(record), 'utf8')).toString('base64');",
+    to: "    const gz = Buffer.from(JSON.stringify(record), 'utf8').toString('base64');" },
 
   { id: 'jc-prune-noop', suite: 'judge-context', file: 'netlify/functions/judge-context.js',
     what: 'pruning counts what it would delete and deletes nothing',
@@ -350,6 +350,46 @@ export const MUTATIONS = [
   // ---- fantasy ------------------------------------------------------------
   { id: 'fantasy-result-vanishes', suite: 'fantasy-check', file: 'netlify/functions/fantasy-check-background.js',
     what: 'the fantasy check computes a result and stores nothing',
-    from: '      await s.setJSON(RESULT_KEY, { ...state, at: new Date().toISOString() });',
+    from: "      await s.setJSON(RESULT_KEY, { ...state, at: new Date().toISOString() });",
     to: '      await Promise.resolve(state);' },
+
+  // ======================================================================
+  // The replay harness itself (Task 3). Its A/A verdict is the gate every
+  // variant result will pass through, so an assertion that cannot catch it
+  // being wrong is worse than no gate at all.
+  // ======================================================================
+  { id: 'replay-truncated-allowed', suite: 'replay', file: 'netlify/functions/judge-context.js',
+    what: 'a snapshot that hit the search cap is replayed anyway, with less context than the original',
+    from: '  && !snap.searchTruncated',
+    to: '  && true' },
+
+  { id: 'replay-searches-live', suite: 'replay', file: 'scripts/replay.mjs',
+    what: 'the replay re-runs the searches live instead of replaying the stored ones',
+    from: "  if (snap.search?.length) messages.push({ role: 'assistant', content: snap.search });",
+    to: '  if (false) messages.push({});' },
+
+  { id: 'replay-floor-vs-original', suite: 'replay', file: 'scripts/replay.mjs',
+    what: 'the noise floor is measured against the original, so harness error is counted as noise',
+    from: '  const floor = vsEachOther.length ? mean(vsEachOther.map((c) => c.meanAbsDiff)) : null;',
+    to: '  const floor = vsOriginal.length ? mean(vsOriginal.map((c) => c.meanAbsDiff)) : null;' },
+
+  { id: 'replay-fidelity-always-ok', suite: 'replay', file: 'scripts/replay.mjs',
+    what: 'the fidelity gate passes everything',
+    from: "    verdict: floor > 0 && toOriginal / floor > 2",
+    to: '    verdict: false' },
+
+  { id: 'replay-k-formula', suite: 'replay', file: 'scripts/replay.mjs',
+    what: 'the runs-per-arm formula is off by the factor that accounts for two arms',
+    from: '  return Math.max(1, Math.ceil(8 * (sdOfDiff / target) ** 2));',
+    to: '  return Math.max(1, Math.ceil(4 * (sdOfDiff / target) ** 2));' },
+
+  { id: 'replay-live-search-unreported', suite: 'replay', file: 'scripts/replay.mjs',
+    what: 'a replay that went and searched again is averaged in silently',
+    from: '    if (issued) warnings.push(`replay-${i + 1} issued ${issued} live search(es) — not an offline replay`);',
+    to: '    if (false) warnings.push(String(issued));' },
+
+  { id: 'replay-missing-props-folded', suite: 'replay', file: 'scripts/replay.mjs',
+    what: 'a prop one run never answered is compared anyway, as a difference from undefined',
+    from: '  const shared = [...A.keys()].filter((k) => B.has(k));',
+    to: '  const shared = [...A.keys()];' },
 ];

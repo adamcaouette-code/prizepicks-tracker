@@ -1157,6 +1157,11 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     search: capped.blocks,
     searchBytes: capped.bytes,
     searchTruncated: capped.dropped > 0 ? capped.dropped : 0,
+    // What the model SAID, verbatim. Without it a replay has nothing to compare
+    // against except the pick log — and those rows have already been through
+    // attachSource, the side logic and verdict derivation, so differences from
+    // the pipeline would be scored as differences from the model.
+    responseText: (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join(''),
     usage: data.usage || null,
   }).catch(() => {});
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
@@ -2064,7 +2069,7 @@ export {
   fetchTeamRecords, resolveRecords, fetchTeamFullNames,
   fetchWinProbs, fetchOppDefense, normStat, normKey, americanToProb,
   recordCost, PRICES,
-  filterToday, findCandidates, positionAllows, propIdentity,   // pure helpers, exported for tests
+  filterToday, findCandidates, positionAllows, propIdentity, parsePicks,   // pure helpers, exported for tests
   attachSides, selectLegs, sideVerdictFor, markVoids,
   sizeParlay,                                                  // priced against the real tables — see tablesForSlip
 };
