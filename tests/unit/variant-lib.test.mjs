@@ -126,4 +126,24 @@ export default async function ({ t }) {
   t.eq('...while the payload is carried over unchanged', sentReq.messages[0].content, 'PAYLOAD');
   t.eq('none of the k runs is privileged as "original"', out.runs.map((r) => r.label), ['run-1', 'run-2', 'run-3']);
   t.eq('the variant name rides along in the result', out.variant, 'testvariant');
+
+  // ---- runVariant excludes a run that broke offline replay -----------------
+  // This is the exact failure THEMIS hit live: run-2 issued a search instead
+  // of using the replayed context. It must not become a silent data point in
+  // standoutReplication/tierCalibration/rankCorrelation — it measures the
+  // harness breaking, not the variant.
+  let n2 = 0;
+  const withLeak = await runVariant(snap, fakeVariant, { k: 3, key: 'x', call: async () => {
+    n2++;
+    const okContent = [{ type: 'text', text: JSON.stringify({ picks: [{ player: 'A', stat: 'Hits', line: 0.5, prob: 0.6 }] }) }];
+    const leakedContent = [
+      { type: 'server_tool_use', id: 's1', name: 'web_search', input: { query: 'q' } },
+      ...okContent,
+    ];
+    return { content: n2 === 2 ? leakedContent : okContent, usage: {} };
+  } });
+  t.eq('the leaking run is dropped from runs', withLeak.runs.map((r) => r.label), ['run-1', 'run-3']);
+  t.eq('...named in excluded, with why', withLeak.excluded, [{ label: 'run-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
+  t.ok('...and warned about too', /run-2 issued 1 live search/.test(withLeak.warnings[0] || ''));
+  t.eq('kRequested still reflects what was actually asked for', withLeak.kRequested, 3);
 }

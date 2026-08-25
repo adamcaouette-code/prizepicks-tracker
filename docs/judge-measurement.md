@@ -246,14 +246,31 @@ above without being separated out. The qualitative conclusion (near-chance
 replication) does not turn on this one run, but the exact churn percentages
 should be read as having one contaminated leg among five.
 
-**A live search leaked through the replay.** `run-2` issued 1 live web search
-despite the prefilled-turn design meant to keep replays offline (`buildRequest`
-still declares the tool so the prefilled blocks validate — see
-replay-lib.js — and the model is not FORBIDDEN from calling it again, only
-given no obvious reason to). This is the first time this has been observed
-across G, I, J and this run; it did not happen in the 10 total replays from
-item G. Worth watching, not yet worth changing anything about — one occurrence
-in 15 replays is not a pattern.
+**A live search leaked through the replay — since fixed.** `run-2` issued 1
+live web search despite the prefilled-turn design meant to keep replays
+offline. The cause: `buildRequest` declared the tool (required for the
+prefilled blocks to validate structurally) but never forbade using it again —
+a prefilled assistant turn is a CONTINUATION, and the model is free to decide
+mid-continuation that it wants more, especially under a prompt like THEMIS's
+that explicitly asks for a named fact before flagging a standout. Declaring a
+tool makes it available; it does not make it optional.
+
+Fixed by adding `tool_choice: { type: 'none' }` to the replay request — the
+tool stays declared (so the historical blocks still validate) while a NEW
+invocation is structurally impossible, not merely discouraged. As a backstop
+in case the API ever behaves unexpectedly anyway, `replay()` and `runVariant()`
+now EXCLUDE any run that still triggers `searchesIssued()` from every
+aggregate number (behaviour, pairwise, standout replication, tier calibration)
+rather than folding it in with only a warning — which is what let this
+specific run silently widen the THEMIS churn/Jaccard figures above in the
+first place. The report separates `k` (clean runs actually analysed) from
+`kRequested`, and names each exclusion with its reason.
+
+84/84 mutations, including two new ones for the exclusion behaviour itself
+(`replay-contaminated-not-excluded`, `variant-contaminated-not-excluded`).
+Item G's fidelity guarantee — replay conditions match the original, or the run
+is refused/excluded rather than silently degraded — now holds at the request
+level, not just as a documented intent.
 
 **Per the pre-registered interpretation:** this is the "near chance overlap"
 branch — "the judge is generating noise with confident wording, and that is

@@ -114,6 +114,14 @@ export default async function ({ t }) {
   t.ok('...and it is well-defined, since both runs rank Alpha above Beta',
     result.result.vsOriginal.every((v) => v.spearman === 1));
 
+  // rawRuns: the real Aphrodite original plus every THEMIS run, with tier
+  // re-attached — the judge's own output never carries one. Item K's whole
+  // computation depends on this existing; it didn't, the first time it ran.
+  t.eq('rawRuns includes the baseline original ahead of the k variant runs',
+    result.result.rawRuns.map((r) => r.label), ['aphrodite', 'run-1', 'run-2', 'run-3']);
+  t.eq('...with tier resolved from the snapshot, not left blank',
+    result.result.rawRuns[0].picks.map((p) => p.tier).sort(), ['demon', 'goblin']);
+
   // ---- the status endpoint reads back what the background job wrote -------
   // Checked here, before the next reset() wipes this job out of the store.
   const st = await loadFn('judge-variant-status.js');
@@ -154,4 +162,29 @@ export default async function ({ t }) {
   } finally { boundMock.restore(); }
   t.eq('an oversized k is capped rather than trusted verbatim', calls3, 10);
   t.eq('the report reflects the capped count', bounded.result.k, 10);
+
+  // ---- a run that leaks a live search is excluded end to end ---------------
+  reset();
+  await seedRealSnapshot('v-run-4');
+  let n4 = 0;
+  const leakMock = mockFetch([['api.anthropic.com', async () => {
+    n4++;
+    const picks = [{ player: 'Alpha', stat: 'Hits', line: 0.5, prob: 0.7, standout: false },
+      { player: 'Beta', stat: 'Hits', line: 1.5, prob: 0.2, standout: false }];
+    const ok = [{ type: 'text', text: JSON.stringify({ picks }) }];
+    const leaked = [{ type: 'server_tool_use', id: 's1', name: 'web_search', input: { query: 'q' } }, ...ok];
+    return { content: n4 === 2 ? leaked : ok, usage: {} };
+  }]]);
+  let leaky;
+  try {
+    const bg = await loadFn('judge-variant-background.js');
+    await bg.handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'v-4', runId: 'v-run-4', variant: 'themis', k: 3 }) });
+    leaky = await pollJob('replay-jobs', 'v-4');
+  } finally { leakMock.restore(); }
+  t.eq('k reflects only the clean runs, not what was requested', leaky.result.k, 2);
+  t.eq('kRequested keeps the original ask', leaky.result.kRequested, 3);
+  t.eq('the excluded run is named end to end, all the way to the stored job', leaky.result.excluded,
+    [{ label: 'run-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
+  t.eq('pairwise comparisons only cover the 2 clean runs', leaky.result.pairwise.length, 1);
+  t.eq('tier calibration is reported for only the clean runs', leaky.result.tierCalibration.length, 2);
 }

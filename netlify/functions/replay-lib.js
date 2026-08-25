@@ -57,9 +57,20 @@ const API = 'https://api.anthropic.com/v1/messages';
  * call: search is live, the text moves, and the whole reason the snapshot exists
  * is that tomorrow's answer is not today's.
  *
- * The tool stays DECLARED even though it should never fire. Its block types have
- * to validate for the prefilled turn to be accepted, and dropping it would also
- * change the system-side tool definitions the original call carried.
+ * The tool stays DECLARED — its block types have to validate for the prefilled
+ * turn to be accepted, and dropping the declaration would also change the
+ * system-side tool definitions the original call carried. But declaring a tool
+ * only makes it available; it does not forbid using it, and a prefilled
+ * assistant turn is a CONTINUATION — the model picks up after the search
+ * results and is free to decide it wants more, especially under a prompt (like
+ * THEMIS's) that explicitly asks for a specific named fact before flagging a
+ * standout. That happened: one THEMIS replay issued a live search mid-item-K
+ * data collection, silently reading text the original call never saw. Comments
+ * are not a safeguard. tool_choice: 'none' is: it keeps the tool schema
+ * declared (so the historical blocks above still validate) while making a NEW
+ * invocation of it structurally impossible for this call, not merely
+ * discouraged. Search staying offline during a replay is now enforced by the
+ * API request itself.
  */
 export function buildRequest(snap) {
   const messages = [{ role: 'user', content: snap.userContent }];
@@ -69,11 +80,22 @@ export function buildRequest(snap) {
     max_tokens: 16000,
     system: snap.system,
     tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: snap.maxSearches || 1 }],
+    tool_choice: { type: 'none' },
     messages,
   };
 }
 
-/** Whether a replay actually stayed offline. A new search means it is not a replay. */
+/**
+ * Whether a replay actually stayed offline. A new search means it is not a
+ * replay — it read text the original call never saw.
+ *
+ * With `tool_choice: 'none'` on the request (see buildRequest), this should
+ * now be structurally impossible: a non-zero result here means the API
+ * behaved differently than its documented contract, not that the model
+ * "chose" to search. Kept as a hard assertion, not a soft note — see replay()
+ * and runVariant(), which now EXCLUDE any run this fires on from every
+ * aggregate number rather than folding contaminated data in silently.
+ */
 export const searchesIssued = (content) =>
   (content || []).filter((b) => b?.type === 'server_tool_use' && b.name === 'web_search').length;
 
@@ -283,14 +305,24 @@ export async function replay(snap, { k = 3, key = process.env.ANTHROPIC_API_KEY,
     throw new Error(`snapshot ${snap.runId} carries no parseable responseText — nothing to compare a replay against`);
   }
   const warnings = [];
+  const excluded = [];
   for (let i = 0; i < k; i++) {
     const data = await call(req, key);
     const issued = searchesIssued(data.content);
-    // A replay that goes and searches again has read text the original never
-    // saw. Reported rather than silently averaged in.
-    if (issued) warnings.push(`replay-${i + 1} issued ${issued} live search(es) — not an offline replay`);
     const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-    runs.push({ label: `replay-${i + 1}`, picks: parsePicks(text), usage: data.usage || null });
+    const run = { label: `replay-${i + 1}`, picks: parsePicks(text), usage: data.usage || null };
+    if (issued) {
+      // A run that went and searched again read text the original never saw —
+      // that is a fidelity break in THIS run, not a data point about the
+      // judge's noise. Excluded from every aggregate below, not folded in
+      // silently: one contaminated run pulled into a noise-floor estimate
+      // reads as extra variance that has nothing to do with the judge.
+      const reason = `issued ${issued} live search(es) — not an offline replay`;
+      warnings.push(`${run.label} ${reason}`);
+      excluded.push({ label: run.label, reason });
+      continue;
+    }
+    runs.push(run);
   }
   const tiers = {};
   for (const e of Object.values(snap.props || {})) {
@@ -301,8 +333,26 @@ export async function replay(snap, { k = 3, key = process.env.ANTHROPIC_API_KEY,
   report.runId = snap.runId;
   report.model = snap.model;
   report.promptVersion = snap.promptVersion;
+  report.kRequested = k;
+  report.excluded = excluded;
   report.warnings = warnings;
   report.recommendedK = report.noiseFloor?.sdOfDiff
     ? { target: 0.02, k: recommendK(report.noiseFloor.sdOfDiff, 0.02) } : null;
+  // The aggregates above are the whole point of THIS report, but every one of
+  // them is computed by throwing away which PROP each number belonged to —
+  // that is fine for "how much did runs disagree overall" and wrong for "does
+  // the judge have a stable per-prop opinion beneath the noise" (item K: a
+  // per-prop residual against the tier rate, correlated across runs). That
+  // question needed re-deriving raw picks from a fresh run once already,
+  // because this field did not exist. It exists now so it does not again —
+  // kept small (player/stat/line/prob/tier per pick) rather than the full API
+  // response.
+  report.rawRuns = runs.map((r) => ({
+    label: r.label,
+    picks: r.picks.map((p) => ({
+      player: p.player, stat: p.stat, line: p.line, prob: Number(p.prob),
+      tier: tiers[keyOf(p)] || p.oddsType || p.tier || 'unknown',
+    })),
+  }));
   return report;
 }

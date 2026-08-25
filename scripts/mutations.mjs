@@ -384,9 +384,9 @@ export const MUTATIONS = [
     to: '  return Math.max(1, Math.ceil(4 * (sdOfDiff / target) ** 2));' },
 
   { id: 'replay-live-search-unreported', suite: 'replay', file: 'netlify/functions/replay-lib.js',
-    what: 'a replay that went and searched again is averaged in silently',
-    from: '    if (issued) warnings.push(`replay-${i + 1} issued ${issued} live search(es) — not an offline replay`);',
-    to: '    if (false) warnings.push(String(issued));' },
+    what: 'a replay that went and searched again is neither warned about nor excluded',
+    from: '    if (issued) {',
+    to: '    if (false) {' },
 
   { id: 'replay-missing-props-folded', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'a prop one run never answered is compared anyway, as a difference from undefined',
@@ -480,4 +480,48 @@ export const MUTATIONS = [
     what: 'k is trusted verbatim from the request body, so one bad request fires unlimited paid calls',
     from: '    const k = Math.max(2, Math.min(10, Number(body.k) || 5));',
     to: '    const k = Number(body.k) || 5;' },
+
+  // ======================================================================
+  // Closing the live-search leak. A THEMIS replay issued a real search
+  // instead of using the replayed context — declaring the tool made it
+  // available but never forbade using it again mid-continuation. Two layers:
+  // tool_choice:'none' should make it structurally impossible, and exclusion
+  // is the backstop if the API ever behaves unexpectedly anyway.
+  // ======================================================================
+  { id: 'buildrequest-no-tool-choice', suite: 'replay', file: 'netlify/functions/replay-lib.js',
+    what: 'the tool is declared but never forbidden, so a prefilled turn can still trigger a brand new live search',
+    from: "    tool_choice: { type: 'none' },\n",
+    to: '' },
+
+  { id: 'replay-contaminated-not-excluded', suite: 'replay', file: 'netlify/functions/replay-lib.js',
+    what: 'a run that broke offline replay is folded into the analysis anyway, instead of excluded',
+    from: `      warnings.push(\`\${run.label} \${reason}\`);
+      excluded.push({ label: run.label, reason });
+      continue;
+    }
+    runs.push(run);`,
+    to: `      warnings.push(\`\${run.label} \${reason}\`);
+    }
+    runs.push(run);` },
+
+  { id: 'variant-contaminated-not-excluded', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'a run that broke offline replay is folded into the variant analysis anyway, instead of excluded',
+    from: `      warnings.push(\`\${run.label} \${reason}\`);
+      excluded.push({ label: run.label, reason });
+      continue;
+    }
+    runs.push(run);`,
+    to: `      warnings.push(\`\${run.label} \${reason}\`);
+    }
+    runs.push(run);` },
+
+  { id: 'replay-rawruns-loses-tier', suite: 'replay', file: 'netlify/functions/replay-lib.js',
+    what: 'rawRuns drops each pick\'s tier, which item-K-style residual analysis needs and the judge\'s own output never carries',
+    from: '      tier: tiers[keyOf(p)] || p.oddsType || p.tier || \'unknown\',',
+    to: '      tier: \'unknown\',' },
+
+  { id: 'variant-rawruns-missing-original', suite: 'judge-variant-endpoint', file: 'netlify/functions/judge-variant-background.js',
+    what: 'rawRuns omits the real Aphrodite original, leaving no baseline to compute a residual correlation against',
+    from: '      rawRuns: [...(original.picks.length ? [original] : []), ...runs].map((r) => ({',
+    to: '      rawRuns: [...runs].map((r) => ({' },
 ];

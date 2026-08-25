@@ -57,6 +57,13 @@ export default async function ({ t }) {
     req.messages[1].content.map((b) => b.type), ['server_tool_use', 'web_search_tool_result']);
   t.ok('the tool stays declared so the prefilled blocks validate',
     req.tools[0].name === 'web_search' && req.tools[0].max_uses === 2);
+  // Declaring the tool only makes it available; a prefilled turn is a
+  // CONTINUATION, and the model is free to decide it wants another search
+  // unless told it may not. tool_choice: 'none' is the thing that actually
+  // makes a new search impossible, not merely unlikely — a real THEMIS replay
+  // issued one before this was added.
+  t.eq('a new search is forbidden at the request level, not just discouraged',
+    JSON.stringify(req.tool_choice), JSON.stringify({ type: 'none' }));
   t.eq('a new live search is detectable, since it would not be a replay',
     searchesIssued([...SEARCH, { type: 'text', text: 'x' }]), 1);
 
@@ -188,10 +195,49 @@ export default async function ({ t }) {
   t.ok('a k is recommended from the measured floor', report.recommendedK.k >= 1,
     JSON.stringify(report.recommendedK));
 
-  // A replay that goes and searches again has read text the original never saw.
-  const warned = await replay(SNAP, { k: 1, key: 'test-key', call: async () => ({
+  // rawRuns: raw picks survive, tagged with tier, not just the aggregates.
+  // Nothing derived from a stored report can ask a NEW question about it
+  // without this — item K needed a fresh run the first time because it
+  // didn't exist.
+  t.eq('rawRuns includes the original and every replay', report.rawRuns.map((r) => r.label),
+    ['original', 'replay-1', 'replay-2', 'replay-3']);
+  t.eq('...with every pick carrying its tier', report.rawRuns[0].picks.map((p) => p.tier).sort(),
+    ['demon', 'goblin', 'standard']);
+  t.eq('...and its probability', report.rawRuns[0].picks.find((p) => p.player === 'Alpha').prob, 0.72);
+
+  // A replay that goes and searches again has read text the original never
+  // saw — defense in depth for the (now request-level forbidden) case where
+  // the API still returns one anyway. It must be EXCLUDED from the analysis,
+  // not folded into a noise-floor estimate as if it were ordinary variance.
+  const contaminated = await replay(SNAP, { k: 3, key: 'test-key', call: (() => {
+    let n = 0;
+    return async () => {
+      n++;
+      // Only the second of three calls goes live — proving exclusion is
+      // per-run, not "one bad call taints the whole report".
+      const content = n === 2 ? [...SEARCH, { type: 'text', text: picksText([0.72, 0.18, 0.55]) }]
+        : [{ type: 'text', text: picksText([0.72, 0.18, 0.55]) }];
+      return { content, usage: {} };
+    };
+  })() });
+  t.ok('the contaminated run is reported, not silently dropped',
+    /replay-2 issued 1 live search/.test(contaminated.warnings[0] || ''), JSON.stringify(contaminated.warnings));
+  t.eq('...named in an explicit exclusion list, with why',
+    contaminated.excluded, [{ label: 'replay-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
+  t.eq('k requested is kept separate from what was actually analysed',
+    contaminated.kRequested, 3);
+  t.eq('...and k reflects only the clean runs', contaminated.k, 2);
+  t.ok('the contaminated run never reaches vsOriginal or vsEachOther',
+    contaminated.vsOriginal.every((c) => c.b !== 'replay-2')
+    && contaminated.vsEachOther.every((c) => c.a !== 'replay-2' && c.b !== 'replay-2'));
+  t.eq('...nor the behaviour table', contaminated.behaviour.map((b) => b.label), ['original', 'replay-1', 'replay-3']);
+
+  // If EVERY replay is contaminated, the report degrades gracefully rather
+  // than crashing on an empty comparison set.
+  const allBad = await replay(SNAP, { k: 2, key: 'test-key', call: async () => ({
     content: [...SEARCH, { type: 'text', text: picksText([0.72, 0.18, 0.55]) }], usage: {},
   }) });
-  t.ok('a replay that issued a live search is reported, not quietly averaged in',
-    /issued 1 live search/.test(warned.warnings[0] || ''), JSON.stringify(warned.warnings));
+  t.eq('every run excluded leaves nothing to compare, not a crash', allBad.vsOriginal, []);
+  t.eq('...and k reports zero clean runs, honestly', allBad.k, 0);
+  t.eq('...while still naming both exclusions', allBad.excluded.length, 2);
 }

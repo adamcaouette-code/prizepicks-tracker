@@ -33,14 +33,26 @@ export async function runVariant(snap, variant, { k = 5, key = process.env.ANTHR
   const req = buildRequest({ ...snap, system });
   const runs = [];
   const warnings = [];
+  const excluded = [];
   for (let i = 0; i < k; i++) {
     const data = await call(req, key);
     const issued = searchesIssued(data.content);
-    if (issued) warnings.push(`run-${i + 1} issued ${issued} live search(es) — not an offline replay`);
     const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-    runs.push({ label: `run-${i + 1}`, picks: parsePicks(text), usage: data.usage || null });
+    const run = { label: `run-${i + 1}`, picks: parsePicks(text), usage: data.usage || null };
+    if (issued) {
+      // A run that searched live read text the snapshot never carried — a
+      // fidelity break in that run, not a data point about THIS variant.
+      // Excluded from the analysis rather than folded in with only a warning:
+      // this is exactly how a THEMIS run once quietly widened the churn/
+      // Jaccard numbers it was never supposed to be part of.
+      const reason = `issued ${issued} live search(es) — not an offline replay`;
+      warnings.push(`${run.label} ${reason}`);
+      excluded.push({ label: run.label, reason });
+      continue;
+    }
+    runs.push(run);
   }
-  return { variant: variant.name, system, runs, warnings };
+  return { variant: variant.name, system, runs, warnings, excluded, kRequested: k };
 }
 
 // ---------------------------------------------------------------------------

@@ -58,7 +58,7 @@ export const handler = async (event) => {
     }
 
     await jobs.setJSON(jobId, { status: 'running', step: `running ${variant.name} (k=${k})` });
-    const { runs, warnings } = await runVariant(snap, variant, { k, key: process.env.ANTHROPIC_API_KEY, call: callAnthropic });
+    const { runs, warnings, excluded, kRequested } = await runVariant(snap, variant, { k, key: process.env.ANTHROPIC_API_KEY, call: callAnthropic });
 
     const tiers = {};
     for (const e of Object.values(snap.props || {})) {
@@ -71,7 +71,10 @@ export const handler = async (event) => {
 
     const pairs = pairwiseAll(runs);
     const report = {
-      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: snap.model, k,
+      // k is the CLEAN run count every stat below is actually computed from —
+      // kRequested is what was asked for, and excluded says why they differ.
+      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: snap.model,
+      k: runs.length, kRequested, excluded,
       pairwise: pairs,
       topNChurn: [3, 5, 10].map((n) => ({
         n, churn: pairs.length ? pairs.reduce((a, c) => a + (c.topN.find((x) => x.n === n)?.churn || 0), 0) / pairs.length : null,
@@ -81,6 +84,17 @@ export const handler = async (event) => {
       tierCalibration: tierCalibration(runs, ODDS_PRIOR, tiers),
       vsOriginal: original.picks.length ? runs.map((r) => ({ run: r.label, ...rankCorrelation(original, r) })) : null,
       warnings,
+      // Same reasoning as replay-lib.js's replay(): the aggregates above throw
+      // away which prop each number belonged to, which is exactly what a
+      // per-prop residual analysis (item K) needs back. Kept small.
+      rawRuns: [...(original.picks.length ? [original] : []), ...runs].map((r) => ({
+        label: r.label,
+        picks: r.picks.map((p) => ({
+          player: p.player, stat: p.stat, line: p.line, prob: Number(p.prob),
+          tier: tiers[`${p.player}|${p.stat}|${Number(p.line)}`] || p.oddsType || p.tier || 'unknown',
+          standout: p.standout ?? null,
+        })),
+      })),
     };
     await jobs.setJSON(jobId, { status: 'done', result: report });
   } catch (err) {
