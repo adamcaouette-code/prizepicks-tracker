@@ -275,11 +275,28 @@ export default async function ({ t }) {
     [Math.round(bad.roundShare * 100), Math.round(good.roundShare * 100)], [100, 0]);
   t.eq('a dropped required field is instruction-following failing in the open',
     [bad.clearedShare, good.clearedShare], [0, 1]);
-  // Two values across sixty picks versus a real distribution — an order of
-  // magnitude apart, which is the shape of the claim rather than any one number.
-  t.ok('a judge repeating two values has almost no granularity',
-    bad.granularity < 0.05 && good.granularity > bad.granularity * 5,
-    `bad ${bad.granularity.toFixed(3)} vs good ${good.granularity.toFixed(3)}`);
+  // Two values across sixty picks versus a real distribution. Measured as
+  // PERPLEXITY — 2^H over how often each distinct probability appears, i.e. how
+  // many values the judge is effectively using — because distinct/n falls
+  // mechanically as n grows and so cannot compare configs of different sizes.
+  t.ok('a judge alternating two values is effectively using two',
+    Math.abs(bad.effectiveValues - 2) < 0.01, String(bad.effectiveValues));
+  t.ok('...while a real distribution uses many more', good.effectiveValues > 10,
+    String(good.effectiveValues));
+  t.eq('the raw count rides along, since a count is only readable next to its n',
+    [bad.distinctValues, bad.n], [2, 60]);
+
+  // THE POINT: the metric must not move just because one config has more picks.
+  // A judge with 4x the sample and the same behaviour must score the same.
+  reset();
+  const big = [];
+  for (let i = 0; i < 240; i++) big.push(beh(i % 2 ? 0.55 : 0.50, 'goblin', 500 + i, { promptVersion: 'aphrodite', judgeModel: 'bigsample' }));
+  seed('pick-log', DAY, big);
+  const calBig = await loadFn('calibration.js');
+  const resBig = JSON.parse((await calBig.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.ok('four times the picks, identical behaviour, identical score',
+    Math.abs(resBig.behaviour['aphrodite · bigsample'].effectiveValues - 2) < 0.01,
+    `${resBig.behaviour['aphrodite · bigsample'].effectiveValues} at n=240 vs ${bad.effectiveValues} at n=60`);
 
   // ---- named models read back by name ------------------------------------
   // The models are the user's to name, the same as the prompt versions. A report
@@ -376,18 +393,33 @@ export default async function ({ t }) {
   const cal8 = await loadFn('calibration.js');
   const res8 = JSON.parse((await cal8.handler({ queryStringParameters: { format: 'json' } })).body);
 
-  // Count-weighted mean of p(1-p): (100*0.21 + 100*0.16) / 200 = 0.1850
-  t.ok('the baseline is the count-weighted p(1-p) across tiers',
-    Math.abs(res8.baseline - 0.185) < 1e-9, String(res8.baseline));
-  // Judge: goblin rows score 0.70*0.30 = 0.21 exactly (it matched the rate);
-  // demon rows guess 0.50 against a 0.20 rate -> 0.8*0.25 + 0.2*0.25 = 0.25.
+  // LEAVE-ONE-OUT. Each pick is predicted by its tier's rate computed EXCLUDING
+  // that pick, so the baseline never scores against an outcome it has already
+  // seen. Closed form per tier: h(n-h)/(n-1)^2.
+  //   goblin  70*30/99^2 = 0.214264      demon  20*80/99^2 = 0.163249
+  //   equal n -> 0.188757
+  t.ok('the baseline is leave-one-out, not fitted on the rows it scores',
+    Math.abs(res8.baseline - 0.1887562) < 1e-6, String(res8.baseline));
+  // The in-sample number is kept because the DIFFERENCE between the two is
+  // exactly the hindsight the first version was getting: 0.1850 -> 0.1888.
+  t.ok('...with the in-sample figure kept alongside',
+    Math.abs(res8.baselineInSample - 0.185) < 1e-9, String(res8.baselineInSample));
+  t.ok('...and the gap between them IS the optimism, ~0.0038 here',
+    Math.abs((res8.baseline - res8.baselineInSample) - 0.0037562) < 1e-6,
+    String(res8.baseline - res8.baselineInSample));
+
+  // Judge: goblin rows say 0.70 against a 0.70 rate -> 0.21; demon rows guess
+  // 0.50 against a 0.20 rate -> 0.25. Mean 0.23.
   t.ok('the judge is scored on the same rows', Math.abs(res8.brier - 0.23) < 1e-9, String(res8.brier));
   t.ok('the delta is stated as a loss when the judge is behind',
-    Math.abs(res8.baselineDelta - 0.045) < 1e-9, String(res8.baselineDelta));
+    Math.abs(res8.baselineDelta - 0.0412) < 1e-9, String(res8.baselineDelta));
   t.eq('...and says plainly that the lookup table won', res8.beatsBaseline, false);
 
-  // A judge that matches every tier's rate exactly ties the lookup — it cannot
-  // beat it, which is what makes this a floor rather than a target.
+  // Under leave-one-out, a judge that reproduces each tier's rate EXACTLY now
+  // edges the baseline rather than tying it — and it wins by precisely the
+  // optimism, because it is being handed the in-sample rate the baseline is
+  // denied. That is the bar behaving correctly, not a flaw: an honest
+  // out-of-sample floor should be beatable by an oracle.
   reset();
   const tie = [];
   for (let i = 0; i < 100; i++) tie.push(bl('goblin', i < 70, i, 0.70));
@@ -395,11 +427,13 @@ export default async function ({ t }) {
   seed('pick-log', DAY, tie);
   const cal9 = await loadFn('calibration.js');
   const res9 = JSON.parse((await cal9.handler({ queryStringParameters: { format: 'json' } })).body);
-  t.ok('a judge that only reproduces the tier rate exactly ties the baseline',
-    Math.abs(res9.baselineDelta) < 1e-9, String(res9.baselineDelta));
+  t.ok('an oracle on the in-sample rates beats leave-one-out by exactly the optimism',
+    Math.abs(res9.baselineDelta + 0.0038) < 1e-4, String(res9.baselineDelta));
+  t.ok('...and it ties the IN-SAMPLE baseline exactly, as it must',
+    Math.abs(res9.brier - res9.baselineInSample) < 1e-9,
+    `${res9.brier} vs ${res9.baselineInSample}`);
 
-  // Real skill — separating winners from losers INSIDE a tier — is the only
-  // thing that beats it.
+  // Real skill — separating outcomes INSIDE a tier — beats it properly.
   reset();
   const skilled = [];
   for (let i = 0; i < 100; i++) skilled.push(bl('goblin', i < 70, i, i < 70 ? 0.9 : 0.3));
@@ -408,11 +442,9 @@ export default async function ({ t }) {
   const cal10 = await loadFn('calibration.js');
   const res10 = JSON.parse((await cal10.handler({ queryStringParameters: { format: 'json' } })).body);
   t.eq('a judge with real within-tier skill beats it', res10.beatsBaseline, true);
-  t.ok('...and the delta is reported as a gain', res10.baselineDelta < 0, String(res10.baselineDelta));
+  t.ok('...and by far more than the optimism', res10.baselineDelta < -0.05, String(res10.baselineDelta));
 
   // ---- per config, on its own rows ---------------------------------------
-  // Two configs judge different slates with different tier mixes, so a baseline
-  // fitted on somebody else's picks is not the bar either of them faced.
   reset();
   const split = [];
   for (let i = 0; i < 60; i++) split.push({ ...bl('goblin', i < 42, i, 0.70), promptVersion: 'psyche' });
@@ -420,28 +452,55 @@ export default async function ({ t }) {
   seed('pick-log', DAY, split);
   const cal11 = await loadFn('calibration.js');
   const res11 = JSON.parse((await cal11.handler({ queryStringParameters: { format: 'json' } })).body);
+  // 42*18/59^2 = 0.217179 and 12*48/59^2 = 0.165470
   t.ok('psyche is scored against a goblin-only baseline',
-    Math.abs(res11.byPrompt.psyche.baseline - 0.21) < 1e-9, String(res11.byPrompt.psyche.baseline));
+    Math.abs(res11.byPrompt.psyche.baseline - 0.2171790) < 1e-6, String(res11.byPrompt.psyche.baseline));
   t.ok('aphrodite against a demon-only one',
-    Math.abs(res11.byPrompt.aphrodite.baseline - 0.16) < 1e-9, String(res11.byPrompt.aphrodite.baseline));
+    Math.abs(res11.byPrompt.aphrodite.baseline - 0.1654697) < 1e-6, String(res11.byPrompt.aphrodite.baseline));
   t.eq('...and each gets its own verdict',
-    [res11.byPrompt.psyche.beatsBaseline, res11.byPrompt.aphrodite.beatsBaseline], [false, false]);
+    [res11.byPrompt.psyche.beatsBaseline, res11.byPrompt.aphrodite.beatsBaseline], [true, false]);
 
-  // A config with barely any rows must not be handed a baseline: a tiny sample
-  // drives the tier rate to 0 or 1, where p(1-p) is zero and nothing could beat
-  // it — a number that would read as a real result.
+  // ---- the gate is PER TIER, not per config ------------------------------
+  // A config-level gate lets a lopsided mix through: 40 rows split 30/5/5 clears
+  // any per-config threshold and then fits two tier baselines on five picks
+  // each, where h(n-h) collapses toward zero and nothing could beat them.
+  //
+  // The thin tiers are dropped from BOTH sides — the judge is re-scored on
+  // exactly the rows the baseline covers — so the delta stays like-for-like
+  // rather than comparing two different row sets.
   reset();
-  const thin = [];
-  for (let i = 0; i < 60; i++) thin.push({ ...bl('goblin', i < 42, i, 0.7), promptVersion: 'psyche' });
-  for (let i = 0; i < 3; i++) thin.push({ ...bl('goblin', true, 400 + i, 0.7), promptVersion: 'aphrodite' });
-  seed('pick-log', DAY, thin);
+  const lopsided = [];
+  for (let i = 0; i < 30; i++) lopsided.push(bl('goblin', i < 21, i, 0.70));
+  for (let i = 0; i < 5; i++) lopsided.push(bl('standard', true, 600 + i, 0.99));   // 5/5, p(1-p)=0
+  for (let i = 0; i < 5; i++) lopsided.push(bl('demon', false, 700 + i, 0.01));     // 0/5, p(1-p)=0
+  seed('pick-log', DAY, lopsided);
+  const cal13 = await loadFn('calibration.js');
+  const res13 = JSON.parse((await cal13.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.eq('only the tier with enough picks is covered', res13.baselineCoverage, 30);
+  t.eq('...and the thin ones are reported as dropped, not silently ignored',
+    res13.baselineDropped, 10);
+  // 21*9/29^2 = 0.224732 — the goblin tier alone, uncontaminated by two tiers
+  // whose baselines would have been exactly zero.
+  t.ok('the baseline is the qualifying tier alone',
+    Math.abs(res13.baseline - 0.2247324) < 1e-6, String(res13.baseline));
+  t.ok('the judge is re-scored on those same 30 rows, not all 40',
+    Math.abs(res13.brierOnBaselineRows - 0.21) < 1e-9, String(res13.brierOnBaselineRows));
+  t.ok('...so the delta compares like with like',
+    Math.abs(res13.baselineDelta - (0.21 - 0.2247324)) < 1e-4, String(res13.baselineDelta));
+
+  // Rendered NOW, while this fixture is still the seeded one. Reading it after
+  // the reset below would render the next fixture's data through cal13's
+  // handler and quietly assert against the wrong board.
+  const html8 = (await cal13.handler({ queryStringParameters: {} })).body;
+
+  // Nothing qualifying at all yields no baseline rather than a fabricated one.
+  reset();
+  seed('pick-log', DAY, [0, 1, 2].map((i) => bl('goblin', true, 900 + i, 0.7)));
   const cal12 = await loadFn('calibration.js');
   const res12 = JSON.parse((await cal12.handler({ queryStringParameters: { format: 'json' } })).body);
-  t.eq('a config with too few rows gets no baseline rather than a fake one',
-    res12.byPrompt.aphrodite.baseline, null);
-  t.eq('...and no verdict either', res12.byPrompt.aphrodite.beatsBaseline, null);
+  t.eq('too few picks in every tier gives no baseline', res12.baseline, null);
+  t.eq('...and no verdict either', res12.beatsBaseline, null);
 
-  const html8 = (await cal12.handler({ queryStringParameters: {} })).body;
   t.ok('the baseline is on the page next to the brier it judges',
     /tier-only baseline/.test(html8));
   t.ok('...and says which side is winning', /judge BEHIND by|judge ahead by/.test(html8));

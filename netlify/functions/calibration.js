@@ -75,33 +75,86 @@ const isExcluded = (p) => EXCLUDED_LEAGUES.has(String(p.league || '').toLowerCas
  * benefit of hindsight on those exact picks and makes it HARDER to beat, which
  * is the right direction for a bar the judge is supposed to clear.
  */
-const BASELINE_MIN_N = 30;
+// Below this a tier's rate is noise. The gate is PER TIER, not per config,
+// because the baseline is fitted per tier: a config with 40 rows split 30/5/5
+// would clear a config-level gate and then fit two tier baselines on five picks
+// each, where h(n-h) collapses toward zero and nothing could beat them.
+const BASELINE_MIN_TIER_N = 10;
+
+/**
+ * What a three-row lookup table would have scored on these same picks.
+ *
+ * The predictor is: output the tier's own base rate for every pick in that tier,
+ * and nothing else — no player, no matchup, no model. It is the cheapest thing
+ * that could possibly work, and the bar the judge must clear to justify existing.
+ * Without it a Brier score has no scale: 0.240 means nothing on its own.
+ *
+ * LEAVE-ONE-OUT. Fitting the rate on all the rows and then scoring it against
+ * those same rows lets the baseline predict outcomes it has already seen. The
+ * optimism is small here — about 0.0003 Brier, ~1% of the current gap — but it
+ * is a real objection and the exact fix is cheap, so each pick is predicted by
+ * its tier's rate computed EXCLUDING that pick: (h - y_i) / (n - 1).
+ *
+ * That has a closed form. For a tier with n picks and h hits:
+ *   a hit  predicts (h-1)/(n-1), squared error (n-h)^2/(n-1)^2, occurring h times
+ *   a miss predicts  h/(n-1),    squared error     h^2/(n-1)^2, occurring (n-h) times
+ *   total = [h(n-h)^2 + (n-h)h^2] / (n-1)^2 = h(n-h)·n / (n-1)^2
+ *   mean  = h(n-h) / (n-1)^2
+ * which is exactly the in-sample p(1-p) scaled by (n/(n-1))^2 — the optimism,
+ * made explicit rather than argued about.
+ *
+ * Tiers under the gate are dropped from BOTH sides: the judge is re-scored on
+ * precisely the rows the baseline covers, so the delta compares like with like
+ * rather than two different row sets.
+ */
 function tierBaseline(rows) {
-  // Below this the tier rates are noise, and a tiny sample can drive p to 0 or 1
-  // where p(1-p) is zero — a baseline nothing could beat, reported as if it were
-  // a real result.
-  if (rows.length < BASELINE_MIN_N) return null;
   const byTier = {};
   for (const p of rows) {
-    const b = (byTier[p.oddsType || 'unknown'] ||= { n: 0, hits: 0 });
-    b.n++; if (p.hit === true) b.hits++;
+    const b = (byTier[p.oddsType || 'unknown'] ||= { n: 0, hits: 0, judge: 0 });
+    b.n++;
+    if (p.hit === true) b.hits++;
+    const prob = Number(p.prob) || 0;
+    b.judge += (prob - (p.hit === true ? 1 : 0)) ** 2;
   }
-  let sum = 0;
+  let loo = 0, inSample = 0, judge = 0, covered = 0;
   for (const b of Object.values(byTier)) {
+    if (b.n < BASELINE_MIN_TIER_N) continue;          // see the gate note above
     const rate = b.hits / b.n;
-    sum += b.n * rate * (1 - rate);
+    loo += b.n * (b.hits * (b.n - b.hits)) / ((b.n - 1) ** 2);
+    inSample += b.n * rate * (1 - rate);
+    judge += b.judge;
+    covered += b.n;
   }
-  return sum / rows.length;
+  if (!covered) return null;
+  return {
+    baseline: loo / covered,
+    inSample: inSample / covered,
+    judgeBrier: judge / covered,
+    covered,
+    dropped: rows.length - covered,
+  };
 }
 
 /** Attach baseline, delta and verdict to any scored bucket. */
 function scoreAgainstBaseline(target, rows) {
-  const base = tierBaseline(rows);
-  target.baseline = base;
+  const r = tierBaseline(rows);
+  if (!r) {
+    target.baseline = null; target.baselineInSample = null;
+    target.baselineDelta = null; target.beatsBaseline = null;
+    target.baselineCoverage = 0;
+    return target;
+  }
+  target.baseline = r.baseline;
+  // Kept for comparison: the difference between these two IS the hindsight the
+  // in-sample version was getting.
+  target.baselineInSample = r.inSample;
+  target.baselineCoverage = r.covered;
+  target.baselineDropped = r.dropped;
+  // Judge re-scored on exactly the covered rows, so this is like-for-like.
+  target.brierOnBaselineRows = r.judgeBrier;
   // Brier is a loss, so a POSITIVE delta means the judge lost to a lookup table.
-  target.baselineDelta = base == null || target.brier == null ? null
-    : Math.round((target.brier - base) * 10000) / 10000;
-  target.beatsBaseline = target.baselineDelta == null ? null : target.baselineDelta < 0;
+  target.baselineDelta = Math.round((r.judgeBrier - r.baseline) * 10000) / 10000;
+  target.beatsBaseline = target.baselineDelta < 0;
   return target;
 }
 
@@ -218,7 +271,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     if (!isFinite(prob)) continue;
     const key = `${p.promptVersion || 'psyche (untagged)'} · ${modelName(p.judgeModel)}`;
     const b = (out.behaviour[key] ||= {
-      n: 0, sum: 0, sumSq: 0, round: 0, cleared: 0, distinct: new Set(),
+      n: 0, sum: 0, sumSq: 0, round: 0, cleared: 0, distinct: new Map(),
       byTier: {},
     });
     b.n++; b.sum += prob; b.sumSq += prob * prob;
@@ -227,7 +280,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // a verdict first and writes a number to match.
     if (Math.abs(prob * 20 - Math.round(prob * 20)) < 1e-9) b.round++;
     if (p.cleared != null) b.cleared++;
-    b.distinct.add(prob.toFixed(2));
+    b.distinct.set(prob.toFixed(2), (b.distinct.get(prob.toFixed(2)) || 0) + 1);
     const t = (b.byTier[p.oddsType || 'unknown'] ||= { n: 0, sum: 0 });
     t.n++; t.sum += prob;
   }
@@ -236,7 +289,22 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     b.spread = Math.sqrt(Math.max(0, b.sumSq / b.n - b.meanProb ** 2));
     b.roundShare = b.round / b.n;
     b.clearedShare = b.cleared / b.n;
-    b.granularity = b.distinct.size / b.n;
+    // distinct/n was NOT comparable across configs: it falls mechanically as n
+    // grows, so a judge with more picks looks less granular for free. On this
+    // log Vilifiant scored 0.246 (51 distinct over 207) against Opus's 0.483
+    // (28 over 58) — the config using nearly twice as many distinct values
+    // reading as half as granular, purely from sample size.
+    //
+    // Perplexity fixes that. It is 2^H over the frequencies of the distinct
+    // values, and answers "how many values is this judge EFFECTIVELY using" —
+    // a judge splitting evenly across 8 values scores 8 whether it made 50 picks
+    // or 5,000, and one that nominally uses 51 values but puts most of its mass
+    // on three scores near 3. The raw count rides along beside it, since a
+    // count is only readable next to the n it came from.
+    b.distinctValues = b.distinct.size;
+    let H = 0;
+    for (const c of b.distinct.values()) { const q = c / b.n; H -= q * Math.log2(q); }
+    b.effectiveValues = Math.round(Math.pow(2, H) * 100) / 100;
     for (const t of Object.values(b.byTier)) t.meanProb = t.sum / t.n;
     // THE headline number. Aphrodite's central instruction is that a goblin line
     // is priced as likely and a demon as unlikely, so a judge that read it puts
@@ -591,7 +659,7 @@ function renderHTML(a) {
       <td style="color:${gapCol}">${v.tierGap == null ? '—' : (v.tierGap * 100).toFixed(0) + 'pts'}</td>
       <td>${(v.spread * 100).toFixed(1)}</td>
       <td style="color:${rndCol}">${pct(v.roundShare)}</td>
-      <td>${pct(v.clearedShare)}</td><td>${pct(v.granularity)}</td></tr>`;
+      <td>${pct(v.clearedShare)}</td><td>${v.effectiveValues} <span class="mut">of ${v.distinctValues}</span></td></tr>`;
   }).join('') || '<tr><td colspan="7" class="mut">No logged picks yet.</td></tr>';
 
   const marginRows = Object.entries(a.margins || {}).sort((x, y) => y[1].n - x[1].n).slice(0, 18).map(([k, v]) => {
@@ -705,7 +773,7 @@ function renderHTML(a) {
     cleanest test is running the two on the SAME slate — different nights differ more than the prompts do.</div>
 
   <h2>Judge behaviour — readable the same day</h2>
-  <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>filled "cleared"</th><th>distinct values</th></tr></thead><tbody>${behRows}</tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>filled "cleared"</th><th>values used</th></tr></thead><tbody>${behRows}</tbody></table></div>
   <div class="callout">Everything else on this page waits for games to settle — weeks before a prompt or model
     change can be judged. This does not: it reads every logged pick, graded or not, so a run can be checked the
     hour it finishes.
@@ -713,7 +781,10 @@ function renderHTML(a) {
     demanding prompt. Aphrodite's central instruction is that a goblin line is priced as likely (~70%) and a
     demon as unlikely (~20%), so a judge that actually read it puts a wide gap between the two. Psyche was never
     told the tier and averaged ~52% on everything — a gap near zero is what that looks like. <b>Spread</b> and
-    <b>distinct values</b> say whether the judge uses the full range or hedges toward the middle; a high share of
+    <b>values used</b> say whether the judge uses the full range or hedges toward the middle. The latter is a
+    perplexity — 2^H over how often each distinct probability appears, i.e. how many values the judge is
+    <i>effectively</i> using, with the raw count beside it. A plain distinct/n ratio was not comparable between
+    configs: it falls as n grows, so the judge with more picks looked less granular for free; a high share of
     <b>round numbers</b> (multiples of 0.05) is what you get when a model picks a verdict first and writes a
     number to justify it. <b>Filled "cleared"</b> is plain instruction-following: Aphrodite requires the count of
     last-five that beat the line, and a model quietly dropping the field is a model quietly dropping other
