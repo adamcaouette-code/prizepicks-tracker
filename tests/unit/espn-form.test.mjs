@@ -89,8 +89,38 @@ export default async function ({ t }) {
   const wing = cands[1];
   t.eq('a player who appeared in only some games gets only those', wing.last5, [4, 8]);
   t.eq('...with an honest count, not padded to five', wing.histGames, 2);
+  // ...and an average over the games he PLAYED. Dividing by the window instead
+  // of the count reads 6 as 2.4 and quietly makes every part-time player look
+  // cold — the same "absent is not a zero" rule the count above states, applied
+  // to the number the judge actually anchors on.
+  t.eq('...and an average over those games, not over the window', wing.avg, 6);
   t.eq('...and days he did not play are absent, NOT recorded as zero',
     wing.last5.includes(0), false);
+
+  // ---- the day cache is a round trip, not a write into the void ----------
+  // Form costs one summary call per game day per candidate slate, and the same
+  // day is read again by grading and by every later run. The cache is what
+  // stops that being paid twice — and a cache whose write goes nowhere is
+  // indistinguishable from a working one unless a SECOND pass is made and the
+  // network is counted.
+  let summaries = 0;
+  const cands2 = [{ player: 'Some Guard', stat: 'Points' }];
+  const mock2 = mockFetch([
+    [/scoreboard\?dates=\d{8}-\d{8}/, async () => ({ events: [
+      { id: '101', date: '2026-09-06T20:00Z', ...FINAL },
+      { id: '102', date: '2026-09-13T20:00Z', ...FINAL },
+      { id: '103', date: '2026-09-20T20:00Z', ...FINAL },
+      { id: '104', date: '2026-09-27T20:00Z', ...FINAL },
+      { id: '105', date: '2026-10-04T20:00Z', ...FINAL },
+    ] })],
+    [/scoreboard\?dates=(\d{8})$/, async () => ({ events: [] })],
+    [/summary\?event=(\d+)/, async (url) => { summaries++; return byEvent[url.match(/event=(\d+)/)[1]]; }],
+  ]);
+  try {
+    await mod.attachEspnForm(cands2, 'nba', { before: '2026-10-09' });
+  } finally { mock2.restore(); }
+  t.eq('a second pass reads every finished day out of the cache', summaries, 0);
+  t.eq('...and reconstructs the same form from it', cands2[0].last5, [10, 20, 30, 14, 26]);
 
   t.eq('a player who never appears gets no form rather than an empty series',
     cands[2].last5, undefined);

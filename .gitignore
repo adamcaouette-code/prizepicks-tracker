@@ -19,3 +19,4 @@ netlify/functions/New Text Document.txt
 
 # Generated performance reports — regenerate with scripts/generate-buyer-report.mjs
 reports/
+scripts/.mutation-report.json

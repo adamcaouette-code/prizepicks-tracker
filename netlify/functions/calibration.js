@@ -656,7 +656,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
   }
   out.noFormBy.stat = Object.fromEntries(Object.entries(out.noFormBy.stat).sort((a, b) => b[1] - a[1]).slice(0, 25));
 
-  out.overall = overHits / graded.length;  out.overall = overHits / graded.length;
+  out.overall = overHits / graded.length;
   out.brier = brierSum / graded.length;
   for (const v of Object.values(out.byStat)) {
     v.predicted = v.predSum / v.n;

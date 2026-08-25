@@ -186,10 +186,21 @@ export default async function ({ t }) {
   //   top 10% (30)  27 hit  90%      top 30% (90)   72 hit  80%
   //   top 20% (60)  51 hit  85%      top 50% (150) 102 hit  68%
   const gRate = (i) => (i < 30 ? i < 27 : i < 60 ? i < 54 : i < 90 ? i < 81 : i < 150 ? i < 120 : i < 195);
-  for (let i = 0; i < 300; i++) rows4.push(sk(0.9 - i * 0.001, gRate(i), i, 'goblin'));
+  // Seeded SCATTERED, not in rank order. `i` is the pick's rank — it sets both
+  // the probability and the outcome — but the order the rows are LOGGED in is a
+  // stride permutation of it (7 is coprime with 300, so this visits all 300 and
+  // lands the top-ranked picks nowhere near the front or the back).
+  //
+  // A fixture seeded in descending probability makes "the top k by rank" and
+  // "the first k in the log" the same list, and the sort that produces the
+  // selection curve stops being tested at all: deleting it changes no number
+  // here. Every prob is distinct, so sorting fully determines the order and none
+  // of the expected rates below move.
+  const scatter = (n) => Array.from({ length: n }, (_, j) => (j * 7) % n);
+  for (const i of scatter(300)) rows4.push(sk(0.9 - i * 0.001, gRate(i), i, 'goblin'));
   // DEMON: honest numbers, no ranking signal. Every slice hits 30%, so narrowing
   // buys nothing and no threshold can rescue it.
-  for (let i = 0; i < 300; i++) rows4.push(sk(0.9 - i * 0.001, i % 10 < 3, 1000 + i, 'demon'));
+  for (const i of scatter(300)) rows4.push(sk(0.9 - i * 0.001, i % 10 < 3, 1000 + i, 'demon'));
   // STANDARD: too few to split, and must not be guessed at.
   for (let i = 0; i < 10; i++) rows4.push(sk(0.60, i < 5, 2000 + i, 'standard'));
   seed('pick-log', DAY, rows4);
@@ -248,12 +259,18 @@ export default async function ({ t }) {
   reset();
   const runs = [];
   for (let r = 0; r < 12; r++) {
+    const slate = [];
     for (let i = 0; i < 20; i++) {
       // Within each run the top 3 by probability always hit; the rest are a
       // coin flip. A median split drowns that; a top-3 cut sees it exactly.
-      runs.push({ ...sk(i < 3 ? 0.9 - i * 0.01 : 0.5, i < 3 || i % 2 === 0, r * 100 + i, 'goblin'),
+      slate.push({ ...sk(i < 3 ? 0.9 - i * 0.01 : 0.5, i < 3 || i % 2 === 0, r * 100 + i, 'goblin'),
         loggedAt: `2026-08-${String(10 + r).padStart(2, '0')}T18:00:00Z` });
     }
+    // Logged WORST-FIRST, so a run's insertion order is the reverse of its
+    // ranking. A slate seeded already in rank order cannot tell "the N the judge
+    // ranked highest" from "the first N in the log" — the two agree by accident,
+    // and dropping the sort in computeSkill went unnoticed.
+    runs.push(...slate.reverse());
   }
   seed('pick-log', DAY, runs);
   const calN = await loadFn('calibration.js');
@@ -268,6 +285,9 @@ export default async function ({ t }) {
     `top3 ${tn[0].rate} vs top50% ${resN.skill.goblin.topSlices[0].rate}`);
   t.ok('a wider N dilutes back toward the tier rate', tn[2].rate < tn[0].rate,
     `N=10 ${tn[2].rate} vs N=3 ${tn[0].rate}`);
+  // ...far enough that it stops clearing. `clears` needs a cell where the honest
+  // answer is FALSE, or hardcoding it to true passes every assertion here.
+  t.eq('...and a diluted cut is reported as NOT clearing', tn[2].clears, false);
   // bestHalfClears is kept for continuity but is no longer the verdict — here it
   // says false while the cut the engine actually bets clears comfortably.
   t.eq('bestHalfClears survives, and disagrees', resN.skill.goblin.bestHalfClears, false);
@@ -559,22 +579,44 @@ export default async function ({ t }) {
     recentAvg: hasForm ? 1.4 : null, stat: hasForm ? 'Hits' : 'Pitcher Fantasy Score',
   });
   const rows14 = [];
-  // WITH form: the judge separates outcomes inside the tier — real skill.
+  // THREE tiers, UNEVEN counts, and a DIFFERENT lift in each. All three matter:
+  //   - a single tier makes the all-tier pooling and the goblin+standard one the
+  //     same list, so publishing both proves nothing and a copy-paste between
+  //     them is invisible;
+  //   - a single tier also makes inverse-variance weighting indistinguishable
+  //     from equal weighting, and a count-weighted mean lift indistinguishable
+  //     from a flat one;
+  //   - equal bucket sizes make coverage 50% either way, so stating it as the
+  //     UNCOVERED share — the exact error this section was written to fix —
+  //     reads identically to stating it correctly.
+  // WITH form: the judge separates outcomes inside the tier — real skill, and
+  // more of it where it had more to work with.
   for (let i = 0; i < 60; i++) rows14.push(fm(true, 'goblin', i < 30, i, i < 30 ? 0.88 : 0.32));
+  // standard: half the separation on a third of the sample, so a count-weighted
+  // headline and a flat mean of tiers cannot come out the same.
+  for (let i = 0; i < 20; i++) rows14.push(fm(true, 'standard', i < 10 || i % 2 === 0, 100 + i, i < 10 ? 0.80 : 0.30));
+  // demon: honest and inert — the tier that dilutes the all-tier pooling, which
+  // is why the goblin+standard one is published beside it.
+  for (let i = 0; i < 20; i++) rows14.push(fm(true, 'demon', i % 2 === 0, 150 + i, 0.50));
   // WITHOUT form: one flat number for everything, leaning on the tier and
   // overshooting it. Hits are INTERLEAVED rather than front-loaded: with equal
   // probabilities the sort is stable, so a block of hits followed by a block of
   // misses would manufacture a perfect lift out of nothing but fixture order.
-  for (let i = 0; i < 60; i++) rows14.push(fm(false, 'goblin', i % 2 === 0, 200 + i, 0.70));
+  for (let i = 0; i < 40; i++) rows14.push(fm(false, 'goblin', i % 2 === 0, 200 + i, 0.70));
+  for (let i = 0; i < 20; i++) rows14.push(fm(false, 'standard', i % 2 === 0, 300 + i, 0.70));
+  for (let i = 0; i < 20; i++) rows14.push(fm(false, 'demon', i % 2 === 0, 350 + i, 0.70));
   seed('pick-log', DAY, rows14);
 
   const cal14 = await loadFn('calibration.js');
   const res14 = JSON.parse((await cal14.handler({ queryStringParameters: { format: 'json' } })).body);
   const has = res14.byFormCoverage['has-form'], no = res14.byFormCoverage['no-form'];
 
-  t.eq('the split is on what the payload actually carried', [has.n, no.n], [60, 60]);
-  t.eq('a judge with form separates outcomes inside the tier',
-    Math.round(has.meanLift * 100), 100);   // top half all hit, bottom half all missed
+  t.eq('the split is on what the payload actually carried', [has.n, no.n], [100, 80]);
+  // goblin lift 1.0 on 60, standard 0.5 on 20, demon 0 on 20 -> 0.70 weighted by
+  // count, 0.50 as a flat mean of tiers. The exact value is asserted because the
+  // weighting is the claim: a 20-pick tier must not weigh as much as a 60-pick one.
+  t.eq('a judge with form separates outcomes inside the tier, count-weighted across tiers',
+    has.meanLift, 0.7);
   t.eq('...and without it, shows no separation at all', no.meanLift, 0);
   t.eq('with form it beats its own baseline', has.beatsBaseline, true);
   t.eq('...and without form it does not', no.beatsBaseline, false);
@@ -582,15 +624,20 @@ export default async function ({ t }) {
   // THE POINT: pooled, this judge looks mediocre. Split, it is excellent on the
   // rows it could reason from and inert on the rows it could not — which is a
   // data-coverage finding, not a prompt one.
+  // Each bucket gets a baseline built from ITS OWN rows. Handed the pooled rows
+  // instead, both buckets would be measured against the same floor and the whole
+  // comparison would collapse — so the three baselines must be three numbers.
   t.ok('each bucket is scored against a baseline from its own rows',
-    has.baseline != null && no.baseline != null);
+    has.baseline != null && no.baseline != null
+    && has.baseline !== no.baseline && has.baseline !== res14.baseline,
+    `has ${has.baseline} / no ${no.baseline} / pooled ${res14.baseline}`);
   t.ok('the pooled brier sits between the two, hiding both',
     res14.brier > has.brier && res14.brier < no.brier,
     `has ${has.brier.toFixed(4)} < pooled ${res14.brier.toFixed(4)} < no ${no.brier.toFixed(4)}`);
 
   // The actionable half: WHICH props arrive without form.
   t.eq('the uncovered rows are named by league and stat',
-    res14.noFormBy.stat['mlb :: Pitcher Fantasy Score'], 60);
+    res14.noFormBy.stat['mlb :: Pitcher Fantasy Score'], 80);
   t.eq('...and covered stats do not appear there',
     res14.noFormBy.stat['mlb :: Hits'], undefined);
 
@@ -629,12 +676,26 @@ export default async function ({ t }) {
   t.ok('the all-tier pooling is reported', cb.lift != null && cb.auc != null);
   t.ok('...and the goblin+standard one beside it, not instead of it',
     'liftGoblinStandard' in cb && 'aucGoblinStandard' in cb);
+  // ...and they must actually be two different calculations. Demon shows no
+  // difference between the buckets here, so dropping it moves the estimate —
+  // which is the whole reason both are published.
+  t.ok('...and the two poolings disagree, which is why neither is "the" number',
+    Math.abs(cb.lift.estimate - cb.liftGoblinStandard.estimate) > 0.05,
+    `all ${cb.lift.estimate.toFixed(3)} vs g+s ${cb.liftGoblinStandard.estimate.toFixed(3)}`);
+  // Inverse-variance, not a flat average of tiers: goblin is measured far more
+  // tightly than demon and has to carry more of the estimate. Equal weighting
+  // would give -0.500 here.
+  t.ok('...pooled by inverse variance, so the best-measured tier weighs most',
+    Math.abs(cb.lift.estimate - (-0.7368)) < 0.001, cb.lift.estimate.toFixed(4));
   t.ok('...with a note saying to believe AUC where the two disagree',
     /believe it/.test(cb.note), cb.note);
 
   // ---- coverage is stated as the covered share, not the uncovered one -----
+  // 100 of 180 had form. Asserted against an UNEVEN split on purpose: at 60/60
+  // the covered and uncovered shares are both 0.5 and the label can be the wrong
+  // way round without any test noticing — which is how it shipped wrong once.
   t.ok('form coverage is the share that HAD form',
-    Math.abs(res14.byFormCoverage.formCoverage - 0.5) < 1e-9,
+    Math.abs(res14.byFormCoverage.formCoverage - 100 / 180) < 1e-9,
     String(res14.byFormCoverage.formCoverage));
 
   const html14 = (await cal14.handler({ queryStringParameters: {} })).body;

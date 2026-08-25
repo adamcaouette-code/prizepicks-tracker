@@ -24,7 +24,15 @@ export function getStore({ name }) {
     },
     // The real client returns the parsed object for { type: 'json' } and a string
     // otherwise; setJSON is the only writer here, so values come back as stored.
-    async get(k) { return s.has(k) ? s.get(k) : null; },
+    //
+    // DESERIALIZE ON READ, exactly as the real store does. Handing back the
+    // stored reference made the harness forgiving in a way production is not: a
+    // function that reads a blob, mutates the objects in place and then fails to
+    // write them back still "persisted" its changes, because the test was
+    // holding the same objects. grade-picks' write could be deleted outright and
+    // every suite still passed. A fresh copy per read means an unwritten change
+    // is invisible here too — which is the only way a test can tell the two apart.
+    async get(k) { return s.has(k) ? roundTrip(s.get(k)) : null; },
     // SERIALIZE ON WRITE, exactly as the real store does.
     //
     // This used to keep the value by reference, which quietly made the harness
@@ -40,9 +48,12 @@ export function getStore({ name }) {
   };
 }
 
+// Seeding goes through the same serialization a write does. Seeding by reference
+// left the suite holding the very objects the handler would mutate, which is the
+// other half of the same illusion.
 export function seed(storeName, key, value) {
   if (!stores.has(storeName)) stores.set(storeName, new Map());
-  stores.get(storeName).set(key, value);
+  stores.get(storeName).set(key, roundTrip(value));
 }
 
 export function read(storeName, key) {

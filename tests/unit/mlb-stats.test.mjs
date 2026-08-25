@@ -93,6 +93,20 @@ export default async function ({ t }) {
   t.eq('...carrying the reason, not just a flag', out.injuries.CIN.find((x) => x.name === 'Hurt Guy').status, '10-Day Injured List');
   t.eq('the healthy team has no entry', out.injuries.PIT, undefined);
 
+  // ---- the slate cache is a round trip ------------------------------------
+  // Building a slate is a teams call, a schedule call and one roster call per
+  // playing team — repeated for every run of the night. The cache is the only
+  // thing stopping that, and a cache whose write goes nowhere reports exactly
+  // the same slate while quietly paying full price every time. The second call
+  // has to make NO requests and say it came from cache.
+  const mockCached = mockFetch([[/statsapi/, async () => { throw new Error('cache miss: refetched a slate it already had'); }]]);
+  let again;
+  try { again = await mod.slate('2026-08-14'); } finally { mockCached.restore(); }
+  t.eq('a second slate for the same day comes from cache', again.cached, true);
+  t.eq('...and it makes no requests at all', mockCached.calls.length, 0);
+  t.eq('...serving the same game', again.games[0].away.probablePitcher.name, 'Paul Skenes');
+  t.eq('...and the same injury report', Object.keys(again.injuries).sort(), ['CIN']);
+
   // ---- cost -------------------------------------------------------------
   reset();
   const mock2 = mockFetch([

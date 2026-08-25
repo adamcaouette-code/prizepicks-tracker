@@ -66,12 +66,18 @@ async function run(body = {}, { lineups = false } = {}) {
     ['partner-api.prizepicks.com/projections', async () => props(ROWS)],
     ['statsapi.mlb.com/api/v1/schedule', async () => (lineups ? SCHEDULE : {})],
     [/statsapi|espn|the-odds-api|\/history/, async () => ({})],
-    ['api.anthropic.com', async () => ({ content: [{ type: 'text', text: JSON.stringify({ picks: PICKS }) }], usage: {} })],
+    // Real usage numbers, not an empty object: the spend meter is priced off
+    // these, and a fixture of zeros cannot tell a correct bill from no bill.
+    ['api.anthropic.com', async () => ({ content: [{ type: 'text', text: JSON.stringify({ picks: PICKS }) }],
+      usage: { input_tokens: 98000, output_tokens: 5500, server_tool_use: { web_search_requests: 2 } } })],
   ]);
   try {
     const { handler } = await loadFn('bet-finder-background.js');
     await handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'jv', league: 'mlb', legs: 2, ...body }) });
   } finally { mock.restore(); }
+  // recordCost is fire-and-forget by design (a metering failure must never take
+  // a run down), so its write lands a microtask after the handler returns.
+  await new Promise((r) => setTimeout(r, 0));
   const call = mock.calls.find((c) => c.url.includes('api.anthropic.com'));
   const sent = call ? JSON.parse(call.init.body) : null;
   return {
@@ -81,6 +87,7 @@ async function run(body = {}, { lineups = false } = {}) {
     log: read('pick-log', new Date().toISOString().slice(0, 10)) || [],
     system: sent?.system || '',
     payload: sent?.messages?.[0]?.content || '',
+    cost: read('cost-log', new Date().toISOString().slice(0, 10)) || [],
   };
 }
 
@@ -127,8 +134,25 @@ export default async function ({ t }) {
   t.eq('every logged pick records the model that produced it',
     [...new Set(aph.log.map((p) => p.judgeModel))], ['claude-haiku-4-5-20251001']);
 
+  // ---- what the run cost, recorded rather than estimated later -----------
+  // The whole reason a cheaper model is a measurable experiment and not a guess
+  // is that every run writes its own bill. Metering that computes a number and
+  // stores nothing is indistinguishable from no metering at all.
+  t.eq('the run writes exactly one spend row', aph.cost.length, 1);
+  t.eq('...naming the feature and the model it was billed at',
+    [aph.cost[0].feature, aph.cost[0].model], ['judge', 'claude-haiku-4-5-20251001']);
+  // 98k in at $1/M + 5.5k out at $5/M + 2 searches at $0.01 = 0.098 + 0.0275 + 0.02
+  t.eq('...priced from the token counts the API reported, searches included',
+    aph.cost[0].usd, 0.1455);
+  t.eq('...with the raw counts kept, so a price change can be re-applied later',
+    [aph.cost[0].inTok, aph.cost[0].outTok, aph.cost[0].searches], [98000, 5500, 2]);
+
   const dear = await run({ model: 'claude-opus-4-8' });
   t.eq('the expensive model is still reachable', dear.sentModel, 'claude-opus-4-8');
+  // Same tokens, five times the input rate and five times the output rate:
+  // 0.49 + 0.1375 + 0.02. This is the number the model choice turns on.
+  t.eq('...and billed at ITS rate, which is what makes the swap measurable',
+    dear.cost[0].usd, 0.6475);
   t.eq('...and recorded, so the two can be scored apart',
     [...new Set(dear.log.map((p) => p.judgeModel))], ['claude-opus-4-8']);
 

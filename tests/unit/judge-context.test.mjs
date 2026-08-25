@@ -121,6 +121,23 @@ export default async function ({ t }) {
   t.ok('...and the process is still standing afterwards', true);
   void broken;
 
+  // ---- retention actually removes things --------------------------------
+  // Snapshots are the biggest thing this app writes — a slate's search text
+  // compresses to tens of kilobytes and every run makes one. Pruning that counts
+  // what it WOULD delete and deletes nothing looks identical from the return
+  // value, and the store grows without bound until a write fails months later.
+  const { seed: seedBlob, read: readBlob } = await import('../helpers/blobs.mjs');
+  const old = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
+  const fresh = new Date().toISOString().slice(0, 10);
+  seedBlob('judge-context', ctx.keyFor(old, 'ancient'), { v: 1, gz: 'x' });
+  seedBlob('judge-context', ctx.keyFor(fresh, 'today'), { v: 1, gz: 'y' });
+  const removed = await ctx.pruneOld(30);
+  t.eq('a snapshot past the retention window is deleted', removed, 1);
+  t.eq('...and is really gone from the store, not just counted',
+    readBlob('judge-context', ctx.keyFor(old, 'ancient')), null);
+  t.ok("...while today's is untouched",
+    readBlob('judge-context', ctx.keyFor(fresh, 'today')) != null);
+
   // ---- search blocks are picked out of a mixed response -----------------
   t.eq('only search blocks are kept, not the model text',
     ctx.searchBlocks([{ type: 'text', text: 'hello' }, ...SEARCH]).length, 1);

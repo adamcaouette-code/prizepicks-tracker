@@ -54,7 +54,7 @@ export default async function ({ t }) {
     ends[label] = Date.now() - T0;
   };
 
-  const mock = mockFetch([
+  const ROUTES = [
     ['partner-api.prizepicks.com/leagues', async () => { await mark('catalog', LAT.catalog);
       return { data: [{ id: '2', type: 'league', attributes: { name: 'MLB', projections_count: 750 } }] }; }],
     ['partner-api.prizepicks.com/projections', async (url) => {
@@ -88,7 +88,8 @@ export default async function ({ t }) {
         { player: 'Elly De La Cruz', stat: 'Hits', line: 0.5, verdict: 'play', prob: 0.7, key_risk: 'k', reasoning: 'r' },
         { player: 'Oneil Cruz', stat: 'Hits', line: 1.5, verdict: 'lean', prob: 0.6, key_risk: 'k', reasoning: 'r' },
       ] }) }], usage: {} }; }],
-  ]);
+  ];
+  const mock = mockFetch(ROUTES);
 
   let done = null;
   try {
@@ -174,4 +175,36 @@ export default async function ({ t }) {
     Object.keys(starts).filter((k) => k.startsWith('mlbPlayer')), []);
   t.ok('the MLB fetch finished before the judge started, so it added no wait',
     ends.mlbSched < starts.claude, `mlb done@${ends.mlbSched}, claude@${starts.claude}`);
+
+  // ---- the run's own timing is kept, so the NEXT run can quote an ETA -----
+  // The progress bar's "typicalMs" is the mean of the last runs for this
+  // league, read back out of the run-stats blob. A run that measures itself and
+  // stores nothing leaves every future run with no ETA at all — and the timing
+  // block above still looks perfect, because it is computed in memory.
+  const { read: readBlob } = await import('../helpers/blobs.mjs');
+  const hist = readBlob('run-stats', 'mlb') || [];
+  t.eq('the finished run appends itself to the league history', hist.length, 1);
+  t.eq('...with the wall time the ETA is averaged from', hist[0].totalMs, tm.totalMs);
+  t.ok('...and the phase log, so a slow run can be read back later',
+    Array.isArray(hist[0].phases) && hist[0].phases.length > 0);
+
+  // A second run has to READ the first back: that round trip is the ETA, and it
+  // is the half a write-only test cannot reach. The number is published while
+  // the job is running — that is when a progress bar needs it — so the handler
+  // is started without awaiting and the running snapshot is caught mid-flight.
+  const mock2 = mockFetch(ROUTES);
+  let running = null;
+  try {
+    const { handler } = await loadFn('bet-finder-background.js');
+    const inFlight = handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'pipe2', league: 'mlb', legs: 2, bankroll: 100 }) });
+    for (let i = 0; i < 400 && !running; i++) {
+      await sleep(5);
+      const j = readBlob('bet-jobs', 'pipe2');
+      if (j && j.status === 'running') running = j;
+    }
+    await inFlight;
+  } finally { mock2.restore(); }
+  t.eq('a second run quotes an ETA read back from the first',
+    running?.typicalMs, hist[0].totalMs);
+  t.eq('...and the history keeps both', (readBlob('run-stats', 'mlb') || []).length, 2);
 }

@@ -48,6 +48,22 @@ export default async function ({ t }) {
   t.eq('...using the same convention: hit = actual > line', g?.hit, true);
   t.eq('...and records which source settled it', g?.source, 'mlb');
 
+  // ---- the game log is cached, and that cache is a round trip ------------
+  // A grading pass settles dozens of picks and the same player's log answers
+  // several of them; the league-wide name index is one call for ~1,400 players.
+  // Both are cached, and a cache that writes nowhere still grades correctly
+  // while making every call again — invisible from the result, expensive in
+  // practice, and the exact shape of write that fails silently. So the second
+  // grade is served with the network wired to throw.
+  let g2;
+  const noNet = mockFetch([[/statsapi/, async () => { throw new Error('cache miss: refetched a game log it already had'); }]]);
+  try {
+    g2 = await mod.gradeFromMlb({ player: 'Elly De La Cruz', date: '2026-08-13', stat: 'Hits', line: 0.5 });
+  } finally { noNet.restore(); }
+  t.eq('a second grade off the same game log makes no requests', noNet.calls.length, 0);
+  t.eq('...and still reads the right day out of it', g2?.result, 0);
+  t.eq('...grading it honestly, hit or miss', g2?.hit, false);
+
   // The name lookup is only needed when the pick predates mlbId being logged.
   reset();
   const withId = mockFetch([

@@ -122,4 +122,18 @@ export default async function ({ t }) {
   const judged = JSON.parse(user.slice(user.indexOf('[')));
   t.eq('the judge is told Elly is a goblin', judged.find((l) => l.player === 'Elly De La Cruz').oddsType, 'goblin');
   t.eq('the judge is told Suzuki is a demon', judged.find((l) => l.player === 'Seiya Suzuki').oddsType, 'demon');
+
+  // ---- and the corrected tiers reach the calibration log ------------------
+  // Slip legs are a large share of the graded sample, and every skill number is
+  // computed WITHIN a tier — so a slip leg logged under the OCR's tier is not
+  // merely a wrong label, it is a row scored in the wrong bucket. The log write
+  // is best-effort and swallows its own failure, which is exactly the shape of
+  // write that can go nowhere without anything going red.
+  const logged = read('pick-log', new Date().toISOString().slice(0, 10)) || [];
+  t.eq('every judged leg is logged for calibration', out.dataStatus.loggedForCalibration, logged.length);
+  t.eq('...under the source that made the prediction, not the board engine',
+    [...new Set(logged.map((p) => p.source))], ['slip']);
+  const loggedTier = (name) => logged.find((p) => p.player === name)?.oddsType;
+  t.eq('...and at the tier the board confirmed, not the one the screenshot read',
+    [loggedTier('Elly De La Cruz'), loggedTier('Seiya Suzuki')], ['goblin', 'demon']);
 }
