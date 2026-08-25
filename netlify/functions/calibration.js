@@ -1006,11 +1006,17 @@ function renderHTML(a) {
     <i>effectively</i> using, with the raw count beside it. A plain distinct/n ratio was not comparable between
     configs: it falls as n grows, so the judge with more picks looked less granular for free; a high share of
     <b>round numbers</b> (multiples of 0.05) is what you get when a model picks a verdict first and writes a
-    number to justify it. <b>Filled "cleared"</b> is a COVERAGE metric, not an obedience one. It was read as
-    instruction-following until the log settled it: of the props that reached the judge carrying recent5, 127 of
-    127 came back with the count filled, and of those without it, zero came back filled — perfect compliance in
-    both directions. What the number actually tracks is how often recent form reaches the payload at all, which
-    on the current board is about 60%. A low value here is a data-sourcing gap, not a judge defect.</div>
+    number to justify it. <b>Filled "cleared"</b> is a COVERAGE metric, not an obedience one. It was first read as
+    instruction-following until the log settled it: of the props that reached the judge carrying recent5, every
+    one came back with the count filled, and of those without it, none did — so the floor on this number is set
+    by how often recent form reaches the payload at all (currently ~60%), not by whether the judge chose to fill
+    it in. A low value is a data-sourcing gap, not a judge defect on its own.
+    <br><br>But that is not the whole story. A same-input replay (see docs/judge-measurement.md, "cleared" fill
+    is not run-to-run stable) held one slate's payload fixed — same props, same recent5 availability on every
+    single one, five independent replays — and the fill count still moved from 16 to 26 out of the same ~56-60
+    eligible props each time. Recent5 coverage cannot explain that: it does not change between replays of the
+    same snapshot. So above its data-sourcing floor, filling "cleared" is unreliable run to run — the judge does
+    not consistently report the count even when it has everything it needs to.</div>
 
   <h2>Model — head to head</h2>
   <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>

@@ -709,4 +709,10 @@ export default async function ({ t }) {
   t.ok('"cleared" is labelled as coverage, not instruction-following',
     /COVERAGE metric, not an obedience one/.test(html14));
   t.ok('...and the old claim is gone', !/plain instruction-following/.test(html14));
+  // The A/A replay (see docs/judge-measurement.md) falsified "perfect
+  // compliance in both directions" — same input, five replays, fill count
+  // still moved 16-26 out of the same eligible props. That claim must not
+  // still be on the page.
+  t.ok('the falsified "perfect compliance" claim is gone', !/perfect compliance/.test(html14));
+  t.ok('...replaced with the run-to-run finding', /unreliable run to run/.test(html14));
 }

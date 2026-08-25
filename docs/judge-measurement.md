@@ -79,6 +79,72 @@ been measured so far.
 Any future variant intended for replay testing must hold the head fixed —
 same search policy, same budget — and vary only the tail.
 
+## Item G/I/J results — fidelity passes, k needed is metric-specific
+
+**Run:** MLB, Aphrodite/Vilifiant, snapshot `9391fb8e-8ac2-47a7-9ee2-e41e3b3f0a9a`
+(60 props, 20/20/20 tier mix), k=5, 2026-08-25.
+
+**Fidelity: PASS.** Replay-vs-original mean absolute diff (0.0443) is
+indistinguishable from replay-vs-replay (0.0441) — ratio 1.005, threshold for
+concern was 2.0. The harness reproduces the original call. The suspected
+mechanism (search replayed as a prefilled turn instead of genuine
+`tool_use`/`web_search_tool_result` blocks) is not adding detectable distortion
+beyond ordinary sampling noise, at least at this k.
+
+**Noise floor:** per-pick mean absolute diff between identical replays is
+**0.044** (sd 0.069 of the paired difference; per-run sigma ≈ sd/√2 ≈ 0.049 —
+this is the same scale as the has-form demon AUC SE of 0.049 at n=205, a
+coincidence worth noting but not load-bearing).
+
+**k is not one number — it depends what you're trying to detect:**
+
+| target | what it's for | k needed |
+|---|---|---|
+| 0.02 per-pick (original ask) | — | 96 (this was sizing for the wrong thing, see below) |
+| meanProb / tierGap / calibration Brier, target 0.02 | these average over ~60 picks; aggregate sd of diff = 0.069/√60 = 0.0089 | **2** |
+| ...target 0.01 | | 7 |
+| ...target 0.005 | | 26 |
+| AUC | bounded by GRADED OUTCOME sampling (SE 0.049 at n=205), not by judge noise. Replaying the same slate produces no new outcomes — a settled game's result doesn't change. | **replay count does not help; more graded days does** |
+| top-3 selection, resolving the 0.01 gap that actually separates rank 1 from rank 3 on this slate | | 191 |
+| top-3, resolving a 0.02 gap | | 48 |
+
+So: **don't replicate for aggregate metrics (k=2-7 is plenty), can't replicate
+for AUC (replay the wrong axis entirely), and top-N needs 50-200+ replays if
+the goal is resolving THIS slate's actual gaps** — which, per the diagnosis
+below, may not be the achievable or even the right goal.
+
+## Top-3 churn is separation failure, not (only) noise
+
+Predicted top-3 churn under a Gaussian model at the measured noise (per-run sd
+0.049, signal spread 0.190) was **32%**. Observed was **67%** — in every single
+one of the 15 pairwise comparisons (5 original-vs-replay, 10 replay-vs-replay),
+only 1 of the top 3 props matched.
+
+Diagnostic, from the original snapshot alone, no new data:
+
+```
+top 10 probabilities (desc): 0.74 0.73 0.73 0.72 0.72 0.70 0.68 0.68 0.68 0.68
+rank1 − rank3 gap:  0.01
+rank1 − rank10 gap: 0.06
+props within 0.02 of the 3rd-place value (0.73), across all 60: 5
+```
+
+The entire top 10 spans **0.06** — about 1.2 per-run sigma. The gap the model
+actually has to resolve to pick a stable top 3 is **0.01**, a fifth of one
+sigma. Five props sit within noise-scale of the 3rd-place cut. Several of the
+top values are also exact multiples of 0.01 (0.74/0.73/0.72/0.70/0.68),
+consistent with the round-number tendency already tracked elsewhere on the
+behaviour card, which compresses the effective resolution further.
+
+**Verdict: separation failure, not noise.** The judge's own top-of-board output
+is a tight cluster with essentially no gap between the picks that would and
+would not make a 3-leg slip. Averaging replays shrinks the ESTIMATE of each
+prop's probability, but if the true gap between competing props really is
+~0.01, no amount of averaging turns a genuine near-tie into a stable ranking —
+191 replays gets you a precise measurement of a distinction that may not be
+meaningful. This is a property of what the judge outputs at the top of a
+slate, independent of the replay harness.
+
 ## Why AUC and not lift
 
 `lift` is a median half-split, which keeps only which side of the middle each
@@ -136,9 +202,39 @@ record of what the judge was fed rather than an inference. Coverage is **43.5%
 has-form / 56.5% no-form** across 1,857 graded picks.
 
 `clearedShare` on the behaviour card is a **coverage** metric, not an obedience
-one. The log settled it: of props reaching the judge with `recent5`, 127 of 127
-returned the count; of those without, zero did. Compliance is perfect in both
-directions.
+one. The log first suggested it was clean: of props reaching the judge with
+`recent5`, 127 of 127 returned the count; of those without, zero did.
+
+**That "perfect compliance in both directions" claim is falsified — item 5's
+finding does not survive replication.** It was read off ONE run's log, where
+recent5 coverage and fill behaviour are confounded: every covered prop happened
+to get filled, so filling looked deterministic. The A/A replay (item G,
+2026-08-25, snapshot `9391fb8e-8ac2-47a7-9ee2-e41e3b3f0a9a`, k=5) holds recent5
+coverage fixed — same 60 props, same which-ones-have-form, on every single
+replay — and lets everything else vary:
+
+| run | eligible picks answered | `cleared` filled | fill rate |
+|---|---|---|---|
+| original | 60 | 21 | 35.0% |
+| replay-1 | 56 | 25 | 44.6% |
+| replay-2 | 57 | 26 | 45.6% |
+| replay-3 | 56 | 16 | 28.6% |
+| replay-4 | 60 | 26 | 43.3% |
+| replay-5 | 57 | 21 | 36.8% |
+
+Recent5 availability cannot explain a swing from 16 to 26 filled — it is
+identical across all six runs by construction. The fill count is moving on its
+own, on IDENTICAL input, with a 62% relative range (16 to 26) between the two
+extremes. **This is a run-to-run reliability failure of Aphrodite's count-first
+anchoring, not a data-coverage artifact.** The prompt asks the judge to derive
+`cleared` from the anchor computation before writing a probability; that
+derivation is not happening consistently even when every input it needs is
+present every time.
+
+This is recorded as a measurement finding. No prompt was changed in response —
+see the standing constraints below. The corrected framing (coverage sets a
+floor, but does not by itself explain fill rate above that floor) also now
+appears on the live `/api/calibration` page.
 
 Notable: `Pitches Thrown`, `Hits+Runs+RBIs`, `Hitter/Pitcher Strikeouts` and
 `Home Runs` account for ~458 graded uncovered picks. Those are ordinary counting
