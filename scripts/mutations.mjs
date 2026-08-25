@@ -363,33 +363,49 @@ export const MUTATIONS = [
     from: '  && !snap.searchTruncated',
     to: '  && true' },
 
-  { id: 'replay-searches-live', suite: 'replay', file: 'scripts/replay.mjs',
+  { id: 'replay-searches-live', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'the replay re-runs the searches live instead of replaying the stored ones',
     from: "  if (snap.search?.length) messages.push({ role: 'assistant', content: snap.search });",
     to: '  if (false) messages.push({});' },
 
-  { id: 'replay-floor-vs-original', suite: 'replay', file: 'scripts/replay.mjs',
+  { id: 'replay-floor-vs-original', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'the noise floor is measured against the original, so harness error is counted as noise',
     from: '  const floor = vsEachOther.length ? mean(vsEachOther.map((c) => c.meanAbsDiff)) : null;',
     to: '  const floor = vsOriginal.length ? mean(vsOriginal.map((c) => c.meanAbsDiff)) : null;' },
 
-  { id: 'replay-fidelity-always-ok', suite: 'replay', file: 'scripts/replay.mjs',
+  { id: 'replay-fidelity-always-ok', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'the fidelity gate passes everything',
     from: "    verdict: floor > 0 && toOriginal / floor > 2",
     to: '    verdict: false' },
 
-  { id: 'replay-k-formula', suite: 'replay', file: 'scripts/replay.mjs',
+  { id: 'replay-k-formula', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'the runs-per-arm formula is off by the factor that accounts for two arms',
     from: '  return Math.max(1, Math.ceil(8 * (sdOfDiff / target) ** 2));',
     to: '  return Math.max(1, Math.ceil(4 * (sdOfDiff / target) ** 2));' },
 
-  { id: 'replay-live-search-unreported', suite: 'replay', file: 'scripts/replay.mjs',
+  { id: 'replay-live-search-unreported', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'a replay that went and searched again is averaged in silently',
     from: '    if (issued) warnings.push(`replay-${i + 1} issued ${issued} live search(es) — not an offline replay`);',
     to: '    if (false) warnings.push(String(issued));' },
 
-  { id: 'replay-missing-props-folded', suite: 'replay', file: 'scripts/replay.mjs',
+  { id: 'replay-missing-props-folded', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'a prop one run never answered is compared anyway, as a difference from undefined',
     from: '  const shared = [...A.keys()].filter((k) => B.has(k));',
     to: '  const shared = [...A.keys()];' },
+
+  // ======================================================================
+  // judge-replay-background.js / judge-replay-status.js — the server-side
+  // transport around replay-lib.js. Thin, but the two failure modes that
+  // matter (silently replaying a truncated snapshot, an unbounded k) are
+  // exactly the ones a thin wrapper is most likely to drop while wiring it up.
+  // ======================================================================
+  { id: 'jrb-k-unbounded', suite: 'judge-replay-endpoint', file: 'netlify/functions/judge-replay-background.js',
+    what: 'a caller-supplied k is trusted verbatim, so one bad request can fire hundreds of paid calls',
+    from: '  const k = Math.max(1, Math.min(10, Number(body.k) || 5));   // 10 is a sanity cap, not a design choice',
+    to: '  const k = Number(body.k) || 5;' },
+
+  { id: 'jrb-missing-runid-not-checked', suite: 'judge-replay-endpoint', file: 'netlify/functions/judge-replay-background.js',
+    what: 'a request with no runId starts a job anyway instead of failing fast',
+    from: "  if (!runId) {\n    return { statusCode: 400, body: JSON.stringify({ error: 'runId is required' }) };\n  }",
+    to: '  if (false) { return { statusCode: 400, body: \'\' }; }' },
 ];

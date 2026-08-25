@@ -12,7 +12,7 @@
 
 import {
   buildRequest, analyse, comparePair, behaviour, topN, recommendK, replay, searchesIssued,
-} from '../../scripts/replay.mjs';
+} from '../../netlify/functions/replay-lib.js';
 
 const SEARCH = [
   { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'CIN lineup' } },

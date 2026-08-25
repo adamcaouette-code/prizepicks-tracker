@@ -149,6 +149,20 @@ export async function readContext(key) {
   return JSON.parse(gunzipSync(Buffer.from(raw.gz, 'base64')).toString('utf8'));
 }
 
+/**
+ * The full snapshot for a runId, by the same key search the handler's ?runId=
+ * branch uses. Exported so a caller that needs the SNAPSHOT — the replay
+ * harness, not just a rendered response — is not left re-deriving the key
+ * format or the list-then-find logic.
+ */
+export async function findByRunId(runId) {
+  const store = STORE();
+  let keys = [];
+  try { keys = (await store.list()).blobs.map((b) => b.key).sort().reverse(); } catch { keys = []; }
+  const key = keys.find((k) => k.endsWith(`/${runId}`));
+  return key ? readContext(key) : null;
+}
+
 const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
 export const handler = async (event) => {
@@ -161,7 +175,8 @@ export const handler = async (event) => {
     if (q.runId) {
       const key = keys.find((k) => k.endsWith(`/${q.runId}`));
       if (!key) return { statusCode: 404, headers: HEADERS, body: JSON.stringify({ error: 'no snapshot for that runId', runs: keys.length }) };
-      return { statusCode: 200, headers: HEADERS, body: JSON.stringify(await readContext(key), null, 2) };
+      const snap = await readContext(key);
+      return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ...snap, replayable: isReplayable(snap) }, null, 2) };
     }
 
     if (q.projectionId) {
