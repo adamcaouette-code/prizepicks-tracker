@@ -583,6 +583,14 @@ export default async function ({ t }) {
   // In this fixture the judge ranks perfectly WITH form and not at all without,
   // so the difference must come out negative — form helped.
   t.ok('form helping shows as a negative difference', cb.lift.estimate < 0, String(cb.lift.estimate));
+  // Both poolings are published. The narrower set could only be chosen after
+  // seeing which tier diluted the estimate, and picking it on that basis is
+  // selecting on the outcome — so neither is presented as the number.
+  t.ok('the all-tier pooling is reported', cb.lift != null && cb.auc != null);
+  t.ok('...and the goblin+standard one beside it, not instead of it',
+    'liftGoblinStandard' in cb && 'aucGoblinStandard' in cb);
+  t.ok('...with a note saying to believe AUC where the two disagree',
+    /believe it/.test(cb.note), cb.note);
 
   // ---- coverage is stated as the covered share, not the uncovered one -----
   t.ok('form coverage is the share that HAD form',

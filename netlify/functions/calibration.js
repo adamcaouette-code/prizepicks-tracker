@@ -568,9 +568,10 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
   // What CAN be said is the difference BETWEEN the buckets on the same tier,
   // pooled across tiers by inverse variance — a paired comparison, which is far
   // better powered than either half of it.
-  const pooledDiff = (metric, seKey) => {
+  const pooledDiff = (metric, seKey, only = null) => {
     let wsum = 0, wx = 0; const per = {};
     for (const tier of Object.keys(out.byFormCoverage['has-form'].skill || {})) {
+      if (only && !only.includes(tier)) continue;
       const h = out.byFormCoverage['has-form'].skill[tier];
       const nf = out.byFormCoverage['no-form'].skill?.[tier];
       if (!h || !nf || h[metric] == null || nf[metric] == null) continue;
@@ -585,15 +586,29 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     const est = wx / wsum, se = Math.sqrt(1 / wsum);
     return { estimate: est, se, z: est / se, perTier: per };
   };
-  // Demon is excluded on purpose: it is the one tier where the judge clearly
-  // does rank, in both buckets, so including it would dilute the question being
-  // asked — whether form HELPS on the tiers that make up most of the board.
-  const withoutDemon = (r) => r;
+  // BOTH poolings are reported, deliberately.
+  //
+  // Over all three tiers the estimate is smaller, because demon shows almost no
+  // difference between the buckets and its weight pulls toward zero. Dropping
+  // demon raises it. There is a reasonable argument for the narrower set —
+  // goblin and standard are most of the board, and demon is the one tier the
+  // judge already ranks well in both buckets — but that argument was available
+  // only AFTER seeing which tier diluted the result, and choosing a subset on
+  // that basis is selecting on the outcome.
+  //
+  // So neither is presented as the number. Publishing both is the only honest
+  // option when the choice between them cannot be made blind.
+  const GS = ['goblin', 'standard'];
   out.byFormCoverage.noFormMinusHasForm = {
-    lift: withoutDemon(pooledDiff('lift', 'liftSE')),
-    auc: withoutDemon(pooledDiff('auc', 'aucSE')),
+    lift: pooledDiff('lift', 'liftSE'),
+    auc: pooledDiff('auc', 'aucSE'),
+    liftGoblinStandard: pooledDiff('lift', 'liftSE', GS),
+    aucGoblinStandard: pooledDiff('auc', 'aucSE', GS),
     note: 'Positive means the judge ranked BETTER without recent form than with it. '
-        + 'Inverse-variance pooled across tiers; suggestive at |z| ~ 2, not proof.',
+        + 'Inverse-variance pooled across tiers. Both the all-tier and the '
+        + 'goblin+standard pooling are given because the subset could only be '
+        + 'chosen after seeing which tier diluted the estimate. AUC is the better '
+        + 'powered of the two metrics, so where it disagrees with lift, believe it.',
   };
   // Per judge version too, so a version that only ever ran on well-covered props
   // is not credited with the difference.
@@ -997,11 +1012,18 @@ function renderHTML(a) {
     the data does not support. <b>AUC</b> beside it is the better measure — the chance a randomly chosen hit is
     ranked above a randomly chosen miss, using every pairwise comparison rather than only which side of the
     median a pick fell on, which at these sample sizes is a large gain in power.
-    ${(() => { const x = a.byFormCoverage?.noFormMinusHasForm?.lift; if (!x) return '';
-      return `<br><br><b>No-form minus has-form, pooled across tiers by inverse variance:
-      ${(x.estimate * 100 >= 0 ? '+' : '') + (x.estimate * 100).toFixed(1)} ± ${(x.se * 100).toFixed(1)}pts
-      (z = ${x.z.toFixed(2)}).</b> This paired comparison is the only well-powered statement available here —
-      individual buckets are not. Treat |z| near 2 as suggestive, not settled.`; })()}</div>
+    ${(() => { const d = a.byFormCoverage?.noFormMinusHasForm; if (!d?.lift) return '';
+      const f = (x, s = 100, dp = 1) => x == null ? '—'
+        : `${(x.estimate * s >= 0 ? '+' : '') + (x.estimate * s).toFixed(dp)} ± ${(x.se * s).toFixed(dp)} (z ${x.z.toFixed(2)})`;
+      return `<br><br><b>No-form minus has-form</b>, paired on tier and pooled by inverse variance — the only
+      well-powered statement available here, since no single bucket is:
+      <br>&nbsp;&nbsp;lift, all tiers: <b>${f(d.lift)}</b> &nbsp;·&nbsp; goblin+standard only:
+      <b>${f(d.liftGoblinStandard)}</b>
+      <br>&nbsp;&nbsp;AUC, all tiers: <b>${f(d.auc, 1, 3)}</b> &nbsp;·&nbsp; goblin+standard only:
+      <b>${f(d.aucGoblinStandard, 1, 3)}</b>
+      <br>Both poolings are shown because the narrower set could only be chosen after seeing which tier diluted
+      the estimate, and picking it on that basis is selecting on the outcome. Where AUC and lift disagree,
+      believe AUC — it is the better powered. Treat |z| near 2 as suggestive, never settled.`; })()}</div>
 
   <h2>What arrives without form</h2>
   <div class="wrap"><table><thead><tr><th>league :: stat</th><th>graded picks</th></tr></thead><tbody>${noFormRows}</tbody></table></div>

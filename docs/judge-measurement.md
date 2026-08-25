@@ -54,8 +54,42 @@ for continuity and because it is easier to explain.
 
 Where a claim has to be made about two buckets, make the **paired** one: the
 difference between buckets on the same tier, pooled across tiers by inverse
-variance. On the current log, no-form minus has-form is **+11.2 ± 5.0 pts
-(z ≈ 2.2, p ≈ 0.03)** — suggestive, not settled, and stated that way.
+variance.
+
+On the log as of 2026-08-25, no-form minus has-form:
+
+| pooling | lift | AUC |
+|---|---|---|
+| all three tiers | +8.3 ± 4.3 (z 1.92) | +0.042 ± 0.031 (z 1.36) |
+| goblin + standard | +11.2 ± 5.0 (z 2.23) | +0.060 ± 0.036 (z 1.67) |
+
+**Both poolings are published and neither is "the" number.** Dropping demon
+raises the estimate because demon shows almost no difference between buckets.
+There is a reasonable case for the narrower set — goblin and standard are most
+of the board — but that case was only available *after* seeing which tier
+diluted the result, and choosing a subset on that basis is selecting on the
+outcome.
+
+**Where AUC and lift disagree, believe AUC.** It is the better powered of the
+two, and it is consistently weaker here: no pooling reaches |z| = 2 on AUC. The
+lift-based z ≈ 2.2 is the most favourable number available and should not be
+quoted alone.
+
+Per-tier AUC on the same log, with Hanley-McNeil intervals:
+
+| bucket | tier | n | lift | AUC |
+|---|---|---|---|---|
+| has form | standard | 200 | −11.0 ± 7.0 | 0.481 ± 0.041 |
+| has form | demon | 205 | +14.7 ± 5.7 | **0.644 ± 0.049** |
+| has form | goblin | 402 | −2.0 ± 4.6 | 0.512 ± 0.031 |
+| no form | goblin | 773 | +8.5 ± 3.3 | **0.550 ± 0.022** |
+| no form | standard | 130 | +3.1 ± 8.7 | 0.530 ± 0.051 |
+| no form | demon | 147 | +15.1 ± 5.9 | **0.689 ± 0.065** |
+
+Bolded rows are the three where AUC clears 2σ from 0.5. The defensible reading
+is not "the ranking inverts with form" — it is that the judge **ranks demons
+well in both buckets, ranks no-form goblins slightly, and has no measurable
+ranking on has-form goblins or standards.**
 
 ## Form coverage
 

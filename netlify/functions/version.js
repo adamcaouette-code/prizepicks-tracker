@@ -21,7 +21,7 @@
 // string in its footer, and tests/unit/version.test.mjs fails if the two drift —
 // otherwise the page and the functions can report different versions and the
 // whole point of having a version is lost.
-export const VERSION = '4.17.1';
+export const VERSION = '4.17.2';
 
 const HEADERS = {
   'Content-Type': 'application/json',
