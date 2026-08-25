@@ -164,6 +164,44 @@ function scoreAgainstBaseline(target, rows) {
 const BREAK_EVEN = { goblin: 2.0 ** (-1 / 3), standard: 4.75 ** (-1 / 3), demon: 12.0 ** (-1 / 3) };
 
 /**
+ * Area under the ROC curve: the probability that a randomly chosen hit is ranked
+ * above a randomly chosen miss. 0.5 is a coin flip, 1.0 is perfect ordering.
+ *
+ * This is the honest measure of a ranking, and `lift` is not. A median half-split
+ * throws away everything except which side of the middle each pick fell on — at
+ * n=200 that is most of the information, and the standard error balloons
+ * accordingly. AUC uses every pairwise comparison, so it sees the same data with
+ * far more power. `lift` is kept beside it for continuity and because it is the
+ * easier number to explain.
+ *
+ * Computed by rank-sum with MIDRANKS, so a tie between a hit and a miss counts
+ * half — which is exactly what a tie is worth to a ranking that has to choose.
+ */
+function aucOf(rows) {
+  const pos = [], neg = [];
+  for (const p of rows) (p.hit === true ? pos : neg).push(Number(p.prob) || 0);
+  if (!pos.length || !neg.length) return null;
+  const all = [...pos.map((v) => ({ v, y: 1 })), ...neg.map((v) => ({ v, y: 0 }))]
+    .sort((a, b) => a.v - b.v);
+  let i = 0, rankSum = 0;
+  while (i < all.length) {
+    let j = i;
+    while (j + 1 < all.length && all[j + 1].v === all[i].v) j++;
+    const mid = (i + j) / 2 + 1;                      // 1-based midrank
+    for (let k = i; k <= j; k++) if (all[k].y === 1) rankSum += mid;
+    i = j + 1;
+  }
+  const A = (rankSum - (pos.length * (pos.length + 1)) / 2) / (pos.length * neg.length);
+  // Hanley & McNeil: without an interval an AUC of 0.54 reads as skill when it
+  // is usually noise.
+  const q1 = A / (2 - A), q2 = (2 * A * A) / (1 + A);
+  const se = Math.sqrt(Math.max(0,
+    (A * (1 - A) + (pos.length - 1) * (q1 - A * A) + (neg.length - 1) * (q2 - A * A))
+    / (pos.length * neg.length)));
+  return { auc: A, se, pos: pos.length, neg: neg.length };
+}
+
+/**
  * Within-tier skill: does the judge's own ranking separate its good picks from
  * its bad ones INSIDE a single tier?
  *
@@ -184,9 +222,20 @@ function computeSkill(graded) {
     const top = rows.slice(0, half), bottom = rows.slice(-half);
     const base = rate(rows);
     const be = BREAK_EVEN[tier] ?? null;
+    const a = aucOf(rows);
+    // Standard error of the difference of two independent proportions, each on
+    // half the tier. Without it a -2.0pt lift on 402 picks reads as an inversion
+    // when its own interval is +-4.6 and it cannot be told from zero.
+    const pt = rate(top), pb = rate(bottom);
+    const liftSE = Math.sqrt((pt * (1 - pt)) / half + (pb * (1 - pb)) / half);
     out[tier] = {
       n: rows.length,
-      topHalf: rate(top), bottomHalf: rate(bottom),
+      topHalf: pt, bottomHalf: pb,
+      liftSE,
+      // AUC over every pairwise comparison rather than a median split — same
+      // data, far more power. See aucOf.
+      auc: a ? a.auc : null,
+      aucSE: a ? a.se : null,
       // The whole answer in one number: how many points the judge's own ranking
       // separates the good half from the bad half, inside one tier.
       lift: rate(top) - rate(bottom),
@@ -505,6 +554,47 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     return o;
   };
   out.byFormCoverage = { 'has-form': formBucket(hasForm), 'no-form': formBucket(noForm) };
+  // Coverage stated the right way round: the share of graded picks that DID
+  // reach the judge with recent form.
+  out.byFormCoverage.formCoverage = graded.length ? hasForm.length / graded.length : null;
+
+  // THE ONLY DEFENSIBLE COMPARISON HERE.
+  //
+  // A single bucket's lift cannot carry the claim: at n=402 a goblin lift of
+  // -2.0pts has a standard error of +-4.6, and at n=200 a standard lift of
+  // -11.0 has +-7.0. Neither is distinguishable from zero on its own, and
+  // reading either as "the ranking is inverted" is reading noise.
+  //
+  // What CAN be said is the difference BETWEEN the buckets on the same tier,
+  // pooled across tiers by inverse variance — a paired comparison, which is far
+  // better powered than either half of it.
+  const pooledDiff = (metric, seKey) => {
+    let wsum = 0, wx = 0; const per = {};
+    for (const tier of Object.keys(out.byFormCoverage['has-form'].skill || {})) {
+      const h = out.byFormCoverage['has-form'].skill[tier];
+      const nf = out.byFormCoverage['no-form'].skill?.[tier];
+      if (!h || !nf || h[metric] == null || nf[metric] == null) continue;
+      const diff = nf[metric] - h[metric];
+      const se = Math.sqrt(h[seKey] ** 2 + nf[seKey] ** 2);
+      if (!isFinite(se) || se <= 0) continue;
+      const w = 1 / (se * se);
+      per[tier] = { diff, se };
+      wsum += w; wx += w * diff;
+    }
+    if (!wsum) return null;
+    const est = wx / wsum, se = Math.sqrt(1 / wsum);
+    return { estimate: est, se, z: est / se, perTier: per };
+  };
+  // Demon is excluded on purpose: it is the one tier where the judge clearly
+  // does rank, in both buckets, so including it would dilute the question being
+  // asked — whether form HELPS on the tiers that make up most of the board.
+  const withoutDemon = (r) => r;
+  out.byFormCoverage.noFormMinusHasForm = {
+    lift: withoutDemon(pooledDiff('lift', 'liftSE')),
+    auc: withoutDemon(pooledDiff('auc', 'aucSE')),
+    note: 'Positive means the judge ranked BETTER without recent form than with it. '
+        + 'Inverse-variance pooled across tiers; suggestive at |z| ~ 2, not proof.',
+  };
   // Per judge version too, so a version that only ever ran on well-covered props
   // is not credited with the difference.
   out.byFormCoverage.byPrompt = {};
@@ -742,12 +832,18 @@ function renderHTML(a) {
     if (!v || !v.n) return `<tr><td>${label}</td><td colspan="6" class="mut">no graded picks</td></tr>`;
     const d = v.baselineDelta;
     const col = d == null ? 'var(--dim)' : d < 0 ? 'var(--grn)' : 'var(--red)';
+    // Every lift carries its own interval. A -2.0pt lift on 402 picks has a
+    // standard error of +-4.6 and cannot be told from zero; printed bare it
+    // reads as an inversion.
+    const tiers = Object.entries(v.skill || {}).map(([t, k]) =>
+      `${t.slice(0, 3)} ${(k.lift >= 0 ? '+' : '') + (k.lift * 100).toFixed(1)}±${(k.liftSE * 100).toFixed(1)}` +
+      `<span class="mut"> auc ${k.auc == null ? '—' : k.auc.toFixed(3) + '±' + k.aucSE.toFixed(3)}</span>`).join('<br>');
     return `<tr><td>${label}</td><td>${v.n}</td>
       <td>${v.brier == null ? '—' : v.brier.toFixed(4)}</td>
       <td>${v.baseline == null ? '—' : v.baseline.toFixed(4)}</td>
       <td style="color:${col}">${d == null ? '—' : (d > 0 ? '+' : '') + d.toFixed(4)}</td>
       <td style="color:${col}">${d == null ? '—' : d < 0 ? 'beats it' : 'behind'}</td>
-      <td>${v.meanLift == null ? '—' : (v.meanLift >= 0 ? '+' : '') + (v.meanLift * 100).toFixed(1) + 'pts'}</td></tr>`;
+      <td style="font-size:10px;line-height:1.7">${tiers || '<span class="mut">—</span>'}</td></tr>`;
   };
   const formRows = [formRow('has form', fc['has-form']), formRow('NO form', fc['no-form'])].join('')
     + Object.entries(fc.byPrompt || {}).flatMap(([k, v]) => [
@@ -886,14 +982,26 @@ function renderHTML(a) {
 
   <h2>Did the judge have anything to work with?</h2>
   <div class="wrap"><table><thead><tr><th>rows</th><th>n</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th><th>within-tier lift</th></tr></thead><tbody>${formRows}</tbody></table></div>
-  <div class="callout">About 40% of props reach the judge with no recent form at all, and the prompt's own
-    fallback on those is to lean on the payout tier — which is exactly what the baseline already is. So on that
-    40% the judge may be structurally unable to beat the floor, and a pooled Brier would hide it behind the rows
-    where it did have something to reason from. <b>recentAvg</b> is written only when the payload carried
-    recent5, so this splits on a record of what the judge was actually fed rather than a guess at it.
-    <br><br>Beating the baseline on <b>has form</b> and losing on <b>NO form</b> means the deficit is data
+  <div class="callout">${a.byFormCoverage?.formCoverage == null ? '' :
+      `<b>${pct(a.byFormCoverage.formCoverage)}</b> of graded picks reached the judge carrying recent form; the
+       rest arrived with none. `}The prompt's own fallback without form is to lean on the payout tier — which is
+    exactly what the baseline already is — so on the uncovered rows the judge may be structurally unable to beat
+    the floor, and a pooled Brier would hide that behind the rows where it could actually reason.
+    <b>recentAvg</b> is written only when the payload carried recent5, so this splits on a record of what the
+    judge was fed rather than a guess at it.
+    <br><br>Beating the baseline on <b>has form</b> and losing on <b>NO form</b> would mean the deficit is data
     coverage, and the fix is wiring form sources for the stats below rather than touching a prompt. Losing on
-    both means the judge is not adding signal even when fully fed.</div>
+    both means the judge is not adding signal even when fully fed.
+    <br><br><b>Read the lifts with their intervals.</b> Each is a difference of two proportions on half a tier,
+    so a -2.0pt lift on 402 picks carries ±4.6 and cannot be told from zero; bare, it reads as an inversion that
+    the data does not support. <b>AUC</b> beside it is the better measure — the chance a randomly chosen hit is
+    ranked above a randomly chosen miss, using every pairwise comparison rather than only which side of the
+    median a pick fell on, which at these sample sizes is a large gain in power.
+    ${(() => { const x = a.byFormCoverage?.noFormMinusHasForm?.lift; if (!x) return '';
+      return `<br><br><b>No-form minus has-form, pooled across tiers by inverse variance:
+      ${(x.estimate * 100 >= 0 ? '+' : '') + (x.estimate * 100).toFixed(1)} ± ${(x.se * 100).toFixed(1)}pts
+      (z = ${x.z.toFixed(2)}).</b> This paired comparison is the only well-powered statement available here —
+      individual buckets are not. Treat |z| near 2 as suggestive, not settled.`; })()}</div>
 
   <h2>What arrives without form</h2>
   <div class="wrap"><table><thead><tr><th>league :: stat</th><th>graded picks</th></tr></thead><tbody>${noFormRows}</tbody></table></div>

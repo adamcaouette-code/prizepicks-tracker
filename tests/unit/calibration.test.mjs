@@ -554,7 +554,46 @@ export default async function ({ t }) {
   t.eq('...and covered stats do not appear there',
     res14.noFormBy.stat['mlb :: Hits'], undefined);
 
+  // ---- AUC, and the intervals that stop lift being over-read -------------
+  // A median half-split keeps only which side of the middle each pick fell on.
+  // At n=200 that is most of the information thrown away, and the standard error
+  // balloons — a -2.0pt lift on 402 picks carries ±4.6 and cannot be told from
+  // zero, which is exactly how a noise reading becomes an "inversion".
+  const hg = has.skill.goblin, ng = no.skill.goblin;
+  t.ok('a perfectly ordered ranking scores AUC 1', Math.abs(hg.auc - 1) < 1e-9, String(hg.auc));
+  t.ok('a ranking carrying no information scores 0.5',
+    Math.abs(ng.auc - 0.5) < 1e-9, String(ng.auc));
+  t.ok('every lift carries its own standard error', hg.liftSE >= 0 && ng.liftSE > 0);
+  t.ok('...and every AUC does too', hg.aucSE != null && ng.aucSE != null);
+
+  // Ties count half. A judge that says one number for everything cannot order
+  // anything, and must score exactly 0.5 rather than being rewarded by the sort.
+  t.ok('a flat judge scores exactly 0.5, ties counted as half',
+    Math.abs(ng.auc - 0.5) < 1e-9, String(ng.auc));
+
+  // The cross-bucket comparison — the only well-powered statement available,
+  // because it is paired on tier rather than resting on one bucket alone.
+  const cb = res14.byFormCoverage.noFormMinusHasForm;
+  t.ok('the no-form minus has-form difference is reported with an interval',
+    cb.lift && typeof cb.lift.estimate === 'number' && cb.lift.se > 0);
+  t.ok('...and a z so it can be read as suggestive rather than settled',
+    Math.abs(cb.lift.z - cb.lift.estimate / cb.lift.se) < 1e-9);
+  t.ok('...pooled across the tiers present in both buckets',
+    Object.keys(cb.lift.perTier).includes('goblin'));
+  // In this fixture the judge ranks perfectly WITH form and not at all without,
+  // so the difference must come out negative — form helped.
+  t.ok('form helping shows as a negative difference', cb.lift.estimate < 0, String(cb.lift.estimate));
+
+  // ---- coverage is stated as the covered share, not the uncovered one -----
+  t.ok('form coverage is the share that HAD form',
+    Math.abs(res14.byFormCoverage.formCoverage - 0.5) < 1e-9,
+    String(res14.byFormCoverage.formCoverage));
+
   const html14 = (await cal14.handler({ queryStringParameters: {} })).body;
+  t.ok('the page states coverage the right way round',
+    /of graded picks reached the judge carrying recent form/.test(html14));
+  t.ok('...and warns that a bare lift reads as an inversion it cannot support',
+    /reads as an inversion that\s+the data does not support/.test(html14));
   t.ok('the split is on the page', /Did the judge have anything to work with\?/.test(html14));
   t.ok('...along with what arrives uncovered', /What arrives without form/.test(html14));
   // Item 5 proved the old label wrong: coverage, not obedience.
