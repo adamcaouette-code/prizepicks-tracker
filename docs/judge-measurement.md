@@ -58,6 +58,27 @@ thing being maximized.
 > A prompt variant that improves Brier while lowering top-N hit rate is a
 > regression and must be reported as one.
 
+## Replay is faithful for the TAIL, not the HEAD
+
+The replay harness (`scripts/replay.mjs`) holds the stored search results
+fixed and replays them as a prefilled assistant turn rather than letting the
+model search live. That is faithful only for variants that change how the
+judge reasons over a fixed set of facts — the prompt tail. It is **not**
+faithful for variants that change what the judge searches, because the stored
+results came from queries a different variant would not have issued. Comparing
+such a variant against the replayed original would be comparing a real answer
+to a hobbled one and calling the gap a finding.
+
+Psyche and Aphrodite differ in the HEAD, not only the tail: Aphrodite added the
+`lineupConfirmed` skip and sets the search budget to the number of
+*unconfirmed* games, so the two versions do not even issue the same number of
+searches on the same slate. **The psyche-vs-aphrodite comparison cannot be
+settled by replay** and still requires parallel live runs, exactly as it has
+been measured so far.
+
+Any future variant intended for replay testing must hold the head fixed —
+same search policy, same budget — and vary only the tail.
+
 ## Why AUC and not lift
 
 `lift` is a median half-split, which keeps only which side of the middle each
