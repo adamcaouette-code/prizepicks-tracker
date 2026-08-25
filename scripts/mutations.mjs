@@ -393,6 +393,11 @@ export const MUTATIONS = [
     from: '  const shared = [...A.keys()].filter((k) => B.has(k));',
     to: '  const shared = [...A.keys()];' },
 
+  { id: 'replay-clearedfill-always-full', suite: 'replay', file: 'netlify/functions/replay-lib.js',
+    what: 'cleared fill rate reports 100% even when the judge left the field empty on some picks',
+    from: '  const filled = picks.filter((p) => p.cleared != null).length;',
+    to: '  const filled = picks.length;' },
+
   // ======================================================================
   // judge-replay-background.js / judge-replay-status.js — the server-side
   // transport around replay-lib.js. Thin, but the two failure modes that

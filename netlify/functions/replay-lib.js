@@ -125,6 +125,12 @@ export function behaviour(picks, tiers = {}) {
   }
   const g = byTier.goblin ? mean(byTier.goblin) : null;
   const d = byTier.demon ? mean(byTier.demon) : null;
+  // Matches calibration.js's clearedShare exactly: the share of picks where the
+  // judge filled in `cleared` at all. It is a COVERAGE metric, not an obedience
+  // one — see calibration.js's own note on this. Computed here so a replay
+  // reads on the same axis as a live run rather than a metric only the live
+  // path reports.
+  const filled = picks.filter((p) => p.cleared != null).length;
   return {
     n: probs.length,
     meanProb: m,
@@ -133,6 +139,7 @@ export function behaviour(picks, tiers = {}) {
     spread: Math.sqrt(Math.max(0, mean(probs.map((x) => x * x)) - m * m)),
     roundShare: round / probs.length,
     tierGap: g != null && d != null ? g - d : null,
+    clearedFillRate: picks.length ? filled / picks.length : null,
   };
 }
 

@@ -123,6 +123,14 @@ export default async function ({ t }) {
     Math.abs(b.tierGap - 0.54) < 1e-9, String(b.tierGap));
   // 0.55 lands on a multiple of 0.05; 0.72 and 0.18 do not.
   t.ok('...and the share of round numbers', Math.abs(b.roundShare - (1 / 3)) < 1e-9, String(b.roundShare));
+  // Matches calibration.js's clearedShare: coverage, not obedience — did the
+  // judge fill the field at all. This fixture fills it on all three picks.
+  t.eq('cleared fill rate is reported, matching calibration.js\'s definition', b.clearedFillRate, 1);
+  const partial = behaviour([
+    { player: 'A', stat: 'Hits', line: 0.5, prob: 0.6, cleared: 2 },
+    { player: 'B', stat: 'Hits', line: 0.5, prob: 0.5, cleared: null },
+  ], {});
+  t.eq('...and drops when the judge left it empty on some picks', partial.clearedFillRate, 0.5);
 
   // ---- FIDELITY: replay-vs-original against replay-vs-replay -------------
   // The replays here agree closely with each other and sit well away from the
