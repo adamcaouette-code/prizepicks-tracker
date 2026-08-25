@@ -14,9 +14,12 @@
 
 import { getStore } from '@netlify/blobs';
 
-const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
+// Exported so the ledger re-judge can narrow a board to exactly the props this
+// feed is showing. If the two ever disagreed about what "today's picks" means,
+// the re-judge would spend searches on rows nobody is looking at.
+export const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
 
-function latestByPick(picks) {
+export function latestByPick(picks) {
   const m = new Map();
   for (const p of picks) {
     const key = p.projectionId || `${p.player}|${p.stat}|${p.line}`;

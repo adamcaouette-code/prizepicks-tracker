@@ -19,6 +19,10 @@ import { tablesForSlip } from './bet-finder-size.js';
 // Persists what the judge saw, so a prompt variant can be replayed against a
 // graded slate instead of shipped and waited on. Best-effort — see saveContext.
 import { saveContext, searchBlocks, capSearch } from './judge-context.js';
+// The ledger tab is /api/top-picks. A re-judge that defined "today's picks"
+// differently would drift from what the user is looking at, so it borrows the
+// feed's own filters rather than re-deriving them.
+import { latestByPick, isCombo } from './top-picks.js';
 
 // VILIFIANT is the default judge model.
 //
@@ -1620,6 +1624,9 @@ export const handler = async (event) => {
       // but produces a sample every diagnostic on /api/calibration can actually
       // read, the tier gap above all.
       balance: body.balance === true,
+      // Re-judge only the props already on today's ledger, rather than pulling a
+      // fresh board. See the filter in the handler.
+      fromLedger: body.fromLedger === true,
     };
 
     // ---- Run timer: timestamped phase log + typical-duration ETA ----------
@@ -1701,7 +1708,47 @@ export const handler = async (event) => {
       ? mlbSlate().catch(() => null)          // enrichment: never fails a run
       : Promise.resolve(null)));
 
-    const rows = await rowsP;
+    let rows = await rowsP;
+
+    // ---- LEDGER RE-JUDGE ---------------------------------------------------
+    // Narrow the board to props already on today's ledger, then run the ordinary
+    // pipeline over them.
+    //
+    // Why re-run the whole pipeline rather than re-score the logged rows in
+    // place: a log row carries a probability and a tier, but not the player's
+    // recent form, position, opposing starter or park — the very inputs the
+    // judge anchors on. Re-scoring from the log would be judging with 40% of
+    // the payload missing, which is the failure the form-coverage split exists
+    // to measure. Pulling the live board and intersecting keeps every input.
+    //
+    // The point of doing it at all is TIME. Morning picks are judged before
+    // lineups are posted, so markVoids can confirm nothing and the search has to
+    // guess. Run again in the evening, the same props are re-judged against
+    // posted lineups — and anyone now confirmed out is voided rather than
+    // recommended. A dead leg is not a bad bet, it is no bet at all.
+    if (params.fromLedger) {
+      const want = new Set();
+      try {
+        const logStore = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
+        const today = new Date().toISOString().slice(0, 10);
+        const logged = (await logStore.get(today, { type: 'json' })) || [];
+        // Same filter the ledger tab applies, from the same helpers, so the
+        // re-judge covers the rows on screen and nothing else. A graded row is
+        // skipped: its game is over, and paying for a search to forecast a
+        // result already in the log is the one thing a re-judge must not do.
+        for (const p of latestByPick(logged)) {
+          if (p.hit === true || p.hit === false) continue;
+          if (p.verdict !== 'play' && p.verdict !== 'lean') continue;
+          if (isCombo(p)) continue;
+          if (p.league && p.league !== params.league) continue;
+          want.add(`${p.player}|${p.stat}|${Number(p.line)}`);
+        }
+      } catch { /* no ledger today: fall through and judge the whole board */ }
+      // An empty ledger deliberately does NOT fall through to the full board —
+      // that would turn a cheap re-judge into a full-price scan the caller never
+      // asked for. Nothing on the ledger means nothing to re-judge.
+      rows = rows.filter((r) => want.has(`${r.player}|${r.stat}|${Number(r.line)}`));
+    }
     // A balanced run takes the widest board allowed unless the caller said
     // otherwise. Its whole purpose is sample size, and props are the one thing
     // here that is nearly free: web searches are ~76% of a run's cost and are
@@ -1709,13 +1756,22 @@ export const handler = async (event) => {
     // 44 instead of 60 on a measurement run saves nothing and costs a third of
     // the sample.
     const cap = params.maxPicks || (params.balance ? 60 : 44);
-    const candidates = findCandidates(rows, params.tiers, 4, cap, params.statFilter, params.balance);
+    // The per-game cap exists to stop one game monopolising a 40-prop board. On
+    // a ledger re-judge the board is ALREADY the ledger, so the cap would just
+    // drop picks the user is looking at — and it drops them by tier, since
+    // fairProb is a per-tier constant. Widened, not removed: the global cap
+    // still bounds what a re-judge can cost.
+    const perGame = params.fromLedger ? 12 : 4;
+    const candidates = findCandidates(rows, params.tiers, perGame, cap, params.statFilter, params.balance);
     const traps = rows
       .filter((r) => !positionAllows(r.position, r.stat, r.league))
       .slice(0, 15)
       .map((r) => ({ player: r.player, stat: r.stat, line: r.line, position: r.position, matchup: r.matchup }));
     if (!candidates.length) {
-      await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: 'No candidates — props not posted yet.' }, params } });
+      const why = params.fromLedger
+        ? 'Nothing to re-judge — today\u2019s ledger is empty for this league, or its props are off the board.'
+        : 'No candidates — props not posted yet.';
+      await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: why }, params } });
       return { statusCode: 202 };
     }
     phaseDone('pulling props');
@@ -1914,6 +1970,11 @@ export const handler = async (event) => {
       for (const c of live) idByKey[`${c.player}|${c.stat}|${Number(c.line)}`] = c.id;
       const logged = picks.map((p) => ({
         date: day, loggedAt: stamp, league: params.league,
+        // A re-judge is a SECOND forecast on the same prop, made later with more
+        // information. It is not a correction of the first and must not overwrite
+        // it — calibration already treats source as part of a prediction's
+        // identity, which is what keeps the two scoreable against each other.
+        ...(params.fromLedger ? { source: 'ledger' } : {}),
         projectionId: p.projectionId || idByKey[`${p.player}|${p.stat}|${Number(p.line)}`] || null,
         player: p.player, stat: p.stat, line: p.line,
         prob: p.prob, verdict: p.verdict, oddsType: p.oddsType,

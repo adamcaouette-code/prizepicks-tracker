@@ -124,6 +124,29 @@ Notable: `Pitches Thrown`, `Hits+Runs+RBIs`, `Hitter/Pitcher Strikeouts` and
 stats PrizePicks itself serves last-5 for, so that is a live gap in
 `attachHistory` rather than an inherent limitation like Fantasy Score.
 
+## `source: 'ledger'` — re-judged picks are a separate population
+
+A ledger re-judge (v4.21.0) re-scores props already on the day's ledger against
+posted lineups, and logs the result beside the morning forecast rather than over
+it. Those rows carry `source: 'ledger'`; the originals carry no `source` at all,
+which `calibration.js` reads as `board`.
+
+They must not be pooled with board rows in any headline number. Two reasons, and
+both bite:
+
+1. **They are not a sample of the board.** They are a sample of what the board
+   already called a play or a lean — conditioned on the first judgment being
+   optimistic. Their base rate is not the board's base rate, and pooling them
+   drags the pooled hit rate toward the selected end.
+2. **The same game appears twice.** A prop with a morning row and an evening row
+   contributes two predictions and one outcome. Every standard error in
+   `calibration.js` assumes independent rows; pooled, they are not.
+
+The interesting comparison is the *paired* one — same prop, morning forecast
+versus evening forecast, one outcome — which measures what confirmed lineups are
+actually worth. That is a Task 3 question and needs its own estimator; it is not
+what the per-source Brier table on `/api/calibration` reports.
+
 ## Standing constraints
 
 Prompt text, model, search budget, payload contents, selection logic and the

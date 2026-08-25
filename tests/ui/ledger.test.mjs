@@ -5,7 +5,7 @@
 // say so rather than showing yesterday's board as if it were live.
 
 import { openApp } from '../helpers/browser.mjs';
-import { LEAGUES, STATS, LEDGER } from '../fixtures/api.mjs';
+import { LEAGUES, STATS, LEDGER, jobRoutes } from '../fixtures/api.mjs';
 
 export default async function ({ t, url, browser }) {
   const CAL = { graded: 23, brier: 0.214, playsLeans: { n: 23, hits: 14 },
@@ -130,6 +130,51 @@ export default async function ({ t, url, browser }) {
   t.eq('no unstubbed API calls', unstubbed, []);
   t.eq('no JS errors', errors, []);
   await page.close();
+
+  // ---- re-judging the ledger ---------------------------------------------
+  // The evening re-run exists because the morning run judged before lineups were
+  // posted. It is worth nothing if it quietly turns into a full board scan — the
+  // request it sends is the whole feature, so that is what gets asserted.
+  const REJUDGED = { ...LEDGER, picks: LEDGER.picks.map(
+    (p) => (p.player === 'Edge Std' && p.line === 1.5 ? { ...p, prob: 0.55 } : p)) };
+  let ledgerFetches = 0;
+  const job = jobRoutes('bet-finder', { board: REJUDGED.picks, timing: { pieces: {} } });
+  const rj = await openApp(browser, { url, routes: {
+    '**/api/pp-leagues*': LEAGUES,
+    '**/api/pp-stats*': STATS,
+    '**/api/calibration*': CAL,
+    '**/api/top-picks*': (route) => {
+      // Second load returns the re-judged numbers, so "did the ledger refresh?"
+      // is answerable from the page rather than from the stub's call count alone.
+      const body = ++ledgerFetches === 1 ? LEDGER : REJUDGED;
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    },
+    ...job,
+  }});
+  await rj.page.click('#tabBtnToday');
+  await rj.page.waitForSelector('#ledgerBody .leg');
+
+  await rj.page.click('#ledgerRejudge');
+  await rj.page.waitForFunction(() => document.querySelectorAll('#ledgerBody .leg').length > 0
+    && !document.querySelector('#ledgerStatus .spin'));
+
+  t.eq('the re-judge asks for the ledger, not the board', job.sent.fromLedger, true);
+  t.eq('...for the league selected on Find Bets', job.sent.league, 'mlb');
+  // The tier chips and side toggle belong to the board scan. Re-applying them
+  // here would drop rows off the ledger the user is looking at.
+  t.eq('...across every tier regardless of the board chips',
+    (job.sent.tiers || []).slice().sort(), ['demon', 'goblin', 'standard']);
+  t.eq('...and both sides', job.sent.sides, 'both');
+  // Which judge wrote a probability is part of the experiment, so it does carry.
+  t.ok('the judge and model pickers carry over',
+    typeof job.sent.prompt === 'string' && typeof job.sent.model === 'string',
+    JSON.stringify({ prompt: job.sent.prompt, model: job.sent.model }));
+
+  t.ok('the ledger reloads once the re-judge finishes', ledgerFetches >= 2, String(ledgerFetches));
+  t.ok('...showing the new judgment, not the morning one',
+    /55%/.test(await rj.page.textContent('#ledgerBody')));
+  t.eq('no JS errors while re-judging', rj.errors, []);
+  await rj.page.close();
 
   // ---- feed down ---------------------------------------------------------
   const down = await openApp(browser, { url, routes: {
