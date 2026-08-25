@@ -55,6 +55,31 @@ export const LEDGER = { date: '2026-08-13', count: 3, picks: [
   { player: 'A Hitter', stat: 'Hits', line: 0.5, pick: 'over',  verdict: 'play', prob: 0.71, team: 'CIN', hit: true,  image: null },
   { player: 'B Hitter', stat: 'Runs', line: 1.5, pick: 'under', verdict: 'lean', prob: 0.60, team: 'CHC', hit: false, image: null },
   { player: 'C Hitter', stat: 'RBIs', line: 0.5, pick: 'over',  verdict: 'fade', prob: 0.41, team: 'BOS', hit: null,  image: null },
+  // ---- pending picks, shaped to exercise the slip rules -------------------
+  // Edge, not probability: the goblin is the highest percentage on the board
+  // and the worst bet on it (needs 79.4% a leg), while the standards clear
+  // their 59.5% comfortably.
+  { player: 'Edge Std', stat: 'Hits', line: 1.5, side: 'over', verdict: 'play', prob: 0.68,
+    oddsType: 'standard', team: 'LAD', matchup: 'LAD vs SF', hit: null, image: null },
+  { player: 'Second Game', stat: 'Hits', line: 1.5, side: 'over', verdict: 'play', prob: 0.66,
+    oddsType: 'standard', team: 'NYM', matchup: 'NYM vs ATL', hit: null, image: null },
+  { player: 'Third Game', stat: 'Hits', line: 0.5, side: 'over', verdict: 'lean', prob: 0.64,
+    oddsType: 'standard', team: 'HOU', matchup: 'HOU vs SEA', hit: null, image: null },
+  { player: 'Shiny Goblin', stat: 'Hits', line: 0.5, side: 'over', verdict: 'play', prob: 0.78,
+    oddsType: 'goblin', team: 'TEX', matchup: 'TEX vs OAK', hit: null, image: null },
+  // A second line of Edge Std's SAME prop — nested, never both.
+  { player: 'Edge Std', stat: 'Hits', line: 2.5, side: 'over', verdict: 'lean', prob: 0.61,
+    oddsType: 'standard', team: 'LAD', matchup: 'LAD vs SF', hit: null, image: null },
+  // Same player, DIFFERENT stat, and a third — the per-player cap is two.
+  { player: 'Edge Std', stat: 'Runs', line: 0.5, side: 'over', verdict: 'play', prob: 0.67,
+    oddsType: 'standard', team: 'LAD', matchup: 'LAD vs SF', hit: null, image: null },
+  { player: 'Edge Std', stat: 'RBIs', line: 0.5, side: 'over', verdict: 'play', prob: 0.665,
+    oddsType: 'standard', team: 'LAD', matchup: 'LAD vs SF', hit: null, image: null },
+  // An under on a demon line: placeable, but its payout is unknown, so it can
+  // be shown and must not be sized.
+  { player: 'Unpriced Under', stat: 'Hits', line: 4.5, side: 'under', verdict: 'play', prob: 0.12,
+    sideProb: 0.88, oddsType: 'demon', sidePriceUnverified: true, team: 'PIT', matchup: 'PIT vs SD',
+    hit: null, image: null },
 ]};
 
 /**

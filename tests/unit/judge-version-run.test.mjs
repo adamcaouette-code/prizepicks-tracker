@@ -228,6 +228,17 @@ export default async function ({ t }) {
     aph.result.board.map((p) => `${p.player}|${p.side}|${p.sideProb}`).sort());
 
   // ---- the projectionId collision, fixed in the log too -------------------
+  // The side is logged, not just P(over). Without it nothing downstream can tell
+  // a weak over from a strong under — Today's Ledger rendered a blank direction
+  // for exactly this reason, and a slip cannot be built from a leg whose
+  // direction is unknown.
+  t.eq('the recommended side is recorded',
+    [...new Set(aph.log.map((p) => p.side))].sort(), ['over']);
+  t.ok('...with the probability of THAT side',
+    aph.log.every((p) => p.sideProb != null));
+  t.ok('...while prob stays P(over) for calibration',
+    aph.log.every((p) => p.prob === p.sideProb));   // all overs here, so they agree
+
   t.eq('each logged pick carries the id of its OWN line',
     aph.log.map((p) => p.projectionId).sort(), ['pp-0', 'pp-1', 'pp-2']);
 

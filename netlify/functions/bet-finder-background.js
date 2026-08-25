@@ -1917,6 +1917,17 @@ export const handler = async (event) => {
         projectionId: p.projectionId || idByKey[`${p.player}|${p.stat}|${Number(p.line)}`] || null,
         player: p.player, stat: p.stat, line: p.line,
         prob: p.prob, verdict: p.verdict, oddsType: p.oddsType,
+        // WHICH SIDE was recommended, and its probability. p.prob stays P(over)
+        // for calibration — that convention is load-bearing and unchanged — but
+        // without the side, nothing downstream can tell whether a 0.28 was a
+        // weak over or a strong under. Today's Ledger rendered a blank side for
+        // exactly this reason, and a slip cannot be built from a leg whose
+        // direction is unknown.
+        side: p.side || null,
+        sideProb: p.sideProb ?? null,
+        // Only meaningful when the side's payout is known — see attachSides.
+        edge: p.edge ?? null,
+        sidePriceUnverified: !!p.sidePriceUnverified,
         // Which judge version produced this probability. Without it a prompt
         // change cannot be evaluated — the log would mix two forecasters and
         // report one blended, uninterpretable calibration curve.
