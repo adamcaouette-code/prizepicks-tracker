@@ -16,6 +16,9 @@ import { promptSet, verdictFor } from './judge-prompts.js';
 // The real PrizePicks payout tables. Imported rather than duplicated — see the
 // note where the old local copy used to be.
 import { tablesForSlip } from './bet-finder-size.js';
+// Persists what the judge saw, so a prompt variant can be replayed against a
+// graded slate instead of shipped and waited on. Best-effort — see saveContext.
+import { saveContext, searchBlocks, capSearch } from './judge-context.js';
 
 // VILIFIANT is the default judge model.
 //
@@ -1059,7 +1062,7 @@ export function attachSource(picks, candidates) {
   return picks;
 }
 
-async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}, version = null, model = MODEL, confirmedTeams = null) {
+async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb', oppDef = {}, version = null, model = MODEL, confirmedTeams = null, runId = null) {
   // Only send what Claude reasons with — not image, timestamps, league tags, ids.
   // Saves input tokens on every run; the full objects stay in our code.
   //
@@ -1068,6 +1071,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
   // a field the payload does not carry is worse than either version alone.
   const V = promptSet(version);
   const slim = {};
+  const byProjection = {};
   for (const c of candidates) {
     const key = c.matchup || c.game;
     const entry = V.entryFor(c);
@@ -1090,6 +1094,10 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
       entry.lineupConfirmed = true;
     }
     (slim[key] ||= []).push(entry);
+    // Index by projection id so a logged pick can be traced back to the exact
+    // entry it contributed. The id is deliberately NOT in the payload — the
+    // judge has no business seeing it — so the mapping has to be kept here.
+    if (c.id) byProjection[c.id] = { matchup: key, entry };
   }
   // Never allot more searches than there are games — small slates (WNBA nights,
   // late MLB) don't need the full cap, and every search result bills as Opus input.
@@ -1103,6 +1111,11 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
   // The floor of 1 stays. Lineups are not the only thing a search finds — a late
   // scratch, weather, a bullpen game — and dropping to zero would change what
   // the judge can know rather than just what it costs.
+  // Built once and reused for both the call and the snapshot, so what is stored
+  // is literally what was sent rather than a reconstruction of it.
+  const system = V.promptFor(league);
+  const userContent = `League: ${String(league).toUpperCase()}\nShortlist grouped by game:\n`
+    + JSON.stringify(slim, null, 2);
   const games = Object.entries(slim);
   const unconfirmed = games.filter(([, props]) => !props.every((e) => e.lineupConfirmed)).length;
   const budget = confirmedTeams ? unconfirmed : games.length;
@@ -1117,14 +1130,31 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     body: JSON.stringify({
       model,
       max_tokens: 16000,
-      system: V.promptFor(league),
+      system,
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxSearches }],
-      messages: [{ role: 'user', content: `League: ${String(league).toUpperCase()}\nShortlist grouped by game:\n` + JSON.stringify(slim, null, 2) }],
+      messages: [{ role: 'user', content: userContent }],
     }),
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'Claude API error');
   recordCost('judge', model, data).catch(() => {});   // best-effort spend metering
+
+  // Snapshot the context. Search results are live, so this is the only moment
+  // they exist — the same query on the same slate returns different text
+  // tomorrow, and without them a replay is not a replay.
+  const capped = capSearch(searchBlocks(data.content));
+  saveContext({
+    runId: runId || `run-${Date.now()}`,
+    at: new Date().toISOString(),
+    league, promptVersion: V.name, model, maxSearches,
+    system,                       // the resolved prompt, not just its name
+    userContent,                  // the exact bytes sent
+    props: byProjection,
+    search: capped.blocks,
+    searchBytes: capped.bytes,
+    searchTruncated: capped.dropped > 0 ? capped.dropped : 0,
+    usage: data.usage || null,
+  }).catch(() => {});
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   const picks = parsePicks(text);
   for (const p of picks) {
@@ -1811,7 +1841,7 @@ export const handler = async (event) => {
     await tick('Claude researching lineups');
     const judgeStart = Date.now();
     const judged = await judge(live, teamRecords, odds.teamWinProbs, params.league, oppDef, params.prompt, params.model,
-      params.searchPolicy === 'always' ? null : voids.confirmedTeams || null);
+      params.searchPolicy === 'always' ? null : voids.confirmedTeams || null, jobId);
     // Resolve the name back into params so the result payload, the run report
     // and the page all state which judge actually ran. A version you cannot see
     // from the output is one you will misattribute results to.

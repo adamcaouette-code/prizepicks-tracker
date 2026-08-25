@@ -26,15 +26,46 @@ let seq = 0;
  *        for stubbing a sibling module the function imports.
  */
 export async function loadFn(name, opts = {}) {
-  let src = fs.readFileSync(path.join(FN_DIR, name), 'utf8');
-  src = src.replace(/from ['"]@netlify\/blobs['"]/g, `from '${BLOBS}'`);
-  src = src.replace(/from ['"]\.\/([^'"]+)['"]/g, (_m, rel) => `from '${path.join(FN_DIR, rel)}'`);
-  for (const [from, to] of opts.replace || []) src = src.replace(from, to);
-  // Unique filename per load so repeated loads in one process aren't served from
+  // Unique prefix per load so repeated loads in one process aren't served from
   // Node's module cache — suites often load the same function under different stubs.
-  const file = path.join(TMP, `${String(seq++).padStart(3, '0')}-${name.replace(/[^\w.]/g, '_')}.mjs`);
-  fs.writeFileSync(file, src);
-  return import(file);
+  const gen = String(seq++).padStart(3, '0');
+  const written = new Map();
+
+  // Rewrite the WHOLE import graph, not just the entry module.
+  //
+  // Only the entry used to be rewritten, so a sibling it imported was loaded
+  // straight from netlify/functions with the REAL @netlify/blobs. Anything that
+  // sibling wrote went to a store the test could not see, and the write silently
+  // did nothing — invisible when the sibling is best-effort and swallows its own
+  // failures, as judge-context is by design.
+  //
+  // ORDER MATTERS. Relative imports are resolved to their absolute FN_DIR paths
+  // FIRST and `opts.replace` is applied to that, because suites write their stub
+  // patterns against the absolute form (see fnPath). Only afterwards are the
+  // imports still pointing at FN_DIR redirected to rewritten copies — so an
+  // import a suite deliberately redirected to a stub is left exactly where the
+  // suite put it.
+  const rewrite = (fnName) => {
+    if (written.has(fnName)) return written.get(fnName);
+    const file = path.join(TMP, `${gen}-${fnName.replace(/[^\w.]/g, '_')}.mjs`);
+    written.set(fnName, file);                       // set before recursing: cycles
+
+    let src = fs.readFileSync(path.join(FN_DIR, fnName), 'utf8');
+    src = src.replace(/from ['"]@netlify\/blobs['"]/g, `from '${BLOBS}'`);
+    src = src.replace(/from ['"]\.\/([^'"]+)['"]/g, (_m, rel) => `from '${path.join(FN_DIR, rel)}'`);
+    for (const [from, to] of opts.replace || []) src = src.replace(from, to);
+
+    src = src.replace(new RegExp(`from '${FN_DIR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/([^']+)'`, 'g'),
+      (m, rel) => {
+        const target = /\.(m?js)$/.test(rel) ? rel : `${rel}.js`;
+        if (!fs.existsSync(path.join(FN_DIR, target))) return m;
+        return `from '${rewrite(target)}'`;
+      });
+
+    fs.writeFileSync(file, src);
+    return file;
+  };
+  return import(rewrite(name));
 }
 
 /** Absolute path to a function file, for building `replace` rules. */
