@@ -162,6 +162,10 @@ function scoreAgainstBaseline(target, rows) {
 // real payout tables: goblin 2.0x, standard 4.75x, demon 12.0x. Three legs is the
 // reference because the ORDERING between tiers holds at every size.
 const BREAK_EVEN = { goblin: 2.0 ** (-1 / 3), standard: 4.75 ** (-1 / 3), demon: 12.0 ** (-1 / 3) };
+// A hit rate on nine picks is not evidence. Printed beside a break-even it
+// invites precisely the conclusion the sample cannot support, so thin cells are
+// suppressed rather than rendered.
+const MIN_SLICE_N = 20;
 
 /**
  * Area under the ROC curve: the probability that a randomly chosen hit is ranked
@@ -245,17 +249,38 @@ function computeSkill(graded) {
       // to be worth running at all.
       baselineClears: be == null ? null : base >= be,
       bestHalfClears: be == null ? null : rate(top) >= be,
-      // The half-split proves signal EXISTS. This asks whether it is enough: if
-      // you only ever bet the judge's very best picks, does the rate climb far
-      // enough to clear the payout? If it is flat across these slices the signal
-      // is broad and weak, no threshold rescues it, and the answer is better
-      // information rather than a stricter filter.
-      topSlices: [10, 20, 30, 50].map((pctile) => {
+      // THE SELECTION CURVE.
+      //
+      // bestHalfClears asks about the top 50% of a tier, and that is not a cut
+      // anyone bets. Selection takes the top few of ~44 props, so a median split
+      // on a genuinely skilled ranker averages the tail that gets wagered
+      // together with the middle that never does — and can return "does not
+      // clear break-even" as a false negative.
+      //
+      // Percentile slices over the pooled tier, and fixed top-N grouped BY RUN,
+      // because the top 3 of a whole season's log is not a bet either: the
+      // engine picks its best few from one slate at a time. Runs share a
+      // loggedAt stamp, which is what makes them recoverable here.
+      //
+      // Cells under MIN_SLICE_N are suppressed rather than printed — a hit rate
+      // on nine picks is not evidence about anything, and printed next to a
+      // break-even it invites exactly the conclusion it cannot support.
+      topSlices: [50, 25, 10, 5].map((pctile) => {
         const k = Math.floor(rows.length * (pctile / 100));
-        if (k < 25) return { pctile, n: k, rate: null, clears: null };   // too thin to mean anything
-        const slice = rows.slice(0, k);
-        const r = rate(slice);
+        if (k < MIN_SLICE_N) return { pctile, n: k, rate: null, clears: null };
+        const r = rate(rows.slice(0, k));
         return { pctile, n: k, rate: r, clears: be == null ? null : r >= be };
+      }),
+      topN: [3, 5, 10].map((N) => {
+        const byRun = {};
+        for (const p of rows) (byRun[p.loggedAt || p.date || '?'] ||= []).push(p);
+        const picked = [];
+        for (const run of Object.values(byRun)) {
+          picked.push(...run.sort((x, y) => (Number(y.prob) || 0) - (Number(x.prob) || 0)).slice(0, N));
+        }
+        if (picked.length < MIN_SLICE_N) return { N, runs: Object.keys(byRun).length, n: picked.length, rate: null, clears: null };
+        const r = rate(picked);
+        return { N, runs: Object.keys(byRun).length, n: picked.length, rate: r, clears: be == null ? null : r >= be };
       }),
     };
   }
@@ -791,12 +816,15 @@ function renderHTML(a) {
     const col = lift >= 5 ? 'var(--grn)' : lift >= 1 ? 'var(--amb)' : 'var(--red)';
     const clears = v.bestHalfClears ? '<span style="color:var(--grn)">yes</span>'
       : '<span style="color:var(--red)">no</span>';
-    const slices = (v.topSlices || []).map((sl) => sl.rate == null
-      ? `<td class="mut">n=${sl.n}</td>`
-      : `<td style="color:${sl.clears ? 'var(--grn)' : 'var(--dim)'}">${pct(sl.rate)}</td>`).join('');
-    return `<tr><td>${esc(t)}</td><td>${v.n}</td>${slices}<td>${pct(v.topHalf)}</td>
-      <td style="color:${col}">${lift >= 0 ? '+' : ''}${lift.toFixed(1)}</td>
-      <td>${pct(v.breakEven)}</td><td>${clears}</td></tr>`;
+    const cell = (rate, clears, n) => rate == null
+      ? `<td class="mut">n=${n}</td>`
+      : `<td style="color:${clears ? 'var(--grn)' : 'var(--dim)'}">${pct(rate)}<br><span class="mut" style="font-size:9px">n=${n}</span></td>`;
+    const slices = (v.topSlices || []).map((sl) => cell(sl.rate, sl.clears, sl.n)).join('');
+    const tn = (v.topN || []).map((x) => cell(x.rate, x.clears, x.n)).join('');
+    return `<tr><td>${esc(t)}</td><td>${v.n}</td>${slices}${tn}
+      <td style="color:${col}">${lift >= 0 ? '+' : ''}${lift.toFixed(1)}±${(v.liftSE * 100).toFixed(1)}</td>
+      <td>${v.auc == null ? '—' : v.auc.toFixed(3) + '±' + v.aucSE.toFixed(3)}</td>
+      <td>${pct(v.breakEven)}</td></tr>`;
   }).join('') || '<tr><td colspan="8" class="mut">Not enough graded picks in any tier yet.</td></tr>';
 
   const modelRows = Object.entries(a.byModel || {}).sort((x, y) => y[1].n - x[1].n).map(([k, v]) => {
@@ -1029,7 +1057,7 @@ function renderHTML(a) {
   <div class="wrap"><table><thead><tr><th>league :: stat</th><th>graded picks</th></tr></thead><tbody>${noFormRows}</tbody></table></div>
 
   <h2>Does the judge beat the tier?</h2>
-  <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>top 10%</th><th>top 20%</th><th>top 30%</th><th>top 50%</th><th>vs worst half</th><th>lift (pts)</th><th>break-even</th><th>bettable</th></tr></thead><tbody>${skillRows}</tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>top 50%</th><th>top 25%</th><th>top 10%</th><th>top 5%</th><th>top 3<br><span class="mut">/run</span></th><th>top 5<br><span class="mut">/run</span></th><th>top 10<br><span class="mut">/run</span></th><th>lift (pts)</th><th>AUC</th><th>break-even</th></tr></thead><tbody>${skillRows}</tbody></table></div>
   <div class="callout">The question calibration cannot answer. Calibration asks whether the percentages are
     <i>honest</i>; this asks whether they are <i>useful</i>. Inside a single tier, the judge's own top-rated half
     is compared against its bottom-rated half. <b>Lift</b> is the gap — if it is near zero the judge is only
@@ -1039,12 +1067,18 @@ function renderHTML(a) {
     just to return the stake, and <b>bettable</b> asks whether even the judge's best half clears it. A judge can
     be perfectly calibrated and still have nothing bettable — being honest about a bad number does not make it a
     good one.
-    <br><br>The <b>top 10/20/30/50%</b> columns are the decision: if you only ever bet the judge's very best
-    picks, does the rate climb far enough to clear the payout? A half-split lift proves signal exists; these
-    columns say whether it is <i>enough</i>. If the number keeps rising as the slice narrows, a stricter
-    threshold is a real route to a bettable board. If it is flat across all four, the signal is broad and weak,
-    no threshold rescues it, and the fix is better information rather than a harsher filter. Green means that
-    slice clears its break-even.</div>
+    <br><br><b>The selection curve is the decision, and the median split is not.</b> "Best half" asks about the
+    top 50% of a tier, which is not a cut anyone bets — selection takes the top few of ~44 props, so a median
+    split on a genuinely skilled ranker averages the tail that gets wagered together with the middle that never
+    does, and can return "does not clear break-even" as a false negative.
+    <br><br>The <b>percentage</b> columns narrow over the pooled tier. The <b>top N per run</b> columns are the
+    cut the engine actually makes: its best few from ONE slate, pooled across runs, because the top 3 of a whole
+    season's log is not a bet either. Green means that cell clears its own break-even. Every cell carries the
+    count behind it, and any under ${MIN_SLICE_N} picks shows only that count — a hit rate on a dozen picks is
+    not evidence, and printed beside a break-even it invites exactly the conclusion it cannot support.
+    <br><br><b>Lift</b> and <b>bestHalfClears</b> are kept for continuity but are no longer the verdict. Lift
+    carries its own interval for the reason given above; AUC beside it uses every pairwise comparison instead of
+    only which side of the median a pick fell on, and is the better powered of the two.</div>
 
   <h2>How close, not just whether</h2>
   <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>mean margin</th><th>spread</th><th>losses</th><th>near miss</th><th>not close</th><th>saved by −1</th></tr></thead><tbody>${marginRows}</tbody></table></div>

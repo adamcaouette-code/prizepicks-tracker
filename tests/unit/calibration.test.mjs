@@ -221,16 +221,56 @@ export default async function ({ t }) {
   // THE POINT: the half is not bettable, but the signal keeps concentrating, so
   // a stricter threshold IS a route to a bettable board. That is the finding a
   // lift number alone cannot give you.
+  // Slices run WIDE to NARROW: 50 / 25 / 10 / 5 percent. The median is first
+  // because it is the least interesting — the cut the engine actually bets is at
+  // the other end.
   const gob = res4.skill.goblin.topSlices.map((x) => [x.pctile, x.n, x.rate, x.clears]);
-  t.eq('the rate climbs as the slice narrows', gob.map((x) => x[2]), [0.9, 0.85, 0.8, 0.68]);
+  t.eq('the slices run from the median down to the tail', gob.map((x) => x[0]), [50, 25, 10, 5]);
+  t.eq('the rate climbs as the slice narrows', gob.map((x) => x[2]), [0.68, 0.88, 0.9, null]);
   t.eq('...and the narrow slices clear break-even where the half did not',
-    gob.map((x) => x[3]), [true, true, true, false]);
+    gob.map((x) => x[3]), [false, true, true, null]);
+  // The top 5% is 15 picks. A hit rate on 15 is not evidence, and printed next
+  // to a break-even it invites the conclusion the sample cannot support.
+  t.eq('a slice too thin to support a number is suppressed, count still shown',
+    [gob[3][1], gob[3][2]], [15, null]);
 
   // A judge with no ranking signal stays flat however hard you filter it — the
   // outcome that says no threshold will help and the fix is better information.
   t.eq('flat slices mean no threshold rescues it',
-    res4.skill.demon.topSlices.map((x) => x.rate), [0.3, 0.3, 0.3, 0.3]);
-  t.eq('...and none of them clear', res4.skill.demon.topSlices.every((x) => x.clears === false), true);
+    res4.skill.demon.topSlices.map((x) => x.rate), [0.3, 0.32, 0.3, null]);
+  t.eq('...and none of the measurable ones clear',
+    res4.skill.demon.topSlices.filter((x) => x.clears != null).every((x) => x.clears === false), true);
+
+  // ---- fixed top-N, grouped BY RUN ---------------------------------------
+  // The top 3 of a whole season's log is not a bet either. The engine picks its
+  // best few from ONE slate, so top-N has to be taken per run and pooled — runs
+  // share a loggedAt stamp, which is what makes them recoverable.
+  reset();
+  const runs = [];
+  for (let r = 0; r < 12; r++) {
+    for (let i = 0; i < 20; i++) {
+      // Within each run the top 3 by probability always hit; the rest are a
+      // coin flip. A median split drowns that; a top-3 cut sees it exactly.
+      runs.push({ ...sk(i < 3 ? 0.9 - i * 0.01 : 0.5, i < 3 || i % 2 === 0, r * 100 + i, 'goblin'),
+        loggedAt: `2026-08-${String(10 + r).padStart(2, '0')}T18:00:00Z` });
+    }
+  }
+  seed('pick-log', DAY, runs);
+  const calN = await loadFn('calibration.js');
+  const resN = JSON.parse((await calN.handler({ queryStringParameters: { format: 'json' } })).body);
+  const tn = resN.skill.goblin.topN;
+  t.eq('top-N is reported for 3, 5 and 10', tn.map((x) => x.N), [3, 5, 10]);
+  t.eq('...pooled across every run rather than taken from the whole log once',
+    [tn[0].runs, tn[0].n], [12, 36]);
+  t.eq('the top 3 of each run hit every time', tn[0].rate, 1);
+  t.ok('...and clear the goblin break-even, which the median split does not',
+    tn[0].clears === true && resN.skill.goblin.topSlices[0].clears === false,
+    `top3 ${tn[0].rate} vs top50% ${resN.skill.goblin.topSlices[0].rate}`);
+  t.ok('a wider N dilutes back toward the tier rate', tn[2].rate < tn[0].rate,
+    `N=10 ${tn[2].rate} vs N=3 ${tn[0].rate}`);
+  // bestHalfClears is kept for continuity but is no longer the verdict — here it
+  // says false while the cut the engine actually bets clears comfortably.
+  t.eq('bestHalfClears survives, and disagrees', resN.skill.goblin.bestHalfClears, false);
 
   const html4 = (await cal4.handler({ queryStringParameters: {} })).body;
   t.ok('the table renders', /Does the judge beat the tier\?/.test(html4));
