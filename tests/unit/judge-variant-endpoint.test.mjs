@@ -75,6 +75,12 @@ export default async function ({ t }) {
   const noRun = await pollJob('replay-jobs', 'no-run');
   t.eq('a missing runId ends the job in error', noRun.status, 'error');
 
+  // ---- an unknown model override is refused before any call is billed -----
+  await bg0.handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'bad-model', runId: 'v-run-1', variant: 'themis', model: 'claude-nonexistent' }) });
+  const badModel = await pollJob('replay-jobs', 'bad-model');
+  t.eq('an unknown model ends the job in error', badModel.status, 'error');
+  t.ok('...naming the model and what IS known', /claude-nonexistent/.test(badModel.message) && /claude-haiku-4-5/.test(badModel.message));
+
   // ---- the whole path: THEMIS, k=3, against a real snapshot ----------------
   let calls = 0;
   const variantMock = mockFetch([
@@ -183,7 +189,8 @@ export default async function ({ t }) {
   } finally { leakMock.restore(); }
   t.eq('k reflects only the clean runs, not what was requested', leaky.result.k, 2);
   t.eq('kRequested keeps the original ask', leaky.result.kRequested, 3);
-  t.eq('the excluded run is named end to end, all the way to the stored job', leaky.result.excluded,
+  t.eq('the excluded run is named end to end, all the way to the stored job',
+    leaky.result.excluded.map((e) => ({ label: e.label, reason: e.reason })),
     [{ label: 'run-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
   t.eq('pairwise comparisons only cover the 2 clean runs', leaky.result.pairwise.length, 1);
   t.eq('tier calibration is reported for only the clean runs', leaky.result.tierCalibration.length, 2);

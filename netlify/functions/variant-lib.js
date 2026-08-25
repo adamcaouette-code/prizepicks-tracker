@@ -27,10 +27,14 @@ import { parsePicks } from './bet-finder-background.js';
  * Make k independent calls of `variant`'s prompt against a snapshot's fixed
  * payload and search context. Returns k runs, none of them privileged.
  */
-export async function runVariant(snap, variant, { k = 5, key = process.env.ANTHROPIC_API_KEY, call } = {}) {
+export async function runVariant(snap, variant, { k = 5, key = process.env.ANTHROPIC_API_KEY, call, model } = {}) {
   if (!key) throw new Error('ANTHROPIC_API_KEY is not set');
   const system = variant.promptFor(snap.league);
-  const req = buildRequest({ ...snap, system });
+  // model is a SEPARATE axis from variant: item K's arm 3 (Aphrodite on Opus)
+  // keeps the prompt identical to arm 1 and changes only which model answers
+  // it — same payload, same stored search results, one variable. Falls back
+  // to the snapshot's own model when not given, so arms 1/2 need nothing extra.
+  const req = buildRequest({ ...snap, system, model: model || snap.model });
   const runs = [];
   const warnings = [];
   const excluded = [];
@@ -47,12 +51,12 @@ export async function runVariant(snap, variant, { k = 5, key = process.env.ANTHR
       // Jaccard numbers it was never supposed to be part of.
       const reason = `issued ${issued} live search(es) — not an offline replay`;
       warnings.push(`${run.label} ${reason}`);
-      excluded.push({ label: run.label, reason });
+      excluded.push({ label: run.label, reason, usage: run.usage });
       continue;
     }
     runs.push(run);
   }
-  return { variant: variant.name, system, runs, warnings, excluded, kRequested: k };
+  return { variant: variant.name, model: req.model, system, runs, warnings, excluded, kRequested: k };
 }
 
 // ---------------------------------------------------------------------------

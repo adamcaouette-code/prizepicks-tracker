@@ -55,6 +55,12 @@ const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap w
 // Update these if Anthropic pricing changes.
 const PRICES = {
   'claude-opus-4-8': { in: 5, out: 25 },
+  // Opus 5's actual API id, added for item K's arm 3 (Aphrodite on Opus). No
+  // published rate found in this codebase to carry over other than opus-4-8's
+  // — used as the best available proxy. Flagged, not assumed silently: if
+  // Anthropic's real Opus 5 price differs, every cost figure priced against
+  // this entry needs re-pricing, not re-running.
+  'claude-opus-5': { in: 5, out: 25 },
   'claude-sonnet-5': { in: 2, out: 10 },
   'claude-sonnet-4-6': { in: 3, out: 15 },
   'claude-haiku-4-5': { in: 1, out: 5 },

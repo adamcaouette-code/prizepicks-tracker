@@ -462,8 +462,8 @@ export const MUTATIONS = [
 
   { id: 'variant-system-not-swapped', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
     what: 'runVariant sends the SNAPSHOT\'s original system prompt instead of building one from the variant — silently turns every variant test into another Aphrodite A/A run',
-    from: '  const req = buildRequest({ ...snap, system });',
-    to: '  const req = buildRequest(snap);' },
+    from: '  const req = buildRequest({ ...snap, system, model: model || snap.model });',
+    to: '  const req = buildRequest({ ...snap, model: model || snap.model });' },
 
   // ======================================================================
   // judge-variant-background.js / judge-variant-status.js — the server-side
@@ -496,7 +496,7 @@ export const MUTATIONS = [
   { id: 'replay-contaminated-not-excluded', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'a run that broke offline replay is folded into the analysis anyway, instead of excluded',
     from: `      warnings.push(\`\${run.label} \${reason}\`);
-      excluded.push({ label: run.label, reason });
+      excluded.push({ label: run.label, reason, usage: run.usage });
       continue;
     }
     runs.push(run);`,
@@ -507,7 +507,7 @@ export const MUTATIONS = [
   { id: 'variant-contaminated-not-excluded', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
     what: 'a run that broke offline replay is folded into the variant analysis anyway, instead of excluded',
     from: `      warnings.push(\`\${run.label} \${reason}\`);
-      excluded.push({ label: run.label, reason });
+      excluded.push({ label: run.label, reason, usage: run.usage });
       continue;
     }
     runs.push(run);`,
@@ -524,4 +524,25 @@ export const MUTATIONS = [
     what: 'rawRuns omits the real Aphrodite original, leaving no baseline to compute a residual correlation against',
     from: '      rawRuns: [...(original.picks.length ? [original] : []), ...runs].map((r) => ({',
     to: '      rawRuns: [...runs].map((r) => ({' },
+
+  { id: 'costof-wrong-output-rate', suite: 'variant-lib', file: 'netlify/functions/replay-lib.js',
+    what: 'output tokens are priced at the input rate, silently understating cost for any model whose rates differ',
+    from: 'usd += (inTok / 1e6) * price.in + (outTok / 1e6) * price.out + searches * 0.01;',
+    to: 'usd += (inTok / 1e6) * price.in + (outTok / 1e6) * price.in + searches * 0.01;' },
+
+  { id: 'costof-unpriced-model-not-null', suite: 'variant-lib', file: 'netlify/functions/replay-lib.js',
+    what: 'an unpriced model silently reports zero cost instead of a distinguishable null',
+    from: 'export function costOf(usages, model) {\n  const price = PRICES[model];\n  if (!price) return null;',
+    to: 'export function costOf(usages, model) {\n  const price = PRICES[model] || { in: 0, out: 0 };' },
+
+  { id: 'variant-model-override-not-validated', suite: 'judge-variant-endpoint', file: 'netlify/functions/judge-variant-background.js',
+    what: 'an unknown model name is silently accepted instead of failing the job before any API call is billed',
+    from: `    let modelOverride = null;
+    if (body.model) {
+      if (!JUDGE_MODELS.includes(String(body.model))) {
+        throw new Error(\`unknown model "\${body.model}" — known: \${JUDGE_MODELS.join(', ')}\`);
+      }
+      modelOverride = String(body.model);
+    }`,
+    to: '    const modelOverride = body.model ? String(body.model) : null;' },
 ];

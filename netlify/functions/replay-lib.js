@@ -39,7 +39,7 @@
 // measured at temperature 0 would describe a judge this app does not run.
 
 import { isReplayable } from './judge-context.js';
-import { parsePicks } from './bet-finder-background.js';
+import { parsePicks, PRICES } from './bet-finder-background.js';
 
 const API = 'https://api.anthropic.com/v1/messages';
 
@@ -83,6 +83,25 @@ export function buildRequest(snap) {
     tool_choice: { type: 'none' },
     messages,
   };
+}
+
+/**
+ * Total spend for a batch of calls at one model's price, INCLUDING excluded
+ * (contaminated) runs — the API call was paid for whether or not its output
+ * ended up in the analysis. Mirrors bet-finder-background.js's recordCost
+ * formula so a replay's dollar figure is comparable to a live run's.
+ */
+export function costOf(usages, model) {
+  const price = PRICES[model];
+  if (!price) return null;
+  let usd = 0;
+  for (const u of usages) {
+    if (!u) continue;
+    const inTok = u.input_tokens || 0, outTok = u.output_tokens || 0;
+    const searches = u.server_tool_use?.web_search_requests || 0;
+    usd += (inTok / 1e6) * price.in + (outTok / 1e6) * price.out + searches * 0.01;
+  }
+  return Math.round(usd * 10000) / 10000;
 }
 
 /**
@@ -319,7 +338,7 @@ export async function replay(snap, { k = 3, key = process.env.ANTHROPIC_API_KEY,
       // reads as extra variance that has nothing to do with the judge.
       const reason = `issued ${issued} live search(es) — not an offline replay`;
       warnings.push(`${run.label} ${reason}`);
-      excluded.push({ label: run.label, reason });
+      excluded.push({ label: run.label, reason, usage: run.usage });
       continue;
     }
     runs.push(run);
@@ -354,5 +373,11 @@ export async function replay(snap, { k = 3, key = process.env.ANTHROPIC_API_KEY,
       tier: tiers[keyOf(p)] || p.oddsType || p.tier || 'unknown',
     })),
   }));
+  // Cost of the NEW calls this replay made — not the original, whose call was
+  // already paid for and logged when it ran live. Excluded runs are counted:
+  // the API call happened and was billed whether or not its output survived
+  // into the analysis.
+  const replayUsages = [...runs.slice(1).map((r) => r.usage), ...excluded.map((e) => e.usage)];
+  report.costUsd = costOf(replayUsages, snap.model);
   return report;
 }

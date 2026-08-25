@@ -223,7 +223,10 @@ export default async function ({ t }) {
   t.ok('the contaminated run is reported, not silently dropped',
     /replay-2 issued 1 live search/.test(contaminated.warnings[0] || ''), JSON.stringify(contaminated.warnings));
   t.eq('...named in an explicit exclusion list, with why',
-    contaminated.excluded, [{ label: 'replay-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
+    contaminated.excluded.map((e) => ({ label: e.label, reason: e.reason })),
+    [{ label: 'replay-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
+  t.ok('...carrying the usage that call was billed for, since it still cost money',
+    contaminated.excluded[0].usage !== undefined);
   t.eq('k requested is kept separate from what was actually analysed',
     contaminated.kRequested, 3);
   t.eq('...and k reflects only the clean runs', contaminated.k, 2);

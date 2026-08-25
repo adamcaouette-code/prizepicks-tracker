@@ -8,7 +8,7 @@ import {
   runVariant, pairwiseAll, standoutReplication, standoutMoveDistribution,
   tierCalibration, rankCorrelation,
 } from '../../netlify/functions/variant-lib.js';
-import { comparePair } from '../../netlify/functions/replay-lib.js';
+import { comparePair, costOf } from '../../netlify/functions/replay-lib.js';
 
 const TIER_RATES = { goblin: 0.70, standard: 0.45, demon: 0.20 };
 
@@ -143,7 +143,40 @@ export default async function ({ t }) {
     return { content: n2 === 2 ? leakedContent : okContent, usage: {} };
   } });
   t.eq('the leaking run is dropped from runs', withLeak.runs.map((r) => r.label), ['run-1', 'run-3']);
-  t.eq('...named in excluded, with why', withLeak.excluded, [{ label: 'run-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
+  t.eq('...named in excluded, with why',
+    withLeak.excluded.map((e) => ({ label: e.label, reason: e.reason })),
+    [{ label: 'run-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
   t.ok('...and warned about too', /run-2 issued 1 live search/.test(withLeak.warnings[0] || ''));
   t.eq('kRequested still reflects what was actually asked for', withLeak.kRequested, 3);
+
+  // ---- runVariant: model is a SEPARATE axis from the prompt ----------------
+  // Item K's arm 3 holds Aphrodite's prompt fixed and swaps only the model —
+  // this is the mechanism that has to work for that comparison to mean anything.
+  let sentReq2 = null;
+  const withModel = await runVariant(snap, fakeVariant, { k: 1, key: 'x', model: 'claude-opus-5', call: async (req) => {
+    sentReq2 = req;
+    return { content: [{ type: 'text', text: JSON.stringify({ picks: [] }) }], usage: {} };
+  } });
+  t.eq('a model override reaches the actual request', sentReq2.model, 'claude-opus-5');
+  t.eq('...and rides along in the result, not just the request', withModel.model, 'claude-opus-5');
+  const noOverride = await runVariant(snap, fakeVariant, { k: 1, key: 'x', call: async (req) => {
+    sentReq2 = req;
+    return { content: [{ type: 'text', text: JSON.stringify({ picks: [] }) }], usage: {} };
+  } });
+  t.eq('omitting it falls back to the snapshot\'s own model', sentReq2.model, snap.model);
+  t.eq('...reported as such', noOverride.model, snap.model);
+
+  // ---- costOf: priced like recordCost, only for the NEW calls --------------
+  const usages = [
+    { input_tokens: 100000, output_tokens: 5000 },   // $1/M in, $5/M out at haiku
+    { input_tokens: 50000, output_tokens: 2500 },
+    null,   // a run that answered nothing still shows up in the list; must not crash
+  ];
+  const haikuCost = costOf(usages, 'claude-haiku-4-5-20251001');
+  // (100000+50000)/1e6*1 + (5000+2500)/1e6*5 = 0.15 + 0.0375
+  t.ok('cost is priced per the model\'s real rate', Math.abs(haikuCost - 0.1875) < 1e-9, String(haikuCost));
+  const opusCost = costOf(usages, 'claude-opus-5');
+  // same tokens, 5x the input rate and 5x the output rate
+  t.ok('...and a different model prices the SAME tokens differently', Math.abs(opusCost - 0.9375) < 1e-9, String(opusCost));
+  t.eq('an unpriced model reports no cost rather than a wrong one', costOf(usages, 'claude-nonexistent'), null);
 }

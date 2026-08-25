@@ -11,18 +11,22 @@
 // caller can observe, so every exit path, including a bad variant name, writes
 // to it. See judge-replay-background.js for why this shape is not optional.
 //
-// POST /api/judge-variant-background   { jobId, runId, variant, k }
+// POST /api/judge-variant-background   { jobId, runId, variant, k, model }
 // GET  /api/judge-variant-status?jobId=...
+//
+// `model` is a SEPARATE axis from `variant`: pass it to hold the prompt fixed
+// and change only which model answers — item K's "Aphrodite on Opus" arm.
+// Omit it and the snapshot's own model is used, exactly as before.
 
 import { getStore } from '@netlify/blobs';
 import { findByRunId, isReplayable } from './judge-context.js';
 import { PROMPTS } from './judge-prompts.js';
-import { ODDS_PRIOR } from './bet-finder-background.js';
+import { ODDS_PRIOR, JUDGE_MODELS, parsePicks } from './bet-finder-background.js';
 import {
   runVariant, pairwiseAll, standoutReplication, standoutMoveDistribution,
   tierCalibration, rankCorrelation,
 } from './variant-lib.js';
-import { parsePicks } from './bet-finder-background.js';
+import { costOf } from './replay-lib.js';
 
 async function callAnthropic(req, key) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -48,6 +52,16 @@ export const handler = async (event) => {
     const variant = PROMPTS[variantName];
     if (!variant) throw new Error(`unknown variant "${body.variant}" — known: ${Object.keys(PROMPTS).join(', ')}`);
     const k = Math.max(2, Math.min(10, Number(body.k) || 5));
+    // A model override is a SEPARATE axis from variant, not a fallback chain —
+    // an unpriced name fails the job rather than silently substituting the
+    // default and misattributing which model actually answered.
+    let modelOverride = null;
+    if (body.model) {
+      if (!JUDGE_MODELS.includes(String(body.model))) {
+        throw new Error(`unknown model "${body.model}" — known: ${JUDGE_MODELS.join(', ')}`);
+      }
+      modelOverride = String(body.model);
+    }
 
     await jobs.setJSON(jobId, { status: 'running', step: 'loading snapshot' });
     const snap = await findByRunId(runId);
@@ -57,8 +71,9 @@ export const handler = async (event) => {
         + (snap.searchTruncated ? ` — ${snap.searchTruncated} search blocks were dropped to fit the cap` : ''));
     }
 
-    await jobs.setJSON(jobId, { status: 'running', step: `running ${variant.name} (k=${k})` });
-    const { runs, warnings, excluded, kRequested } = await runVariant(snap, variant, { k, key: process.env.ANTHROPIC_API_KEY, call: callAnthropic });
+    await jobs.setJSON(jobId, { status: 'running', step: `running ${variant.name} (k=${k})${modelOverride ? ` on ${modelOverride}` : ''}` });
+    const { runs, model: modelUsed, warnings, excluded, kRequested } = await runVariant(
+      snap, variant, { k, key: process.env.ANTHROPIC_API_KEY, call: callAnthropic, model: modelOverride });
 
     const tiers = {};
     for (const e of Object.values(snap.props || {})) {
@@ -73,7 +88,7 @@ export const handler = async (event) => {
     const report = {
       // k is the CLEAN run count every stat below is actually computed from —
       // kRequested is what was asked for, and excluded says why they differ.
-      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: snap.model,
+      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: modelUsed,
       k: runs.length, kRequested, excluded,
       pairwise: pairs,
       topNChurn: [3, 5, 10].map((n) => ({
@@ -84,6 +99,9 @@ export const handler = async (event) => {
       tierCalibration: tierCalibration(runs, ODDS_PRIOR, tiers),
       vsOriginal: original.picks.length ? runs.map((r) => ({ run: r.label, ...rankCorrelation(original, r) })) : null,
       warnings,
+      // Every call this job made was billed, clean or excluded — the original
+      // is not: its call already happened live and was logged then.
+      costUsd: costOf([...runs.map((r) => r.usage), ...excluded.map((e) => e.usage)], modelUsed),
       // Same reasoning as replay-lib.js's replay(): the aggregates above throw
       // away which prop each number belonged to, which is exactly what a
       // per-prop residual analysis (item K) needs back. Kept small.
