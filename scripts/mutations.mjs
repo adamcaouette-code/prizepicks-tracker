@@ -406,6 +406,11 @@ export const MUTATIONS = [
 
   { id: 'jrb-missing-runid-not-checked', suite: 'judge-replay-endpoint', file: 'netlify/functions/judge-replay-background.js',
     what: 'a request with no runId starts a job anyway instead of failing fast',
-    from: "  if (!runId) {\n    return { statusCode: 400, body: JSON.stringify({ error: 'runId is required' }) };\n  }",
-    to: '  if (false) { return { statusCode: 400, body: \'\' }; }' },
+    from: "    if (!runId) throw new Error('runId is required');",
+    to: '    if (false) throw new Error(\'unreachable\');' },
+
+  { id: 'jrb-error-not-stored', suite: 'judge-replay-endpoint', file: 'netlify/functions/judge-replay-background.js',
+    what: 'a failed run answers the caller\'s empty 202 and writes nothing, so a poller waits forever — the platform discards the return value, so the store IS the answer',
+    from: "    if (jobId) await jobs.setJSON(jobId, { status: 'error', message: String(err.message || err) });",
+    to: '    if (false) await jobs.setJSON(jobId, {});' },
 ];

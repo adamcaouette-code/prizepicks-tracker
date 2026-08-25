@@ -12,6 +12,15 @@
 // refused before a single call is made, the status endpoint actually reads back
 // what the background job wrote (not a coincidence of sharing a store), and a
 // snapshot missing entirely is reported rather than left "running" forever.
+//
+// ONE MORE THING, learned by hitting it live: Netlify treats any *-background
+// function as fire-and-forget. The platform answers the ORIGINAL caller with an
+// empty 202 the instant the invocation is accepted, and discards whatever this
+// handler's own `return` says — a live probe confirmed the response is
+// `content-length: 0` on every call, success or failure alike. So the
+// handler's OWN return value asserted here is not what a real caller ever
+// sees; the job store is. Every assertion below reads the store, the same way
+// judge-replay-status.js (a real caller) has to.
 
 import { loadFn, mockFetch } from '../helpers/fn.mjs';
 import { reset, read } from '../helpers/blobs.mjs';
@@ -70,10 +79,12 @@ async function pollJob(store, jobId, { timeoutMs = 2000 } = {}) {
 export default async function ({ t }) {
   reset();
 
-  // ---- missing runId is a 400, not a silently-started job -----------------
+  // ---- missing runId: the platform's 202 is not the answer, the store is --
   const bg0 = await loadFn('judge-replay-background.js');
-  const bad = await bg0.handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'x' }) });
-  t.eq('a request with no runId is rejected outright', bad.statusCode, 400);
+  await bg0.handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'x' }) });
+  const badJob = await pollJob('replay-jobs', 'x');
+  t.eq('a request with no runId ends the job in error, not stuck running', badJob.status, 'error');
+  t.ok('...saying why', /runId is required/.test(badJob.message || ''), badJob.message);
 
   // ---- the whole path: seed a real snapshot, replay it server-side --------
   reset();
@@ -88,8 +99,13 @@ export default async function ({ t }) {
   let result;
   try {
     const bg = await loadFn('judge-replay-background.js');
+    // In this loadFn harness the handler's promise is awaited synchronously —
+    // unlike production, where the platform answers 202 before the handler
+    // even starts. So this checks the handler's OWN contract (matching
+    // bet-finder-background: always 202, success or failure), not a claim
+    // about round-trip timing, which only the job-store poll below can show.
     const post = await bg.handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'rj-1', runId: 'replay-run-1', k: 2 }) });
-    t.eq('the endpoint returns 202 immediately, before the replay finishes', post.statusCode, 202);
+    t.eq('the handler always answers 202, matching bet-finder-background', post.statusCode, 202);
     result = await pollJob('replay-jobs', 'rj-1');
   } finally { replayMock.restore(); }
 
