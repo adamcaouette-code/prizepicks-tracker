@@ -504,4 +504,61 @@ export default async function ({ t }) {
   t.ok('the baseline is on the page next to the brier it judges',
     /tier-only baseline/.test(html8));
   t.ok('...and says which side is winning', /judge BEHIND by|judge ahead by/.test(html8));
+
+  // ---- did the judge have anything to work with? --------------------------
+  // ~40% of props reach the judge with no recent5, and the prompt's fallback on
+  // those is to lean on the payout tier — which is what the baseline already is.
+  // So the judge may be structurally unable to beat the floor on that 40%, and a
+  // pooled Brier would hide it behind the rows where it could actually reason.
+  //
+  // recentAvg is written only when the payload carried recent5, so this splits
+  // on a record of what the judge was fed rather than an inference about it.
+  reset();
+  const fm = (hasForm, tier, hit, i, prob) => ({
+    ...mk('mlb', prob, hit, 950 + i), oddsType: tier,
+    recentAvg: hasForm ? 1.4 : null, stat: hasForm ? 'Hits' : 'Pitcher Fantasy Score',
+  });
+  const rows14 = [];
+  // WITH form: the judge separates outcomes inside the tier — real skill.
+  for (let i = 0; i < 60; i++) rows14.push(fm(true, 'goblin', i < 30, i, i < 30 ? 0.88 : 0.32));
+  // WITHOUT form: one flat number for everything, leaning on the tier and
+  // overshooting it. Hits are INTERLEAVED rather than front-loaded: with equal
+  // probabilities the sort is stable, so a block of hits followed by a block of
+  // misses would manufacture a perfect lift out of nothing but fixture order.
+  for (let i = 0; i < 60; i++) rows14.push(fm(false, 'goblin', i % 2 === 0, 200 + i, 0.70));
+  seed('pick-log', DAY, rows14);
+
+  const cal14 = await loadFn('calibration.js');
+  const res14 = JSON.parse((await cal14.handler({ queryStringParameters: { format: 'json' } })).body);
+  const has = res14.byFormCoverage['has-form'], no = res14.byFormCoverage['no-form'];
+
+  t.eq('the split is on what the payload actually carried', [has.n, no.n], [60, 60]);
+  t.eq('a judge with form separates outcomes inside the tier',
+    Math.round(has.meanLift * 100), 100);   // top half all hit, bottom half all missed
+  t.eq('...and without it, shows no separation at all', no.meanLift, 0);
+  t.eq('with form it beats its own baseline', has.beatsBaseline, true);
+  t.eq('...and without form it does not', no.beatsBaseline, false);
+
+  // THE POINT: pooled, this judge looks mediocre. Split, it is excellent on the
+  // rows it could reason from and inert on the rows it could not — which is a
+  // data-coverage finding, not a prompt one.
+  t.ok('each bucket is scored against a baseline from its own rows',
+    has.baseline != null && no.baseline != null);
+  t.ok('the pooled brier sits between the two, hiding both',
+    res14.brier > has.brier && res14.brier < no.brier,
+    `has ${has.brier.toFixed(4)} < pooled ${res14.brier.toFixed(4)} < no ${no.brier.toFixed(4)}`);
+
+  // The actionable half: WHICH props arrive without form.
+  t.eq('the uncovered rows are named by league and stat',
+    res14.noFormBy.stat['mlb :: Pitcher Fantasy Score'], 60);
+  t.eq('...and covered stats do not appear there',
+    res14.noFormBy.stat['mlb :: Hits'], undefined);
+
+  const html14 = (await cal14.handler({ queryStringParameters: {} })).body;
+  t.ok('the split is on the page', /Did the judge have anything to work with\?/.test(html14));
+  t.ok('...along with what arrives uncovered', /What arrives without form/.test(html14));
+  // Item 5 proved the old label wrong: coverage, not obedience.
+  t.ok('"cleared" is labelled as coverage, not instruction-following',
+    /COVERAGE metric, not an obedience one/.test(html14));
+  t.ok('...and the old claim is gone', !/plain instruction-following/.test(html14));
 }

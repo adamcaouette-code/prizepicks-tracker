@@ -158,6 +158,61 @@ function scoreAgainstBaseline(target, rows) {
   return target;
 }
 
+// Per-leg hit rate a pure-tier 3-pick Power needs to return the stake, from the
+// real payout tables: goblin 2.0x, standard 4.75x, demon 12.0x. Three legs is the
+// reference because the ORDERING between tiers holds at every size.
+const BREAK_EVEN = { goblin: 2.0 ** (-1 / 3), standard: 4.75 ** (-1 / 3), demon: 12.0 ** (-1 / 3) };
+
+/**
+ * Within-tier skill: does the judge's own ranking separate its good picks from
+ * its bad ones INSIDE a single tier?
+ *
+ * Extracted so it can be run on a subset — the same question asked of the props
+ * the judge had form for, and of the props it did not, is the only way to tell a
+ * judge that cannot reason from what it was given apart from one that was given
+ * nothing to reason from.
+ */
+function computeSkill(graded) {
+  const out = {};
+  const tiers = new Set(graded.map((p) => p.oddsType || 'unknown'));
+  for (const tier of tiers) {
+    const rows = graded.filter((p) => (p.oddsType || 'unknown') === tier)
+      .sort((x, y) => (Number(y.prob) || 0) - (Number(x.prob) || 0));
+    if (rows.length < 20) continue;              // a half of ten says nothing
+    const half = Math.floor(rows.length / 2);
+    const rate = (arr) => arr.filter((p) => p.hit === true).length / arr.length;
+    const top = rows.slice(0, half), bottom = rows.slice(-half);
+    const base = rate(rows);
+    const be = BREAK_EVEN[tier] ?? null;
+    out[tier] = {
+      n: rows.length,
+      topHalf: rate(top), bottomHalf: rate(bottom),
+      // The whole answer in one number: how many points the judge's own ranking
+      // separates the good half from the bad half, inside one tier.
+      lift: rate(top) - rate(bottom),
+      tierRate: base,
+      breakEven: be,
+      // Betting every prop of this tier blind — the thing the engine has to beat
+      // to be worth running at all.
+      baselineClears: be == null ? null : base >= be,
+      bestHalfClears: be == null ? null : rate(top) >= be,
+      // The half-split proves signal EXISTS. This asks whether it is enough: if
+      // you only ever bet the judge's very best picks, does the rate climb far
+      // enough to clear the payout? If it is flat across these slices the signal
+      // is broad and weak, no threshold rescues it, and the answer is better
+      // information rather than a stricter filter.
+      topSlices: [10, 20, 30, 50].map((pctile) => {
+        const k = Math.floor(rows.length * (pctile / 100));
+        if (k < 25) return { pctile, n: k, rate: null, clears: null };   // too thin to mean anything
+        const slice = rows.slice(0, k);
+        const r = rate(slice);
+        return { pctile, n: k, rate: r, clears: be == null ? null : r >= be };
+      }),
+    };
+  }
+  return out;
+}
+
 function aggregate(rawPicks, { perLeague = true } = {}) {
   const picks = dedupe(rawPicks).filter((p) => !isExcluded(p));
   const graded = picks.filter(isGraded);
@@ -421,52 +476,57 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     if (p.verdict === 'play' || p.verdict === 'lean') { out.playsLeans.n++; out.playsLeans.hits += hit; }
   }
 
-  // Per-leg hit rate a pure-tier 3-pick Power needs to return the stake, from
-  // the real payout tables: goblin 2.0x, standard 4.75x, demon 12.0x. Three legs
-  // is the reference because the ORDERING between tiers holds at every size.
-  const BREAK_EVEN = { goblin: 2.0 ** (-1 / 3), standard: 4.75 ** (-1 / 3), demon: 12.0 ** (-1 / 3) };
-  for (const tier of Object.keys(out.byTier)) {
-    const rows = graded.filter((p) => (p.oddsType || 'unknown') === tier)
-      .sort((x, y) => (Number(y.prob) || 0) - (Number(x.prob) || 0));
-    if (rows.length < 20) continue;              // a half of ten says nothing
-    const half = Math.floor(rows.length / 2);
-    const rate = (arr) => arr.filter((p) => p.hit === true).length / arr.length;
-    const top = rows.slice(0, half), bottom = rows.slice(-half);
-    const base = out.byTier[tier].hits / out.byTier[tier].n;
-    const be = BREAK_EVEN[tier] ?? null;
-    out.skill[tier] = {
-      n: rows.length,
-      topHalf: rate(top), bottomHalf: rate(bottom),
-      // The whole answer in one number: how many points the judge's own ranking
-      // separates the good half from the bad half, inside one tier.
-      lift: rate(top) - rate(bottom),
-      tierRate: base,
-      breakEven: be,
-      // Betting every prop of this tier blind — the thing the engine has to beat
-      // to be worth running at all.
-      baselineClears: be == null ? null : base >= be,
-      bestHalfClears: be == null ? null : rate(top) >= be,
-      // The half-split proves signal EXISTS. This asks whether it is enough:
-      // if you only ever bet the judge's very best picks, does the rate climb
-      // far enough to clear the payout?
-      //
-      // This is the question the whole app turns on. A half-split lift of +6pts
-      // on goblins is real and still 6pts short of break-even, so the only route
-      // to a bettable board is that the signal keeps CONCENTRATING — that the
-      // top tenth is meaningfully better than the top half. If the rate is flat
-      // across these slices the signal is broad and weak, no threshold rescues
-      // it, and the answer is better information rather than a stricter filter.
-      topSlices: [10, 20, 30, 50].map((pctile) => {
-        const k = Math.floor(rows.length * (pctile / 100));
-        if (k < 25) return { pctile, n: k, rate: null, clears: null };   // too thin to mean anything
-        const slice = rows.slice(0, k);
-        const r = rate(slice);
-        return { pctile, n: k, rate: r, clears: be == null ? null : r >= be };
-      }),
+  out.skill = computeSkill(graded);
+
+  // ---- does the judge have anything to work with? -------------------------
+  //
+  // ~40% of props reach the judge with no recent5 at all, and Aphrodite's own
+  // fallback on those is to lean on the tier — which is precisely what the
+  // baseline already is. So on that 40% the judge may be structurally unable to
+  // beat the floor, and a pooled Brier would hide it behind the rows where it
+  // did have something to reason from.
+  //
+  // recentAvg is written only when the payload carried recent5 (see attachSource
+  // in bet-finder-background), so it is an exact record of what the judge was
+  // fed rather than an inference about it.
+  const hasForm = graded.filter((p) => p.recentAvg != null);
+  const noForm = graded.filter((p) => p.recentAvg == null);
+  const formBucket = (rows) => {
+    const o = { n: rows.length };
+    if (!rows.length) return o;
+    o.brier = rows.reduce((a, p) => a + ((Number(p.prob) || 0) - (p.hit === true ? 1 : 0)) ** 2, 0) / rows.length;
+    scoreAgainstBaseline(o, rows);
+    o.skill = computeSkill(rows);
+    // One number for the headline: the count-weighted lift across tiers that
+    // qualified, so the two buckets can be compared at a glance.
+    const lifts = Object.values(o.skill).filter((v) => v.lift != null);
+    o.meanLift = lifts.length
+      ? lifts.reduce((a, v) => a + v.lift * v.n, 0) / lifts.reduce((a, v) => a + v.n, 0) : null;
+    return o;
+  };
+  out.byFormCoverage = { 'has-form': formBucket(hasForm), 'no-form': formBucket(noForm) };
+  // Per judge version too, so a version that only ever ran on well-covered props
+  // is not credited with the difference.
+  out.byFormCoverage.byPrompt = {};
+  for (const v of new Set(graded.map((p) => p.promptVersion || 'psyche (untagged)'))) {
+    const rows = graded.filter((p) => (p.promptVersion || 'psyche (untagged)') === v);
+    out.byFormCoverage.byPrompt[v] = {
+      'has-form': formBucket(rows.filter((p) => p.recentAvg != null)),
+      'no-form': formBucket(rows.filter((p) => p.recentAvg == null)),
     };
   }
+  // What the uncovered rows actually ARE — the actionable half of the finding.
+  // If the deficit lives here, the fix is wiring form sources for these, not
+  // touching a prompt.
+  out.noFormBy = { stat: {}, league: {} };
+  for (const p of noForm) {
+    const sk = `${(p.league || 'unknown').toLowerCase()} :: ${p.stat || 'unknown'}`;
+    out.noFormBy.stat[sk] = (out.noFormBy.stat[sk] || 0) + 1;
+    out.noFormBy.league[p.league || 'unknown'] = (out.noFormBy.league[p.league || 'unknown'] || 0) + 1;
+  }
+  out.noFormBy.stat = Object.fromEntries(Object.entries(out.noFormBy.stat).sort((a, b) => b[1] - a[1]).slice(0, 25));
 
-  out.overall = overHits / graded.length;
+  out.overall = overHits / graded.length;  out.overall = overHits / graded.length;
   out.brier = brierSum / graded.length;
   for (const v of Object.values(out.byStat)) {
     v.predicted = v.predSum / v.n;
@@ -677,6 +737,27 @@ function renderHTML(a) {
     `<tr><td>${esc(t)}</td><td>${v.n}</td><td style="color:${v.meanZ >= 0 ? 'var(--grn)' : 'var(--red)'}">${v.meanZ > 0 ? '+' : ''}${v.meanZ}</td></tr>`).join('')
     || '<tr><td colspan="3" class="mut">—</td></tr>';
 
+  const fc = a.byFormCoverage || {};
+  const formRow = (label, v) => {
+    if (!v || !v.n) return `<tr><td>${label}</td><td colspan="6" class="mut">no graded picks</td></tr>`;
+    const d = v.baselineDelta;
+    const col = d == null ? 'var(--dim)' : d < 0 ? 'var(--grn)' : 'var(--red)';
+    return `<tr><td>${label}</td><td>${v.n}</td>
+      <td>${v.brier == null ? '—' : v.brier.toFixed(4)}</td>
+      <td>${v.baseline == null ? '—' : v.baseline.toFixed(4)}</td>
+      <td style="color:${col}">${d == null ? '—' : (d > 0 ? '+' : '') + d.toFixed(4)}</td>
+      <td style="color:${col}">${d == null ? '—' : d < 0 ? 'beats it' : 'behind'}</td>
+      <td>${v.meanLift == null ? '—' : (v.meanLift >= 0 ? '+' : '') + (v.meanLift * 100).toFixed(1) + 'pts'}</td></tr>`;
+  };
+  const formRows = [formRow('has form', fc['has-form']), formRow('NO form', fc['no-form'])].join('')
+    + Object.entries(fc.byPrompt || {}).flatMap(([k, v]) => [
+      formRow(`&nbsp;&nbsp;<span class="mut">${esc(k)} · has form</span>`, v['has-form']),
+      formRow(`&nbsp;&nbsp;<span class="mut">${esc(k)} · NO form</span>`, v['no-form']),
+    ]).join('');
+  const noFormRows = Object.entries(a.noFormBy?.stat || {}).slice(0, 15)
+    .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')
+    || '<tr><td colspan="2" class="mut">every graded pick had recent form</td></tr>';
+
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
   const pendRows = pendDates.map(([d, c], i) =>
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
@@ -773,7 +854,7 @@ function renderHTML(a) {
     cleanest test is running the two on the SAME slate — different nights differ more than the prompts do.</div>
 
   <h2>Judge behaviour — readable the same day</h2>
-  <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>filled "cleared"</th><th>values used</th></tr></thead><tbody>${behRows}</tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>form coverage</th><th>values used</th></tr></thead><tbody>${behRows}</tbody></table></div>
   <div class="callout">Everything else on this page waits for games to settle — weeks before a prompt or model
     change can be judged. This does not: it reads every logged pick, graded or not, so a run can be checked the
     hour it finishes.
@@ -786,9 +867,11 @@ function renderHTML(a) {
     <i>effectively</i> using, with the raw count beside it. A plain distinct/n ratio was not comparable between
     configs: it falls as n grows, so the judge with more picks looked less granular for free; a high share of
     <b>round numbers</b> (multiples of 0.05) is what you get when a model picks a verdict first and writes a
-    number to justify it. <b>Filled "cleared"</b> is plain instruction-following: Aphrodite requires the count of
-    last-five that beat the line, and a model quietly dropping the field is a model quietly dropping other
-    instructions too.</div>
+    number to justify it. <b>Filled "cleared"</b> is a COVERAGE metric, not an obedience one. It was read as
+    instruction-following until the log settled it: of the props that reached the judge carrying recent5, 127 of
+    127 came back with the count filled, and of those without it, zero came back filled — perfect compliance in
+    both directions. What the number actually tracks is how often recent form reaches the payload at all, which
+    on the current board is about 60%. A low value here is a data-sourcing gap, not a judge defect.</div>
 
   <h2>Model — head to head</h2>
   <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>
@@ -800,6 +883,20 @@ function renderHTML(a) {
 
   <h2>By tier</h2>
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
+
+  <h2>Did the judge have anything to work with?</h2>
+  <div class="wrap"><table><thead><tr><th>rows</th><th>n</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th><th>within-tier lift</th></tr></thead><tbody>${formRows}</tbody></table></div>
+  <div class="callout">About 40% of props reach the judge with no recent form at all, and the prompt's own
+    fallback on those is to lean on the payout tier — which is exactly what the baseline already is. So on that
+    40% the judge may be structurally unable to beat the floor, and a pooled Brier would hide it behind the rows
+    where it did have something to reason from. <b>recentAvg</b> is written only when the payload carried
+    recent5, so this splits on a record of what the judge was actually fed rather than a guess at it.
+    <br><br>Beating the baseline on <b>has form</b> and losing on <b>NO form</b> means the deficit is data
+    coverage, and the fix is wiring form sources for the stats below rather than touching a prompt. Losing on
+    both means the judge is not adding signal even when fully fed.</div>
+
+  <h2>What arrives without form</h2>
+  <div class="wrap"><table><thead><tr><th>league :: stat</th><th>graded picks</th></tr></thead><tbody>${noFormRows}</tbody></table></div>
 
   <h2>Does the judge beat the tier?</h2>
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>top 10%</th><th>top 20%</th><th>top 30%</th><th>top 50%</th><th>vs worst half</th><th>lift (pts)</th><th>break-even</th><th>bettable</th></tr></thead><tbody>${skillRows}</tbody></table></div>
