@@ -283,6 +283,85 @@ judge cannot reliably execute a "flag decisively-moved props" instruction —
 which is worth knowing regardless of what it says about the original tier-
 anchoring hypothesis.
 
+## Item K — within-tier residual reliability (2026-08-26, snapshot 9391fb8e)
+
+The question Phase 1 could not answer: is there a stable per-prop judge
+opinion *underneath* the tier, at all — on either prompt, and (had it run) on
+a stronger model? Computed from `report.rawRuns` on the leak-proof harness
+(the live-search leak closed this session; `tool_choice: 'none'` plus
+exclusion). Residual = probability minus that tier's *measured* rate (goblin
+0.698, standard 0.452, demon 0.193 — not the prompt's rounder 0.70/0.45/0.20).
+ICC is the one-way random-effects ICC(1,1) (Shrout–Fleiss): reliability of a
+single run's residual against the same prop's mean across runs. It measures
+consistency, not correctness.
+
+**Planned as three arms, one variable each: prompt (Aphrodite vs THEMIS) and
+model (Haiku vs Opus 5), both on the leak-proof harness. Only two ran.** Opus
+5 rejects the harness's prefilled-assistant-turn request outright — a live
+400, "the conversation must end with a user message" — which is a documented
+API change across the whole 4.6+ family, not a bug. A `shape` axis
+(`buildUserTurnRequest`, folding the same stored search into the user turn as
+text instead) was built to work around it and passed a k=2 smoke test, but the
+k=5 runs for both the Opus arm and its same-prompt/same-model `userTurn`
+control failed on an Anthropic account credit shortfall before producing data.
+**The model question (arm 3/4) is open, not answered — this is a missing
+measurement, not a null result.** What follows is the prompt question only,
+on the two arms that did complete.
+
+| | ARM 1 — Aphrodite / Haiku (production) | ARM 2 — THEMIS / Haiku |
+|---|---|---|
+| clean k | 5 | 4 (`run-5` returned 0 parseable picks — a distinct failure from the live-search exclusion; not caught by it, dropped here by hand) |
+| RAW probability ICC | 0.909 | 0.954 |
+| RESIDUAL ICC (overall) | **0.436** | **0.324** |
+| gap (raw − residual) | 0.473 | 0.630 |
+| residual ICC — goblin | 0.063 | −0.022 |
+| residual ICC — standard | 0.095 | 0.210 |
+| residual ICC — demon | 0.427 | 0.401 |
+| residual sd — goblin / standard / demon | 0.048 / 0.046 / 0.108 | 0.041 / 0.031 / 0.074 |
+| residual sd — overall | 0.080 | 0.053 |
+| pairwise residual r (range across all pairs) | 0.165 – 0.741 | 0.281 – 0.521 |
+| pairwise residual ρ (range) | 0.151 – 0.806 | 0.242 – 0.462 |
+| derived k for residual ICC → 0.80 (Spearman–Brown) | 6 | 9 |
+| cost | $0.4375 | $0.5094 |
+
+The gap row is the headline: on raw pooled probability both arms look highly
+reliable (ICC ≈ 0.91–0.95), but 47–63% of that is the tier doing the work —
+goblins cluster near 0.70 and demons near 0.20 regardless of which run
+answered, which both prompts trivially "agree" on. What is left after
+removing that — the within-tier residual — is the judge's actual repeatable
+opinion, and it is smaller on THEMIS (0.324) than on Aphrodite (0.436), not
+larger. Per-tier, demon is the one tier with a residual ICC clearly off the
+floor on both prompts (0.43 / 0.40); goblin and standard are near zero or
+slightly negative on both, meaning within those two tiers a run's deviation
+from the tier rate is close to indistinguishable from noise.
+
+**Against the pre-committed interpretation:** neither the "all arms low"
+branch nor the "THEMIS meaningfully higher" branch fits. Both arms sit in the
+0.3–0.6 band (stable signal swamped by noise, not pure noise), and THEMIS is
+*lower* than Aphrodite, the opposite of what removing the tier-anchoring
+instruction was hoped to produce — consistent with Phase 1's finding that
+THEMIS's standout mechanism did not add a more consistent ranking. Per the
+"any arm high" branch: a residual ICC of 0.44 says Aphrodite's within-tier
+judgments are more repeatable than chance on *this* slate, not that they are
+right — that still needs graded outcomes. The model question this was
+supposed to help decide (does a stronger model raise the ceiling, making
+prompt work or averaging worth pursuing) is unanswered pending Anthropic
+account credit and a k=5 rerun of arms 3/4 through the now-built `shape`
+axis — no new instrument, the same harness, once credit is available.
+
+**Caveat, as pre-committed:** one MLB slate, 60 props. Per-tier subsets are
+~19–20 props each; an ICC estimated on n≈20 subjects has wide sampling error
+of its own, so the goblin/standard near-zero readings are suggestive, not a
+settled floor. A low result here is still fairly strong evidence given the
+consistency across two prompts; a result this low generalizes weakly on its
+own and should not be treated as final without repeating on another slate.
+
+This is the last diagnostic in this line, per instruction. The two paths from
+here are (a) build the fitted model, treating within-tier judge output as
+largely noise on goblin/standard and worth keeping only on demon, or (b)
+complete arms 3/4 once credit allows and let the model result decide between
+prompt-refinement and averaging — not a third measurement.
+
 ## Why AUC and not lift
 
 `lift` is a median half-split, which keeps only which side of the middle each
