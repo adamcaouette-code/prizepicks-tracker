@@ -49,7 +49,7 @@ export const handler = async () => ({
       'version', 'grade-audit', 'fantasy-check', 'grade-picks', 'grade-slips',
       'grade-backfill-background', 'grade-backfill-status', 'fantasy-check-background', 'espn-grade',
       'mlb-grade', 'pp-403-probe', 'calibration', 'slips', 'grade-cleanup',
-      'judge-prompts', 'calibration-cron', 'grade-cron', 'judge-context',
+      'judge-prompts', 'calibration-cron', 'grade-cron', 'grade-cron-heartbeat', 'judge-context',
       'judge-replay-background', 'judge-replay-status',
       'judge-variant-background', 'judge-variant-status', 'demon-board',
     ],
