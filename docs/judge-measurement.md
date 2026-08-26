@@ -376,15 +376,16 @@ re-derived so the two can never drift apart. The check runs before the prop-
 type filter and alongside the position trap gate, so it costs nothing extra
 and saves a judge call on every prop it removes.
 
-**Historical size of the hole**, from `grade-audit`'s new
-`unmappedStatsAllTime` (every logged pick of that stat type, graded or not —
-`unmappedStats` alone undercounts, since some of these graded successfully in
-the past via the now-dead PrizePicks-history fallback):
+**Historical size of the hole**, read live from `grade-audit`'s new
+`unmappedStatsAllTime` field (every logged pick of that stat type, graded or
+not — `unmappedStats` alone would undercount if any had graded historically
+via the now-dead PrizePicks-history fallback; checked, and for this exact set
+of stat types none ever did, so the two fields happen to read identical here):
 
 | league :: stat | all-time count |
 |---|---|
-| tennis :: Total Games | 58 |
-| tennis :: Fantasy Score | 22 |
+| tennis :: Total Games | 89 |
+| tennis :: Fantasy Score | 28 |
 | mlb :: Strikes Thrown | 10 |
 | mlb :: Balls Thrown | 8 |
 | mlb :: Strikes Counted | 7 |
@@ -392,10 +393,11 @@ the past via the now-dead PrizePicks-history fallback):
 | mlb :: TB | 1 |
 | mlb :: Pitches Thrown 95+ MPH | 1 |
 
-111 picks total, out of 2,702 logged across the full 27-day retained history
-(2026-06-29 → 2026-08-26). No graders were built for these — that was
-explicitly out of scope — so this count is the size of what the candidate
-filter now removes going forward, on record rather than measured around.
+148 picks total, out of 2,746 logged across the full 27-day retained history
+(2026-06-29 → 2026-08-26, read after this fix deployed). No graders were
+built for these — that was explicitly out of scope — so this count is the
+size of what the candidate filter now removes going forward, on record
+rather than measured around.
 
 ## Item L — tier-reliability shrinkage (instrumentation only, DEFAULT OFF)
 
