@@ -4,6 +4,27 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## Multi-league orchestration (foundation in place)
+
+The `/api/multi-league-bet-finder-background` endpoint accepts a `leagues` array
+and orchestrates parallel judge calls, merging results into one ranked board with
+per-league tags. Each league is judged identically to single-league runs — only
+the orchestration and merge are new, preserving the config freeze.
+
+**League support status:**
+- **Ready:** MLB, WNBA, NBA, NFL, NHL, CFB, CBB (have rolesFor rules or default to soccer rules)
+- **Unsupported:** Tennis (0% gradeable after item M's stat filter; no rolesFor rules yet)
+- **Other leagues:** Can be added by writing a rolesFor block in judge-prompts.js
+
+**Calibration caveat:** Merging leagues into one ranked board assumes tier rates
+are stable across leagues. In practice they differ: MLB goblins hit ~70%, WNBA
+basketball goblins ~48%. A combined board systematically favors miscalibrated
+tiers. The UI shows this warning: "Cross-league ranking: tier rates differ by
+league. Results are approximate."
+
+The feature is backend-ready. UI changes (multi-select checkboxes, warnings) are
+next; once deployed, Adam can select any combination of ready leagues.
+
 ## Heartbeat observability gap (08-15 to 08-25)
 
 The cron heartbeat was added 2026-08-15 but was empty until 2026-08-25. Root
