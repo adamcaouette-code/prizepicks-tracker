@@ -23,6 +23,11 @@ import { saveContext, searchBlocks, capSearch } from './judge-context.js';
 // differently would drift from what the user is looking at, so it borrows the
 // feed's own filters rather than re-deriving them.
 import { latestByPick, isCombo } from './top-picks.js';
+// The exact "can this ever be graded" predicate grade-audit.js already uses to
+// explain why a pick stayed ungraded. Reused rather than re-derived so the two
+// never drift: a stat this says is unmapped here is the same stat grade-audit
+// would report as "stat name not in the mapping table" tomorrow.
+import { statResolves } from './grade-audit.js';
 
 // VILIFIANT is the default judge model.
 //
@@ -176,6 +181,60 @@ async function resolveLeagueId(leagueTag) {
 // guesses (0.62 / 0.55 / 0.45); the ordering is unchanged, so nothing about
 // selection moves, but the numbers no longer read as fact when they were not.
 const ODDS_PRIOR = { goblin: 0.70, standard: 0.45, demon: 0.20 };
+
+// ---------------------------------------------------------------------------
+// Tier-reliability shrinkage (item L) — INSTRUMENTATION ONLY, see the flag
+// below. Nothing in selection or sizing reads shrunkProb; this exists so
+// calibration can score it apart from the raw judge probability once there
+// is enough graded volume to evaluate it.
+//
+// shrunk = tier_rate + (judge_prob - tier_rate) * ICC_tier
+//
+// ICC is the reliability coefficient item K measured: the fraction of a
+// prop's WITHIN-TIER residual (judge_prob - tier_rate) that is real,
+// repeatable judge signal rather than run-to-run noise. Multiplying the
+// residual by it is the textbook shrinkage estimator (Kelley/empirical
+// Bayes) — an ICC of 1 trusts the judge's residual completely, an ICC of 0
+// discards it and returns the pure tier rate.
+//
+// Both tables are MEASUREMENTS, not physics: refit them the next time item
+// K (or its successor) re-runs, never hand-edit toward a wanted answer.
+// Source: item K, snapshot 9391fb8e, 2026-08-26, Aphrodite/Haiku arm,
+// clean k=5. TIER_MEASURED_RATE are the precise decimals item K's residual
+// was computed against — NOT the rounder ODDS_PRIOR the prompt itself is
+// anchored to, which is a different, coarser number for a different job
+// (ranking tiers against each other, not shrinking a probability).
+const TIER_MEASURED_RATE = { goblin: 0.698, standard: 0.452, demon: 0.193 };
+const TIER_RELIABILITY_ICC = { goblin: 0.063, standard: 0.095, demon: 0.427 };
+
+// DEFAULT OFF. With goblin ICC at 0.063, turning this on collapses every
+// goblin pick to within about a point of 0.698 — the within-goblin ranking
+// was MEASURED to be noise, so that collapse is the correct behaviour, not a
+// bug. But it means a probability-ordered selection would face a ~20-way tie
+// at the top of a goblin-heavy board. Selection has no other basis today, so
+// this flag exists to let shrunkProb accumulate graded volume for
+// calibration to evaluate — it must not be flipped on for anything that
+// reads prob for selection or sizing until that basis exists.
+const SHRINKAGE_ENABLED = process.env.JUDGE_SHRINKAGE === '1';
+
+/**
+ * `tier` missing from either table (too few props measured, or a tier item K
+ * never saw) falls through to icc=0 — pure tier rate, not the judge's number
+ * — because an untested tier defaults to "assume no signal", not to "assume
+ * full trust". A negative ICC (goblin/standard's point estimate could dip
+ * below 0 on a small sample) floors at 0 for the same reason: shrinkage
+ * cannot ADD variance back beyond the tier rate.
+ */
+export function shrinkProb(prob, tier, rates = TIER_MEASURED_RATE, iccByTier = TIER_RELIABILITY_ICC) {
+  // null/undefined/'' all become 0 under Number() — that would shrink toward
+  // "the judge said 0%", a real answer nobody gave. Absent means no answer.
+  if (prob == null || prob === '') return null;
+  const p = Number(prob);
+  const rate = rates[tier];
+  if (!isFinite(p) || rate == null) return null;
+  const icc = Math.max(0, iccByTier[tier] ?? 0);
+  return rate + (p - rate) * icc;
+}
 
 // Payout tables live in bet-finder-size.js and are imported, never copied.
 //
@@ -888,6 +947,12 @@ function findCandidates(rows, tiers, perGame = 4, maxTotal = 44, statFilter = nu
   for (const r of rows) {
     if (!allow.has(r.oddsType)) continue;
     if (!positionAllows(r.position, r.stat, r.league)) continue;  // hard trap gate
+    // A stat type with no grading mapping is judged and selectable today but
+    // can NEVER be scored — invisible to calibration while still reaching a
+    // slip. Measured on 2026-08-25: 42 of 69 ungraded picks that night were
+    // this, not a transient lookup failure. Dropped here, before the judge
+    // spends a call on it, rather than measured around afterward.
+    if (!statResolves(r.league, r.stat)) continue;
     if (!matchesStat(r)) continue;                                 // prop-type filter
     const idk = propIdentity(r);
     if (seen.has(idk)) continue;                                   // same prop listed twice (e.g. combo under both players)
@@ -2008,6 +2073,10 @@ export const handler = async (event) => {
         judgeModel: p.judgeModel || params.model,
         cleared: p.cleared ?? null,     // how many of the last 5 cleared, per the judge
         standout: p.standout ?? null,  // THEMIS only: did the judge move this 0.10+ off tier rate
+        // Item L, instrumentation only — see SHRINKAGE_ENABLED. null while the
+        // flag is off, which is every run today; prob (above) is untouched
+        // either way and remains the only field selection/sizing ever reads.
+        shrunkProb: SHRINKAGE_ENABLED ? shrinkProb(p.prob, p.oddsType) : null,
         wagerTypes: p.wagerTypes ?? null,   // which sides PrizePicks accepted on this line
         recentAvg: p.recentAvg ?? null,
         mlbId: p.mlbId ?? null,   // lets the MLB fallback grader skip a name lookup
@@ -2076,7 +2145,7 @@ export {
   fetchMlbStarters, attachStarters, mlbRole, mlbStatKind,
   fetchTeamRecords, resolveRecords, fetchTeamFullNames,
   fetchWinProbs, fetchOppDefense, normStat, normKey, americanToProb,
-  recordCost, PRICES, ODDS_PRIOR,
+  recordCost, PRICES, ODDS_PRIOR, TIER_MEASURED_RATE, TIER_RELIABILITY_ICC, SHRINKAGE_ENABLED,
   filterToday, findCandidates, positionAllows, propIdentity, parsePicks,   // pure helpers, exported for tests
   attachSides, selectLegs, sideVerdictFor, markVoids,
   sizeParlay,                                                  // priced against the real tables — see tablesForSlip

@@ -584,4 +584,55 @@ export const MUTATIONS = [
     what: 'the report never says which request shape actually ran, so a userTurn control run cannot be told apart from a prefill one after the fact',
     from: '      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: modelUsed, shape: shapeUsed,',
     to: '      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: modelUsed,' },
+
+  // ======================================================================
+  // Item M — candidate-stage exclusion of ungradeable stat types
+  // ======================================================================
+  { id: 'findcandidates-mapping-filter-removed', suite: 'prop-filter', file: 'netlify/functions/bet-finder-background.js',
+    what: 'a stat type with no grading mapping still reaches the judge and a slip, staying invisible to calibration forever',
+    from: '    if (!statResolves(r.league, r.stat)) continue;\n',
+    to: '' },
+
+  { id: 'grade-audit-alltime-undercounts', suite: 'grade-coverage', file: 'netlify/functions/grade-audit.js',
+    what: 'unmappedStatsAllTime is computed over real graded status instead of hiding it, so it silently collapses to the same undercount as unmappedStats',
+    from: '    const allTimeAudit = auditPicks(all.map((p) => ({ ...p, hit: null })));',
+    to: '    const allTimeAudit = auditPicks(all);' },
+
+  // ======================================================================
+  // Item L — tier-reliability shrinkage (instrumentation only, DEFAULT OFF)
+  // ======================================================================
+  { id: 'shrinkprob-ignores-icc', suite: 'tier-shrinkage', file: 'netlify/functions/bet-finder-background.js',
+    what: 'the ICC reliability coefficient is never applied — shrinkProb just returns the judge\'s raw residual unshrunk, on every tier',
+    from: '  return rate + (p - rate) * icc;',
+    to: '  return rate + (p - rate);' },
+
+  { id: 'shrinkprob-no-negative-floor', suite: 'tier-shrinkage', file: 'netlify/functions/bet-finder-background.js',
+    what: 'a negative ICC point estimate is applied as-is, subtracting variance the shrinkage estimator is not allowed to add back',
+    from: '  const icc = Math.max(0, iccByTier[tier] ?? 0);',
+    to: '  const icc = iccByTier[tier] ?? 0;' },
+
+  { id: 'shrinkprob-missing-tier-defaults-to-1', suite: 'tier-shrinkage', file: 'netlify/functions/bet-finder-background.js',
+    what: 'a tier with no measured ICC defaults to trusting the judge completely (icc=1) instead of assuming no signal (icc=0) — the unsafe direction for an untested tier',
+    from: '  const icc = Math.max(0, iccByTier[tier] ?? 0);',
+    to: '  const icc = Math.max(0, iccByTier[tier] ?? 1);' },
+
+  { id: 'shrinkprob-missing-rate-not-refused', suite: 'tier-shrinkage', file: 'netlify/functions/bet-finder-background.js',
+    what: 'a tier with no measured rate is not refused — it falls through to NaN instead of null, inventing an anchor rather than saying it has none',
+    from: '  if (!isFinite(p) || rate == null) return null;',
+    to: '  if (!isFinite(p)) return null;' },
+
+  { id: 'shrinkprob-null-prob-becomes-zero', suite: 'tier-shrinkage', file: 'netlify/functions/bet-finder-background.js',
+    what: 'a missing probability is treated as Number(null)=0 — "the judge said 0%" — instead of refused as no answer',
+    from: "  if (prob == null || prob === '') return null;\n",
+    to: '' },
+
+  { id: 'shrinkage-flag-defaults-on', suite: 'tier-shrinkage', file: 'netlify/functions/bet-finder-background.js',
+    what: 'shrinkage computes and gets logged on every pick regardless of JUDGE_SHRINKAGE, turning an opt-in instrument into always-on behaviour nobody asked for',
+    from: "const SHRINKAGE_ENABLED = process.env.JUDGE_SHRINKAGE === '1';",
+    to: 'const SHRINKAGE_ENABLED = true;' },
+
+  { id: 'shrinkage-logged-unconditionally', suite: 'tier-shrinkage', file: 'netlify/functions/bet-finder-background.js',
+    what: 'shrunkProb is computed and logged even when the flag is off, instead of staying null',
+    from: '        shrunkProb: SHRINKAGE_ENABLED ? shrinkProb(p.prob, p.oddsType) : null,',
+    to: '        shrunkProb: shrinkProb(p.prob, p.oddsType),' },
 ];

@@ -48,6 +48,29 @@ export default async function ({ t }) {
   t.eq('unfiltered with room returns everything',
     findCandidates(ROWS, ['standard'], 10, 44, null).length, 7);
 
+  // ---- a stat type with no grading mapping never reaches a candidate -------
+  // Measured on 2026-08-25: 42 of 69 ungraded picks that night were exactly
+  // this — judged, selectable, logged, and never scorable, invisible to
+  // calibration while still able to reach a slip. Dropped before the judge
+  // sees it, same predicate grade-audit.js uses to explain a backlog.
+  const UNMAPPED_ROWS = [
+    mk('Batter A', 'Hits', 'IF'),                 // gradeable — mlb, mapped
+    { player: 'Server X', stat: 'Total Games', position: '', line: 21.5,
+      oddsType: 'standard', matchup: 'ALC vs SIN', league: 'tennis' },  // unmapped
+    { player: 'Pitcher Y', stat: 'Balls Thrown', position: 'P', line: 40.5,
+      oddsType: 'standard', matchup: 'CIN vs CWS', league: 'mlb' },     // unmapped
+  ];
+  const unmappedOut = findCandidates(UNMAPPED_ROWS, ['standard'], 10, 44, null);
+  t.eq('only the mappable stat survives to become a candidate',
+    unmappedOut.map((r) => r.stat), ['Hits']);
+
+  // A stat that DOES have a real mapping — including via the Fantasy Score
+  // formula, which lives outside the column tables — is unaffected.
+  const fantasyRow = { player: 'Batter Z', stat: 'Fantasy Score', position: 'OF', line: 8.5,
+    oddsType: 'standard', matchup: 'CIN vs CWS', league: 'mlb' };
+  t.eq('a formula-graded stat (not a column mapping) still passes through',
+    findCandidates([fantasyRow], ['standard'], 10, 44, null).map((r) => r.stat), ['Fantasy Score']);
+
   // ---- filterToday: trust PrizePicks' own boolean over UTC date math -------
   // start_time carries a local offset, so a 10pm ET first pitch is already
   // "tomorrow" in UTC — a date-prefix compare drops every late game.

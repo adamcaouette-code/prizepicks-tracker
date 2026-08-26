@@ -183,6 +183,36 @@ export default async function ({ t }) {
   t.ok('...and a normal prop is not mistaken for one',
     !audit.isPeriodProp({ league: 'nba', stat: 'Points' }));
 
+  // ---- 6b. unmappedStatsAllTime: the historical footprint, not just today's
+  // backlog. Some of these graded successfully in the past via the old
+  // PrizePicks-history fallback (`gradedVia: 'prizepicks'`), before it started
+  // 403ing everything — so counting only CURRENTLY ungraded picks (what
+  // `unmappedStats` does) undercounts how many logged picks actually carry an
+  // unmapped stat type.
+  reset();
+  const auditDay1 = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10);
+  const auditDay2 = new Date(Date.now() - 4 * 86400000).toISOString().slice(0, 10);
+  seed('pick-log', auditDay1, [
+    // graded historically via the dead prizepicks fallback — still unmapped
+    { date: auditDay1, league: 'tennis', stat: 'Total Games', player: 'A',
+      hit: true, gradedVia: 'prizepicks' },
+    // currently ungraded for the same reason
+    { date: auditDay1, league: 'tennis', stat: 'Total Games', player: 'B', hit: null },
+    // a normal, gradeable pick — must not be swept in
+    { date: auditDay1, league: 'mlb', stat: 'Hits', player: 'C', hit: true, gradedVia: 'mlb' },
+  ]);
+  seed('pick-log', auditDay2, [
+    { date: auditDay2, league: 'tennis', stat: 'Total Games', player: 'D', hit: null },
+  ]);
+  const auditFn = await loadFn('grade-audit.js');
+  const wide = JSON.parse((await auditFn.handler({ queryStringParameters: { days: '10' } })).body);
+  t.eq('unmappedStats (current backlog only) misses the one that already graded',
+    wide.unmappedStats['tennis :: Total Games'], 2);
+  t.eq('unmappedStatsAllTime counts every logged pick of that stat, graded or not',
+    wide.unmappedStatsAllTime['tennis :: Total Games'], 3);
+  t.eq('...rolled up into one total', wide.unmappedStatsAllTimeTotal, 3);
+  t.ok('a gradeable pick is not counted toward either', !('mlb :: Hits' in wide.unmappedStatsAllTime));
+
   // ---- 7. Fantasy Score: the single biggest hole ------------------------
   // 367 of 1060 logged picks — 35% of everything — were Fantasy Score props
   // that no mapping could touch. It is a weighted FORMULA, not a column, so a

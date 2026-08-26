@@ -362,6 +362,111 @@ largely noise on goblin/standard and worth keeping only on demon, or (b)
 complete arms 3/4 once credit allows and let the model result decide between
 prompt-refinement and averaging — not a third measurement.
 
+## Item M — ungradeable stat types excluded at the candidate stage
+
+Measured on 2026-08-25's slate: 42 of 69 ungraded picks that night failed on
+stat-name mapping, not a transient lookup — systematic, not noise. Judged and
+selectable but never scorable, they were invisible to calibration while still
+able to reach a slip.
+
+`findCandidates` (bet-finder-background.js) now drops any row whose
+(league, stat) does not resolve through `statResolves` — the exact predicate
+grade-audit.js already uses to explain a backlog, reused rather than
+re-derived so the two can never drift apart. The check runs before the prop-
+type filter and alongside the position trap gate, so it costs nothing extra
+and saves a judge call on every prop it removes.
+
+**Historical size of the hole**, from `grade-audit`'s new
+`unmappedStatsAllTime` (every logged pick of that stat type, graded or not —
+`unmappedStats` alone undercounts, since some of these graded successfully in
+the past via the now-dead PrizePicks-history fallback):
+
+| league :: stat | all-time count |
+|---|---|
+| tennis :: Total Games | 58 |
+| tennis :: Fantasy Score | 22 |
+| mlb :: Strikes Thrown | 10 |
+| mlb :: Balls Thrown | 8 |
+| mlb :: Strikes Counted | 7 |
+| mlb :: Balls Counted | 4 |
+| mlb :: TB | 1 |
+| mlb :: Pitches Thrown 95+ MPH | 1 |
+
+111 picks total, out of 2,702 logged across the full 27-day retained history
+(2026-06-29 → 2026-08-26). No graders were built for these — that was
+explicitly out of scope — so this count is the size of what the candidate
+filter now removes going forward, on record rather than measured around.
+
+## Item L — tier-reliability shrinkage (instrumentation only, DEFAULT OFF)
+
+`shrinkProb` (bet-finder-background.js): `shrunk = tier_rate + (judge_prob -
+tier_rate) * ICC_tier`, the standard Kelley/empirical-Bayes shrinkage
+estimator applied to item K's residual ICC. `TIER_MEASURED_RATE` (goblin
+0.698, standard 0.452, demon 0.193) and `TIER_RELIABILITY_ICC` (goblin 0.063,
+standard 0.095, demon 0.427) are both measured, refittable config — not
+hardcoded constants — sourced from item K, snapshot 9391fb8e, 2026-08-26,
+Aphrodite/Haiku arm, clean k=5. Negative ICC point estimates floor at 0; a
+tier missing from the ICC table falls through to 0 (pure tier rate), never to
+1 — an untested tier defaults to "assume no signal," not "assume the judge is
+fully trustworthy."
+
+Gated behind `JUDGE_SHRINKAGE=1`, **default off**. When off (every run
+today), every logged pick carries `shrunkProb: null` and `prob` is untouched.
+When on, both are logged on every pick so calibration can score them apart —
+selection and sizing are unchanged either way; nothing downstream reads
+`shrunkProb`.
+
+**Consequence that has to be written down before this is ever turned on:**
+with goblin ICC at 0.063, every goblin pick collapses to within about a point
+of 0.698 regardless of what the judge said — that is correct, the within-
+goblin ranking was MEASURED to be noise (item K), not a bug in the formula.
+But it means a probability-ordered selection over shrunk values would face a
+~20-way tie at the top of a goblin-heavy board. Selection has no other basis
+today (it still ranks on `fairProb`/raw `prob`, unchanged by this item), so
+`JUDGE_SHRINKAGE` must not be turned on for anything that feeds selection or
+sizing until a different ranking basis exists. This flag exists so
+`shrunkProb` can accumulate graded volume for calibration to evaluate, not to
+be flipped on in production.
+
+**Expected effect on Brier, vs. the existing leave-one-out tier baseline
+(0.2076)**: goblin and standard should move toward that baseline, since their
+residual is being shrunk almost entirely away; demon should retain most of
+the judge's own contribution, since its ICC (0.427) says roughly 43% of its
+residual is real. Not yet measured — the flag has never been turned on
+against graded volume; this is the prediction the eventual calibration read
+should be checked against.
+
+**Isotonic layer (Task 4):** no record of this spec was found in this
+repository — not in `docs/`, not in git history (`git log --all --grep`, both
+"isotonic" and "Task 4" turned up nothing tracked here). Rather than guess at
+a specification I cannot see, this is flagged rather than answered: point me
+at wherever that spec actually lives (an earlier session's transcript, a doc
+outside this repo) and the supersedes-or-complements question can be
+answered directly. Provisionally, based on what shrinkage IS — a per-tier
+linear pull toward a fixed anchor, not a fitted monotonic map from raw score
+to outcome — the two look complementary rather than redundant (isotonic
+regression would ordinarily fit ON TOP of whatever score reaches it, shrunk
+or raw), but that is inference from the concept's name, not from a spec, and
+should be treated as such until the real one is found.
+
+## Distance to break-even by tier — a finding, not an action item
+
+| tier | rate | break-even | gap | best half | gap |
+|---|---|---|---|---|---|
+| goblin | 0.698 | 0.794 | −9.6pp | 0.731 | −6.3pp |
+| standard | 0.452 | 0.595 | −14.3pp | — | — |
+| demon | 0.193 | 0.437 | −24.4pp | 0.261 | −17.6pp |
+
+Break-even rates cross-checked against calibration.js's own `BREAK_EVEN`
+constants (`2.0^(-1/3)`, `4.75^(-1/3)`, `12.0^(-1/3)`) — all three match to
+three decimal places.
+
+The tier where the judge HAS signal (demon: residual ICC 0.427, AUC
+0.64–0.69) is the one furthest from profitable — a 17.6pp gap even at its
+best half. The tier closest to profitable (goblin: 6.3pp at best half) is the
+one where the judge was measured to have none (residual ICC 0.063, AUC
+0.512). Recorded as a finding. Not acted on. No experiment proposed for it.
+
 ## Why AUC and not lift
 
 `lift` is a median half-split, which keeps only which side of the middle each

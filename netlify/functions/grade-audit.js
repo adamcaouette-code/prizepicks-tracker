@@ -133,6 +133,16 @@ export const handler = async (event) => {
 
     const audit = auditPicks(all);
 
+    // `unmappedStats` above only counts picks CURRENTLY ungraded for that
+    // reason — some stat types graded fine historically via the old
+    // PrizePicks-history fallback before it started 403ing everything, so
+    // that undercounts the true footprint. Re-running the same classification
+    // with every pick's outcome hidden routes graded and ungraded rows
+    // through the identical combo/period/unrouted/unmapped precedence, so
+    // this is the size of what the candidate-stage mapping filter removes
+    // going forward — not just today's backlog.
+    const allTimeAudit = auditPicks(all.map((p) => ({ ...p, hit: null })));
+
     // The headline: what would actually raise coverage, ranked by how many picks
     // each fix would unlock.
     const actions = [];
@@ -146,9 +156,13 @@ export const handler = async (event) => {
       window: dates.length ? `${dates[0]} → ${dates[dates.length - 1]} (${dates.length} days)` : 'no data',
       coverage: `${(audit.coverage * 100).toFixed(1)}%`,
       ...audit,
+      unmappedStatsAllTime: allTimeAudit.unmappedStats,
+      unmappedStatsAllTimeTotal: Object.values(allTimeAudit.unmappedStats).reduce((a, b) => a + b, 0),
       actions,
       perDay,
-      note: 'Offline audit — no network calls. `unmappedStats` entries can be added to the mapping tables verbatim.',
+      note: 'Offline audit — no network calls. `unmappedStats` entries can be added to the mapping tables verbatim. '
+        + '`unmappedStatsAllTime` counts every logged pick of that stat type regardless of grading status, since '
+        + 'the candidate-stage filter (bet-finder-background.js) now drops these before the judge sees them.',
     }, null, 2) };
   } catch (err) {
     return { statusCode: 500, headers: HEADERS, body: JSON.stringify({ error: String(err.message || err) }) };
