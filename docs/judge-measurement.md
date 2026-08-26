@@ -4,6 +4,32 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## Heartbeat observability gap (08-15 to 08-25)
+
+The cron heartbeat was added 2026-08-15 but was empty until 2026-08-25. Root
+cause: **Netlify requires an active deploy to register scheduled functions.** The
+heartbeat code existed in the commit, but the schedule was not registered until
+the next production deploy on 08-25.
+
+This means "did the cron fire?" was unanswerable between 08-15 and 08-25 even
+though the code was there — a 10-day observability gap created by inactivity. A
+deploy that touches any function re-registers all scheduled tasks, so the fix was
+implicit: the next deploy (demon board work on 08-26) restored the schedule.
+
+The heartbeat endpoint `/api/grade-cron-heartbeat` now exposes the full log with
+wall-clock timestamps and trigger source (`trigger: "schedule"` vs `"local"`), so
+future gaps are immediately visible. Every scheduled firing writes one entry; if
+no entries appear within 48 hours, the schedule is not registered on the live
+site and requires a new deploy to restore it.
+
+**Note on multiple heartbeat entries per window:** The 10:00 UTC window on 08-26
+produced three heartbeat entries (10:13, 10:55 cluster, 12:37-12:39 cluster);
+the 14:00 UTC window should produce one. Multiple invocations within a window
+(likely Netlify retries or cold-start restarts) are idempotent — the grader
+skips previously graded picks and exits, so repeated runs cause no duplicate
+work. Every entry in the heartbeat represents a completed (and idempotent)
+invocation, not an indication of duplicate grading.
+
 ## The bar
 
 `/api/calibration` reports a **tier-only baseline**: a three-row lookup that
