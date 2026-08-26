@@ -605,40 +605,74 @@ const pool = picks
 ```
 
 This is the selection mechanism. Only picks with verdicts of "play" (prob ≥ 0.62)
-or "lean" (prob ≥ 0.54) are eligible for slip construction.
+or "lean" (prob ≥ 0.54) are eligible for slip construction. The verdict is
+derived from probability via `verdictFor` (judge-prompts.js line 509):
+`prob >= 0.62 ? 'play' : prob >= 0.54 ? 'lean' : 'pass'`.
 
 **The structural interaction:**
 
-1. Aphrodite anchors demons at `ODDS_PRIOR['demon'] = 0.20`, a tier-wide constant
-   used to order tiers against each other in the fairness comparison.
-2. The judge produces probabilities in the range 0.15–0.25 on demons (this range
-   reflects the empirical base rate for that tier on the board; demons are hard
-   and should be rare). 
-3. All probabilities in that range map to "pass" verdict via `verdictFor(prob)`:
-   `prob < 0.54 → 'pass'`.
+1. Aphrodite anchors demons at `ODDS_PRIOR['demon'] = 0.20`, reflecting the tier's
+   measured base rate (0.193). This is used only to order tiers against each other
+   in the candidate ranking — not for probability generation itself.
+2. The judge produces probabilities in the range 0.15–0.25 on most demons, because
+   that range accurately reflects the tier's empirical success rate.
+3. All probabilities in 0.15–0.25 range map to "pass" verdict (< 0.54).
 4. `selectLegs` filters to only "play" (≥0.62) and "lean" (≥0.54) verdicts.
 5. Result: Every demon pick is filtered out before construction.
 
-**Why this matters as a finding, not a bug:**
+**Demons in the pick log, but not in slips:**
 
-This is not a malfunction. The selection filter is working as designed — it
-selects high-conviction picks. Demons have a low base rate, and the judge, with
-measured signal in that tier (residual ICC 0.427, AUC 0.64–0.69), is accurately
-reflecting it. The problem is not the filtering logic, it is the architectural
-mismatch: **the tier with the judge's only measurable discrimination (demon) is
-structurally prevented from surfacing by a selection mechanism that filters on
-verdict-derived-from-probability**.
+Demons still enter the pick log normally (logged, graded, and scored for
+measurement). The pick log contains 343 demons historically (out of 1,855 graded
+picks as of 2026-08-25); these came largely from Psyche (the earlier judge
+version), which was never told the tier and rated demons freely enough to clear
+0.54. Aphrodite, tier-aware and measured to have ICC 0.427 on demons, produces
+probabilities that no longer pass the verdict filter.
 
-A "Demon-only" board should show the judge's best demons even if they are low
-conviction. Today it shows none, because every demon conviction is low by design
-(the tier's empirical rate is 0.193). The selection mechanism cannot distinguish
-"low because the tier is hard" from "low because this prop is weak," so it
-filters out both indiscriminately.
+**Why the current gate is wrong (for this use case):**
 
-**Recorded as a structural interaction, not a bug to fix.** The config freeze for
-the pre-registered test holds. No thresholds, prompts, or selection logic changes
-in response. This finding will be relevant if demon AUC replicates above 0.60 in
-the prospective check (see below).
+The verdict thresholds (0.62 for "play", 0.54 for "lean") are tier-blind — they
+predate Aphrodite's per-tier anchoring — and they do not align with any tier's
+actual break-even cost. The correct gate for selection should be per-tier
+break-even, not a constant:
+
+| tier | break-even (3-pick power) | current "lean" threshold |
+|---|---|---|
+| goblin | 0.794 | 0.54 (pass) |
+| standard | 0.595 | 0.54 (pass) |
+| demon | 0.437 | 0.54 (play or lean) |
+
+Demons need only 0.437 to break even but must clear 0.54 to pass the verdict gate.
+Goblins need 0.794 but only need 0.54 to pass. **The current system accidentally
+blocks demons while passing goblins — exactly the tier furthest from profitable
+(demon, 17.6pp under break-even) is structurally prevented from surfacing, while
+the tier closest to break-even (goblin, 6.3pp under) is allowed through, despite
+having measured no signal (ICC 0.063).**
+
+**Why this matters as a finding, not a bug to fix now:**
+
+This is a structural architectural problem, not a malfunction. The selection filter
+is working as designed — selecting high-conviction picks. The problem is the
+architectural mismatch: **a tier-blind verdict gate and a tier-aware judge
+produce a situation where high signal can result in zero surface probability**.
+
+The real fix — replacing verdictFor thresholds with per-tier break-even gates —
+is the right long-term answer. But it waits until the pre-registered test
+resolves. Until demon AUC is confirmed above 0.60 prospectively (see PRE-REGISTERED
+HYPOTHESIS below), the current accident is close to least-bad: excluding the worst
+tier inadvertently excludes the tier furthest from money, even though that tier
+is the one the judge actually measures signal on.
+
+**UI copy change needed (config freeze otherwise):**
+
+When the tier filter is demon-only (or demon-heavy) and everything is filtered out
+at the verdict gate, the empty-state message should say plainly: "Demons are
+judged and logged for measurement but do not currently reach slips, because
+Aphrodite anchors them below the selection threshold (0.54)." This is truth. The
+current message "try widening tiers or props" implies the user can solve this by
+changing filters, when in fact it is unsolvable within the current configuration.
+Copy change only — no changes to thresholds, verdictFor, selectLegs, or the
+prompt.
 
 ## Standing constraints
 
