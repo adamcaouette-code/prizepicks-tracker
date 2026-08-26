@@ -81,6 +81,12 @@ export default async function ({ t }) {
   t.eq('an unknown model ends the job in error', badModel.status, 'error');
   t.ok('...naming the model and what IS known', /claude-nonexistent/.test(badModel.message) && /claude-haiku-4-5/.test(badModel.message));
 
+  // ---- an unknown shape is refused the same way, before any call is billed -
+  await bg0.handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'bad-shape', runId: 'v-run-1', variant: 'themis', shape: 'sideways' }) });
+  const badShape = await pollJob('replay-jobs', 'bad-shape');
+  t.eq('an unknown shape ends the job in error', badShape.status, 'error');
+  t.ok('...naming the shape and what IS known', /sideways/.test(badShape.message) && /userTurn/.test(badShape.message));
+
   // ---- the whole path: THEMIS, k=3, against a real snapshot ----------------
   let calls = 0;
   const variantMock = mockFetch([
@@ -194,4 +200,26 @@ export default async function ({ t }) {
     [{ label: 'run-2', reason: 'issued 1 live search(es) — not an offline replay' }]);
   t.eq('pairwise comparisons only cover the 2 clean runs', leaky.result.pairwise.length, 1);
   t.eq('tier calibration is reported for only the clean runs', leaky.result.tierCalibration.length, 2);
+
+  // ---- shape='userTurn' end to end: item K's arm 3/4 control -----------------
+  // Opus 5 rejects the prefilled-assistant-turn shape outright, so the control
+  // (same prompt, same model, only the request envelope changed) has to reach
+  // the actual request through this same endpoint, not just runVariant() in
+  // isolation.
+  reset();
+  await seedRealSnapshot('v-run-5');
+  let sentShapeReq = null;
+  const shapeMock = mockFetch([['api.anthropic.com', async (_u, init) => {
+    sentShapeReq = JSON.parse(init.body);
+    return { content: [{ type: 'text', text: JSON.stringify({ picks: ORIGINAL_PICKS }) }], usage: {} };
+  }]]);
+  let shaped;
+  try {
+    const bg = await loadFn('judge-variant-background.js');
+    await bg.handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'v-5', runId: 'v-run-5', variant: 'aphrodite', k: 1, shape: 'userTurn' }) });
+    shaped = await pollJob('replay-jobs', 'v-5');
+  } finally { shapeMock.restore(); }
+  t.eq('the job settles as done', shaped.status, 'done');
+  t.eq('the request actually sent ends on a single user turn', sentShapeReq.messages.map((m) => m.role), ['user']);
+  t.eq('the report names the shape it ran, not just the default', shaped.result.shape, 'userTurn');
 }

@@ -86,6 +86,48 @@ export function buildRequest(snap) {
 }
 
 /**
+ * Render the stored search turn as plain text, in the same order it was
+ * recorded, nothing summarised or dropped — the same information buildRequest
+ * hands back as a prefilled assistant turn, reduced to text so it can travel
+ * in a user turn instead.
+ */
+export function renderSearchAsText(search) {
+  if (!search?.length) return '';
+  return search.map((b) => (b.type === 'server_tool_use'
+    ? `SEARCH QUERY: ${JSON.stringify(b.input)}`
+    : `SEARCH RESULT: ${JSON.stringify(b.content)}`)).join('\n\n');
+}
+
+/**
+ * Same call as buildRequest, for models that reject assistant-message
+ * prefill outright — Opus 5, Sonnet 5, Fable 5, and the whole 4.6+ family
+ * return 400 ("the conversation must end with a user message") on the
+ * trailing-assistant-turn shape buildRequest relies on. That is an API
+ * contract change, not a bug: item K's arm 3 (Aphrodite on Opus) surfaced it
+ * on the first live call.
+ *
+ * The stored search is folded into the USER turn as text instead of sent
+ * back as a prefilled assistant one — same content, same order, only the
+ * envelope changes. tool_choice stays 'none' for the same reason it does in
+ * buildRequest: the tool must stay declared for the system prompt's own tool
+ * references to make sense, but a new invocation of it is not a replay.
+ */
+export function buildUserTurnRequest(snap) {
+  const searchText = renderSearchAsText(snap.search);
+  const content = searchText
+    ? `${snap.userContent}\n\n--- Search already performed for this slate (do not search again) ---\n${searchText}`
+    : snap.userContent;
+  return {
+    model: snap.model,
+    max_tokens: 16000,
+    system: snap.system,
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: snap.maxSearches || 1 }],
+    tool_choice: { type: 'none' },
+    messages: [{ role: 'user', content }],
+  };
+}
+
+/**
  * Total spend for a batch of calls at one model's price, INCLUDING excluded
  * (contaminated) runs — the API call was paid for whether or not its output
  * ended up in the analysis. Mirrors bet-finder-background.js's recordCost

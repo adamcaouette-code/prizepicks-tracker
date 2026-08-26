@@ -166,6 +166,42 @@ export default async function ({ t }) {
   t.eq('omitting it falls back to the snapshot\'s own model', sentReq2.model, snap.model);
   t.eq('...reported as such', noOverride.model, snap.model);
 
+  // ---- runVariant: shape is a THIRD, independent axis ----------------------
+  // Opus 5 (and the whole 4.6+ family) rejects the prefilled-assistant-turn
+  // shape buildRequest sends outright — a live 400 during item K's arm 3, not
+  // a guess. shape='userTurn' has to reach the actual request, and the
+  // default has to stay byte-for-byte what arms 1/2 always sent.
+  const snapWithSearch = {
+    ...snap,
+    search: [
+      { type: 'server_tool_use', id: 's1', name: 'web_search', input: { query: 'CIN lineup' } },
+      { type: 'web_search_tool_result', tool_use_id: 's1', content: [{ encrypted_content: 'LINEUP-TEXT' }] },
+    ],
+  };
+  let sentReq3 = null;
+  const userTurnOut = await runVariant(snapWithSearch, fakeVariant, { k: 1, key: 'x', shape: 'userTurn', call: async (req) => {
+    sentReq3 = req;
+    return { content: [{ type: 'text', text: JSON.stringify({ picks: [] }) }], usage: {} };
+  } });
+  t.eq('userTurn shape ends the request on a single user turn', sentReq3.messages.map((m) => m.role), ['user']);
+  t.ok('...carrying the same search content, folded into that turn',
+    sentReq3.messages[0].content.includes('LINEUP-TEXT') && sentReq3.messages[0].content.includes('CIN lineup'));
+  t.eq('...reported back on the result', userTurnOut.shape, 'userTurn');
+
+  let sentReq4 = null;
+  const defaultShapeOut = await runVariant(snapWithSearch, fakeVariant, { k: 1, key: 'x', call: async (req) => {
+    sentReq4 = req;
+    return { content: [{ type: 'text', text: JSON.stringify({ picks: [] }) }], usage: {} };
+  } });
+  t.eq('omitting shape keeps the prefill request unchanged', sentReq4.messages.map((m) => m.role), ['user', 'assistant']);
+  t.eq('...reported as the default', defaultShapeOut.shape, 'prefill');
+
+  let rejectedShape = null;
+  try {
+    await runVariant(snapWithSearch, fakeVariant, { k: 1, key: 'x', shape: 'bogus', call: async () => ({ content: [], usage: {} }) });
+  } catch (e) { rejectedShape = e; }
+  t.ok('an unknown shape is refused before any call', rejectedShape && /bogus/.test(rejectedShape.message));
+
   // ---- costOf: priced like recordCost, only for the NEW calls --------------
   const usages = [
     { input_tokens: 100000, output_tokens: 5000 },   // $1/M in, $5/M out at haiku

@@ -20,21 +20,36 @@
 // tail-only variant receives is identical to the one the original head/payload
 // combination produced, because entryFor is shared (see judge-prompts.js).
 
-import { buildRequest, searchesIssued, comparePair, behaviour, keyOf, mean, pearson } from './replay-lib.js';
+import {
+  buildRequest, buildUserTurnRequest, searchesIssued, comparePair, behaviour, keyOf, mean, pearson,
+} from './replay-lib.js';
 import { parsePicks } from './bet-finder-background.js';
+
+const SHAPES = ['prefill', 'userTurn'];
 
 /**
  * Make k independent calls of `variant`'s prompt against a snapshot's fixed
  * payload and search context. Returns k runs, none of them privileged.
  */
-export async function runVariant(snap, variant, { k = 5, key = process.env.ANTHROPIC_API_KEY, call, model } = {}) {
+export async function runVariant(snap, variant, {
+  k = 5, key = process.env.ANTHROPIC_API_KEY, call, model, shape = 'prefill',
+} = {}) {
   if (!key) throw new Error('ANTHROPIC_API_KEY is not set');
+  if (!SHAPES.includes(shape)) throw new Error(`unknown shape "${shape}" — known: ${SHAPES.join(', ')}`);
   const system = variant.promptFor(snap.league);
   // model is a SEPARATE axis from variant: item K's arm 3 (Aphrodite on Opus)
   // keeps the prompt identical to arm 1 and changes only which model answers
   // it — same payload, same stored search results, one variable. Falls back
   // to the snapshot's own model when not given, so arms 1/2 need nothing extra.
-  const req = buildRequest({ ...snap, system, model: model || snap.model });
+  //
+  // shape is a THIRD, independent axis, added when item K's Opus arm hit a
+  // wall buildRequest could not clear: Opus 5 (and the whole 4.6+ family)
+  // rejects the prefilled-assistant-turn shape outright. 'userTurn' folds the
+  // same stored search into the user turn as text instead — see
+  // buildUserTurnRequest. Left at 'prefill' this is byte-for-byte the request
+  // arms 1/2 always sent.
+  const build = shape === 'userTurn' ? buildUserTurnRequest : buildRequest;
+  const req = build({ ...snap, system, model: model || snap.model });
   const runs = [];
   const warnings = [];
   const excluded = [];
@@ -56,7 +71,7 @@ export async function runVariant(snap, variant, { k = 5, key = process.env.ANTHR
     }
     runs.push(run);
   }
-  return { variant: variant.name, model: req.model, system, runs, warnings, excluded, kRequested: k };
+  return { variant: variant.name, model: req.model, system, shape, runs, warnings, excluded, kRequested: k };
 }
 
 // ---------------------------------------------------------------------------

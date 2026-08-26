@@ -462,8 +462,8 @@ export const MUTATIONS = [
 
   { id: 'variant-system-not-swapped', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
     what: 'runVariant sends the SNAPSHOT\'s original system prompt instead of building one from the variant — silently turns every variant test into another Aphrodite A/A run',
-    from: '  const req = buildRequest({ ...snap, system, model: model || snap.model });',
-    to: '  const req = buildRequest({ ...snap, model: model || snap.model });' },
+    from: '  const req = build({ ...snap, system, model: model || snap.model });',
+    to: '  const req = build({ ...snap, model: model || snap.model });' },
 
   // ======================================================================
   // judge-variant-background.js / judge-variant-status.js — the server-side
@@ -490,8 +490,13 @@ export const MUTATIONS = [
   // ======================================================================
   { id: 'buildrequest-no-tool-choice', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'the tool is declared but never forbidden, so a prefilled turn can still trigger a brand new live search',
-    from: "    tool_choice: { type: 'none' },\n",
-    to: '' },
+    from: "    tool_choice: { type: 'none' },\n    messages,\n  };\n}",
+    to: '    messages,\n  };\n}' },
+
+  { id: 'userturn-no-tool-choice', suite: 'replay', file: 'netlify/functions/replay-lib.js',
+    what: 'the tool is declared but never forbidden in the userTurn shape either, so a real search is just as possible there',
+    from: "    tool_choice: { type: 'none' },\n    messages: [{ role: 'user', content }],",
+    to: '    messages: [{ role: \'user\', content }],' },
 
   { id: 'replay-contaminated-not-excluded', suite: 'replay', file: 'netlify/functions/replay-lib.js',
     what: 'a run that broke offline replay is folded into the analysis anyway, instead of excluded',
@@ -545,4 +550,38 @@ export const MUTATIONS = [
       modelOverride = String(body.model);
     }`,
     to: '    const modelOverride = body.model ? String(body.model) : null;' },
+
+  // ======================================================================
+  // buildUserTurnRequest / shape axis — Opus 5 (and the whole 4.6+ family)
+  // rejects the prefilled-assistant-turn shape outright; item K's arm 3/4
+  // depend on this alternate envelope actually carrying the same search
+  // content, in the same order, and on the axis being real rather than a
+  // silent no-op back to the prefill shape.
+  // ======================================================================
+  { id: 'userturn-drops-search', suite: 'replay', file: 'netlify/functions/replay-lib.js',
+    what: 'the userTurn request never folds the stored search into the user turn, silently sending less context than the original call had',
+    from: `  const content = searchText
+    ? \`\${snap.userContent}\\n\\n--- Search already performed for this slate (do not search again) ---\\n\${searchText}\`
+    : snap.userContent;`,
+    to: '  const content = snap.userContent;' },
+
+  { id: 'renderSearchAsText-wrong-order', suite: 'replay', file: 'netlify/functions/replay-lib.js',
+    what: 'search blocks are rendered out of the order they were recorded in, which the API-visible search turn never was',
+    from: 'export function renderSearchAsText(search) {\n  if (!search?.length) return \'\';\n  return search.map((b) => (b.type === \'server_tool_use\'',
+    to: 'export function renderSearchAsText(search) {\n  if (!search?.length) return \'\';\n  return search.slice().reverse().map((b) => (b.type === \'server_tool_use\'' },
+
+  { id: 'variant-shape-not-validated', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'an unknown shape is silently accepted instead of failing before any call is made',
+    from: '  if (!SHAPES.includes(shape)) throw new Error(`unknown shape "${shape}" — known: ${SHAPES.join(\', \')}`);\n',
+    to: '' },
+
+  { id: 'variant-shape-ignored', suite: 'variant-lib', file: 'netlify/functions/variant-lib.js',
+    what: 'shape is accepted and validated but never actually changes which request gets built, so the Opus arm would still send the request Opus rejects',
+    from: "  const build = shape === 'userTurn' ? buildUserTurnRequest : buildRequest;",
+    to: '  const build = buildRequest;' },
+
+  { id: 'variant-shape-not-reported', suite: 'judge-variant-endpoint', file: 'netlify/functions/judge-variant-background.js',
+    what: 'the report never says which request shape actually ran, so a userTurn control run cannot be told apart from a prefill one after the fact',
+    from: '      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: modelUsed, shape: shapeUsed,',
+    to: '      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: modelUsed,' },
 ];

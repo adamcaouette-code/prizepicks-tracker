@@ -11,12 +11,20 @@
 // caller can observe, so every exit path, including a bad variant name, writes
 // to it. See judge-replay-background.js for why this shape is not optional.
 //
-// POST /api/judge-variant-background   { jobId, runId, variant, k, model }
+// POST /api/judge-variant-background   { jobId, runId, variant, k, model, shape }
 // GET  /api/judge-variant-status?jobId=...
 //
 // `model` is a SEPARATE axis from `variant`: pass it to hold the prompt fixed
 // and change only which model answers — item K's "Aphrodite on Opus" arm.
 // Omit it and the snapshot's own model is used, exactly as before.
+//
+// `shape` is a THIRD, independent axis: 'prefill' (default, unchanged) sends
+// the stored search back as a prefilled assistant turn; 'userTurn' folds the
+// same search into the user turn as text instead, for models that reject
+// assistant-message prefill outright (Opus 5, Sonnet 5, Fable 5, and the
+// whole 4.6+ family — a live 400 is what surfaced this, not a guess). Running
+// the SAME prompt/model through both shapes is the control that makes a
+// cross-model comparison in 'userTurn' interpretable at all.
 
 import { getStore } from '@netlify/blobs';
 import { findByRunId, isReplayable } from './judge-context.js';
@@ -62,6 +70,7 @@ export const handler = async (event) => {
       }
       modelOverride = String(body.model);
     }
+    const shape = body.shape ? String(body.shape) : 'prefill';
 
     await jobs.setJSON(jobId, { status: 'running', step: 'loading snapshot' });
     const snap = await findByRunId(runId);
@@ -71,9 +80,12 @@ export const handler = async (event) => {
         + (snap.searchTruncated ? ` — ${snap.searchTruncated} search blocks were dropped to fit the cap` : ''));
     }
 
-    await jobs.setJSON(jobId, { status: 'running', step: `running ${variant.name} (k=${k})${modelOverride ? ` on ${modelOverride}` : ''}` });
-    const { runs, model: modelUsed, warnings, excluded, kRequested } = await runVariant(
-      snap, variant, { k, key: process.env.ANTHROPIC_API_KEY, call: callAnthropic, model: modelOverride });
+    await jobs.setJSON(jobId, {
+      status: 'running',
+      step: `running ${variant.name} (k=${k})${modelOverride ? ` on ${modelOverride}` : ''}${shape !== 'prefill' ? ` [${shape}]` : ''}`,
+    });
+    const { runs, model: modelUsed, shape: shapeUsed, warnings, excluded, kRequested } = await runVariant(
+      snap, variant, { k, key: process.env.ANTHROPIC_API_KEY, call: callAnthropic, model: modelOverride, shape });
 
     const tiers = {};
     for (const e of Object.values(snap.props || {})) {
@@ -88,7 +100,7 @@ export const handler = async (event) => {
     const report = {
       // k is the CLEAN run count every stat below is actually computed from —
       // kRequested is what was asked for, and excluded says why they differ.
-      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: modelUsed,
+      runId, variant: variant.name, baselinePromptVersion: snap.promptVersion, model: modelUsed, shape: shapeUsed,
       k: runs.length, kRequested, excluded,
       pairwise: pairs,
       topNChurn: [3, 5, 10].map((n) => ({

@@ -11,7 +11,8 @@
 // runs that differ in a known way, does the report say so.
 
 import {
-  buildRequest, analyse, comparePair, behaviour, topN, recommendK, replay, searchesIssued,
+  buildRequest, buildUserTurnRequest, renderSearchAsText,
+  analyse, comparePair, behaviour, topN, recommendK, replay, searchesIssued,
 } from '../../netlify/functions/replay-lib.js';
 
 const SEARCH = [
@@ -66,6 +67,34 @@ export default async function ({ t }) {
     JSON.stringify(req.tool_choice), JSON.stringify({ type: 'none' }));
   t.eq('a new live search is detectable, since it would not be a replay',
     searchesIssued([...SEARCH, { type: 'text', text: 'x' }]), 1);
+
+  // ---- buildUserTurnRequest: item K's arm 3 hit a wall buildRequest cannot
+  // clear — Opus 5 (and the whole 4.6+ family) rejects an assistant-message
+  // prefill outright. The same search has to reach the model some other way.
+  const utReq = buildUserTurnRequest(SNAP);
+  t.eq('the request ends on a single user turn, not a prefilled assistant one',
+    utReq.messages.map((m) => m.role), ['user']);
+  t.ok('the search text is folded into that user turn',
+    utReq.messages[0].content.includes('LINEUP-TEXT'));
+  t.ok('...and so is the query that produced it',
+    utReq.messages[0].content.includes('CIN lineup'));
+  t.ok('...after the original payload, not instead of it',
+    utReq.messages[0].content.startsWith(SNAP.userContent));
+  t.eq('the query appears before its result, preserving the recorded order',
+    utReq.messages[0].content.indexOf('CIN lineup') < utReq.messages[0].content.indexOf('LINEUP-TEXT'), true);
+  t.eq('the tool stays declared, same as the prefill shape', utReq.tools[0].name, 'web_search');
+  t.eq('...and a new search is just as forbidden',
+    JSON.stringify(utReq.tool_choice), JSON.stringify({ type: 'none' }));
+  t.eq('the model and system carry over unchanged', utReq.model, SNAP.model);
+  t.eq('...same system prompt', utReq.system, SNAP.system);
+
+  const noSearch = buildUserTurnRequest({ ...SNAP, search: [] });
+  t.eq('a snapshot with no search turn sends the payload as-is, nothing appended',
+    noSearch.messages[0].content, SNAP.userContent);
+
+  t.eq('renderSearchAsText renders nothing for an empty search', renderSearchAsText([]), '');
+  t.eq('...and both halves of a real one, query then result',
+    renderSearchAsText(SEARCH).indexOf('CIN lineup') < renderSearchAsText(SEARCH).indexOf('LINEUP-TEXT'), true);
 
   // ---- ITEM H: a truncated snapshot is refused, not degraded --------------
   let refused = null;
