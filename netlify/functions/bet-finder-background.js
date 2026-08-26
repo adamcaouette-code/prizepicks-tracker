@@ -1656,6 +1656,26 @@ function sizeParlay(legs, { bankroll, floor, maxStake }) {
   return out;
 }
 
+// ---------- messaging for empty results ----------
+// When demons are requested but none reach slip construction due to verdict filtering,
+// explain why instead of suggesting filters that cannot help.
+function buildEmptyMessage(requestedTiers, allPicks, chosen) {
+  // No picks means no message (empty slate message will be shown by frontend).
+  if (!allPicks?.length) return null;
+  // Picks exist but nothing was chosen for the slip.
+  if (chosen.length > 0) return null;  // successful slip was built
+  // Picks exist, slip is empty (shortfall > 0). Detect demon-filtering case.
+  const hasDemon = requestedTiers && (requestedTiers.includes('demon') || requestedTiers.every(t => t === 'demon'));
+  if (!hasDemon) return null;  // not demon-only, generic message is fine
+  const demonPicks = allPicks.filter(p => p.oddsType === 'demon');
+  if (!demonPicks.length) return null;  // no demons on the board at all
+  // Demons exist but all were filtered. Check if they're all "pass" verdicts.
+  const allPass = demonPicks.every(p => (p.sideVerdict || p.verdict) === 'pass');
+  if (!allPass) return null;  // some demons passed verdict gate, something else filtered them
+  // Demons exist, all are pass verdicts → they're structurally unreachable.
+  return 'Demons are judged and logged for measurement but do not currently reach slips, because Aphrodite anchors them below the selection threshold (0.54).';
+}
+
 // ---------- orchestration ----------
 export const handler = async (event) => {
   let jobId;
@@ -2128,7 +2148,8 @@ export const handler = async (event) => {
       candidates: candidates.length,
       phases: phaseLog.slice(),
     };
-    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params } });
+    const emptyMessage = buildEmptyMessage(params.tiers, picks, chosen);
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params, emptyMessage } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });
