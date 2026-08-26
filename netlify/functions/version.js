@@ -52,6 +52,7 @@ export const handler = async () => ({
       'judge-prompts', 'calibration-cron', 'grade-cron', 'grade-cron-heartbeat', 'judge-context',
       'judge-replay-background', 'judge-replay-status',
       'judge-variant-background', 'judge-variant-status', 'demon-board',
+      'bet-finder-background', 'multi-league-bet-finder-background',
     ],
   }, null, 2),
 });
