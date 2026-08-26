@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demon Board</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      background: #0a0e27;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    header {
+      margin-bottom: 32px;
+      border-bottom: 1px solid #333;
+      padding-bottom: 20px;
+    }
+
+    h1 {
+      font-size: 28px;
+      margin-bottom: 12px;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .header-controls {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    input, select {
+      padding: 8px 12px;
+      border: 1px solid #444;
+      border-radius: 4px;
+      background: #1a1f3a;
+      color: #e0e0e0;
+      font-size: 14px;
+    }
+
+    input:focus, select:focus {
+      outline: none;
+      border-color: #6366f1;
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+    }
+
+    .note-section {
+      background: #1a1f3a;
+      border: 1px solid #444;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+
+    .note-title {
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .note-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #6366f1;
+      color: #fff;
+      font-size: 12px;
+      font-weight: bold;
+      flex-shrink: 0;
+    }
+
+    .note-text {
+      color: #b0b0b0;
+      line-height: 1.6;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .stat-box {
+      background: #0f1428;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .stat-value {
+      font-size: 20px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #888;
+    }
+
+    .error {
+      background: #3a1f1f;
+      border: 1px solid #5c2b2e;
+      border-radius: 8px;
+      padding: 16px;
+      color: #ff8a80;
+      margin-bottom: 24px;
+    }
+
+    .demons-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 24px;
+    }
+
+    .demons-table thead {
+      background: #1a1f3a;
+      border-bottom: 2px solid #444;
+    }
+
+    .demons-table th {
+      padding: 12px;
+      text-align: left;
+      font-weight: 600;
+      color: #fff;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .demons-table tbody tr {
+      border-bottom: 1px solid #222;
+      transition: background-color 0.15s;
+    }
+
+    .demons-table tbody tr:hover {
+      background: #141829;
+    }
+
+    .demons-table td {
+      padding: 12px;
+      color: #d0d0d0;
+    }
+
+    .player-name {
+      font-weight: 500;
+      color: #fff;
+    }
+
+    .stat-type {
+      color: #999;
+      font-size: 13px;
+    }
+
+    .prob-value {
+      font-weight: 600;
+      font-size: 15px;
+    }
+
+    .delta-positive {
+      color: #4ade80;
+    }
+
+    .delta-negative {
+      color: #ff8a80;
+    }
+
+    .delta-value {
+      font-weight: 500;
+    }
+
+    .break-even-marker {
+      position: relative;
+      height: 2px;
+      background: #6366f1;
+      margin: 20px 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .break-even-label {
+      position: absolute;
+      left: 0;
+      top: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #6366f1;
+      white-space: nowrap;
+      background: #0a0e27;
+      padding: 0 4px;
+    }
+
+    .break-even-info {
+      background: #1a1f3a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 12px;
+      margin-top: 20px;
+      font-size: 13px;
+      color: #b0b0b0;
+    }
+
+    .break-even-info strong {
+      color: #6366f1;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #888;
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+
+    .empty-state-text {
+      font-size: 16px;
+    }
+
+    .meta-info {
+      display: flex;
+      gap: 20px;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #888;
+    }
+
+    .value-mono {
+      font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+    }
+
+    .hit-cell {
+      text-align: center;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .hit-hit {
+      color: #4ade80;
+    }
+
+    .hit-miss {
+      color: #ff8a80;
+    }
+
+    .hit-ungraded {
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Demon Board</h1>
+      <p style="color: #888; margin-bottom: 16px;">Read-only view: how the judge ranks demons against each other</p>
+
+      <div class="header-controls">
+        <div>
+          <label style="display: block; font-size: 12px; color: #888; margin-bottom: 4px; text-transform: uppercase;">Date</label>
+          <input type="date" id="dateInput" style="width: 160px;">
+        </div>
+        <div>
+          <label style="display: block; font-size: 12px; color: #888; margin-bottom: 4px; text-transform: uppercase;">League</label>
+          <select id="leagueSelect" style="width: 140px;">
+            <option value="mlb">MLB</option>
+            <option value="nba">NBA</option>
+            <option value="nfl">NFL</option>
+            <option value="nhl">NHL</option>
+            <option value="tennis">Tennis</option>
+          </select>
+        </div>
+        <button onclick="loadBoard()" style="padding: 8px 16px; background: #6366f1; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-top: 20px;">Load</button>
+      </div>
+    </header>
+
+    <div id="reliabilityNote" class="note-section" style="display: none;">
+      <div class="note-title">
+        <div class="note-icon">⚠</div>
+        <span>Reliability & Noise</span>
+      </div>
+      <div class="note-text">
+        Residual ICC on demons is <strong>0.427</strong>, meaning roughly <strong>57% of any single run's demon ordering is run-to-run noise</strong>. Re-running the same slate would reshuffle it substantially. The delta column (distance from base rate) carries more signal than the raw probability, but the entire ranking should be treated as exploratory measurement data, not stable predictions.
+      </div>
+    </div>
+
+    <div id="content"></div>
+  </div>
+
+  <script>
+    // Set today's date as default
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('dateInput').value = today;
+    document.getElementById('leagueSelect').value = 'mlb';
+
+    async function loadBoard() {
+      const date = document.getElementById('dateInput').value;
+      const league = document.getElementById('leagueSelect').value;
+      const content = document.getElementById('content');
+
+      content.innerHTML = '<div class="loading">Loading demons...</div>';
+
+      try {
+        const response = await fetch(`/api/demon-board?date=${encodeURIComponent(date)}&league=${encodeURIComponent(league)}`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        renderBoard(data);
+      } catch (error) {
+        content.innerHTML = `<div class="error">Error loading board: ${error.message}</div>`;
+      }
+    }
+
+    function renderBoard(data) {
+      const { date, league, demons, stats } = data;
+      const content = document.getElementById('content');
+      const reliabilityNote = document.getElementById('reliabilityNote');
+
+      if (!demons || demons.length === 0) {
+        content.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">🎲</div>
+            <div class="empty-state-text">No demons for ${date} (${league.toUpperCase()})</div>
+          </div>
+        `;
+        reliabilityNote.style.display = 'none';
+        return;
+      }
+
+      reliabilityNote.style.display = 'block';
+
+      // Find break-even point (0.437) for visual marking
+      const breakEvenProb = stats.breakEven || 0.437;
+      const maxProb = Math.max(...demons.map(d => d.prob || 0), breakEvenProb);
+
+      // Determine which demons clear break-even
+      const demonsAboveBreakEven = demons.filter(d => (d.prob || 0) >= breakEvenProb);
+      const demonsBelowBreakEven = demons.filter(d => (d.prob || 0) < breakEvenProb);
+
+      let html = `
+        <div class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-label">Total Demons</div>
+            <div class="stat-value">${stats.count}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Base Rate</div>
+            <div class="stat-value value-mono">${(stats.baseRate * 100).toFixed(1)}%</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Break-Even (3-leg)</div>
+            <div class="stat-value value-mono">${(stats.breakEven * 100).toFixed(1)}%</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Residual ICC</div>
+            <div class="stat-value value-mono">${stats.icc.toFixed(3)}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Noise (1 - ICC)</div>
+            <div class="stat-value">${stats.iccNoise}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Best Half Hit Rate</div>
+            <div class="stat-value">${stats.bestHalf} / ${stats.bestHalfCount} <span style="font-size: 12px; color: #888;">(${(stats.bestHalf / stats.bestHalfCount * 100).toFixed(1)}%)</span></div>
+          </div>
+        </div>
+
+        ${demonsAboveBreakEven.length > 0 ? `
+          <h2 style="margin-top: 32px; margin-bottom: 8px; font-size: 16px; color: #fff; font-weight: 600;">Above Break-Even (${demonsAboveBreakEven.length})</h2>
+          <table class="demons-table">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Stat</th>
+                <th>Line</th>
+                <th style="text-align: right;">Probability</th>
+                <th style="text-align: right;">Delta</th>
+                <th style="text-align: center;">Hit</th>
+                <th>Cleared</th>
+                <th>Key Risk</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${demonsAboveBreakEven.map(d => `
+                <tr>
+                  <td><span class="player-name">${escapeHtml(d.player)}</span></td>
+                  <td><span class="stat-type">${escapeHtml(d.stat)}</span></td>
+                  <td><span class="value-mono">${d.line}</span></td>
+                  <td style="text-align: right;"><span class="prob-value">${(d.prob * 100).toFixed(1)}%</span></td>
+                  <td style="text-align: right;"><span class="delta-value ${d.delta >= 0 ? 'delta-positive' : 'delta-negative'}">${d.delta >= 0 ? '+' : ''}${(d.delta * 100).toFixed(0)}pp</span></td>
+                  <td><span class="hit-cell ${d.hit === true ? 'hit-hit' : d.hit === false ? 'hit-miss' : 'hit-ungraded'}">${d.hit === true ? '✓ Hit' : d.hit === false ? '✗ Miss' : '—'}</span></td>
+                  <td>${d.cleared ?? '—'}</td>
+                  <td>${d.keyRisk ? escapeHtml(d.keyRisk) : '—'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : ''}
+
+        <div class="break-even-marker">
+          <div class="break-even-label">Break-even: ${(breakEvenProb * 100).toFixed(1)}%</div>
+        </div>
+
+        <div class="break-even-info">
+          <strong>Historical context:</strong> In past runs, the best half of demons (highest probability) achieved a <strong>26.1% hit rate</strong> against this <strong>43.7% break-even threshold</strong>. This demonstrates that even the judge's highest-confidence demon predictions fall substantially short of the odds required to be profitable, and the structural filtering is by design.
+        </div>
+
+        ${demonsBelowBreakEven.length > 0 ? `
+          <h2 style="margin-top: 32px; margin-bottom: 8px; font-size: 16px; color: #888; font-weight: 600;">Below Break-Even (${demonsBelowBreakEven.length})</h2>
+          <table class="demons-table">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Stat</th>
+                <th>Line</th>
+                <th style="text-align: right;">Probability</th>
+                <th style="text-align: right;">Delta</th>
+                <th style="text-align: center;">Hit</th>
+                <th>Cleared</th>
+                <th>Key Risk</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${demonsBelowBreakEven.map(d => `
+                <tr>
+                  <td><span class="player-name">${escapeHtml(d.player)}</span></td>
+                  <td><span class="stat-type">${escapeHtml(d.stat)}</span></td>
+                  <td><span class="value-mono">${d.line}</span></td>
+                  <td style="text-align: right;"><span class="prob-value">${(d.prob * 100).toFixed(1)}%</span></td>
+                  <td style="text-align: right;"><span class="delta-value ${d.delta >= 0 ? 'delta-positive' : 'delta-negative'}">${d.delta >= 0 ? '+' : ''}${(d.delta * 100).toFixed(0)}pp</span></td>
+                  <td><span class="hit-cell ${d.hit === true ? 'hit-hit' : d.hit === false ? 'hit-miss' : 'hit-ungraded'}">${d.hit === true ? '✓ Hit' : d.hit === false ? '✗ Miss' : '—'}</span></td>
+                  <td>${d.cleared ?? '—'}</td>
+                  <td>${d.keyRisk ? escapeHtml(d.keyRisk) : '—'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : ''}
+      `;
+
+      content.innerHTML = html;
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Load board on page load
+    loadBoard();
+  </script>
+</body>
+</html>
