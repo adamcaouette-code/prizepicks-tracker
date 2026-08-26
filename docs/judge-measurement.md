@@ -588,6 +588,58 @@ versus evening forecast, one outcome — which measures what confirmed lineups a
 actually worth. That is a Task 3 question and needs its own estimator; it is not
 what the per-source Brier table on `/api/calibration` reports.
 
+## Structural finding: demons filtered to zero in "Demon-only Find Bets"
+
+On 2026-08-26 at ~10:16 UTC, "Demon-only Find Bets" returned "No bets cleared
+your filters on this slate" despite demons being present on the board.
+
+**Cause identified: CAUSE B — Structural filtering downstream, not an empty board.**
+
+Demons make it through `findCandidates` when the `tiers` filter is set to
+`['demon']`. However, they are all filtered out by `selectLegs` in
+bet-finder-background.js line 1498:
+
+```javascript
+const pool = picks
+  .filter((p) => (p.sideVerdict || p.verdict) === 'play' || (p.sideVerdict || p.verdict) === 'lean')
+```
+
+This is the selection mechanism. Only picks with verdicts of "play" (prob ≥ 0.62)
+or "lean" (prob ≥ 0.54) are eligible for slip construction.
+
+**The structural interaction:**
+
+1. Aphrodite anchors demons at `ODDS_PRIOR['demon'] = 0.20`, a tier-wide constant
+   used to order tiers against each other in the fairness comparison.
+2. The judge produces probabilities in the range 0.15–0.25 on demons (this range
+   reflects the empirical base rate for that tier on the board; demons are hard
+   and should be rare). 
+3. All probabilities in that range map to "pass" verdict via `verdictFor(prob)`:
+   `prob < 0.54 → 'pass'`.
+4. `selectLegs` filters to only "play" (≥0.62) and "lean" (≥0.54) verdicts.
+5. Result: Every demon pick is filtered out before construction.
+
+**Why this matters as a finding, not a bug:**
+
+This is not a malfunction. The selection filter is working as designed — it
+selects high-conviction picks. Demons have a low base rate, and the judge, with
+measured signal in that tier (residual ICC 0.427, AUC 0.64–0.69), is accurately
+reflecting it. The problem is not the filtering logic, it is the architectural
+mismatch: **the tier with the judge's only measurable discrimination (demon) is
+structurally prevented from surfacing by a selection mechanism that filters on
+verdict-derived-from-probability**.
+
+A "Demon-only" board should show the judge's best demons even if they are low
+conviction. Today it shows none, because every demon conviction is low by design
+(the tier's empirical rate is 0.193). The selection mechanism cannot distinguish
+"low because the tier is hard" from "low because this prop is weak," so it
+filters out both indiscriminately.
+
+**Recorded as a structural interaction, not a bug to fix.** The config freeze for
+the pre-registered test holds. No thresholds, prompts, or selection logic changes
+in response. This finding will be relevant if demon AUC replicates above 0.60 in
+the prospective check (see below).
+
 ## Standing constraints
 
 Prompt text, model, search budget, payload contents, selection logic and the
