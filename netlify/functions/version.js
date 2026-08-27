@@ -21,7 +21,7 @@
 // string in its footer, and tests/unit/version.test.mjs fails if the two drift —
 // otherwise the page and the functions can report different versions and the
 // whole point of having a version is lost.
-export const VERSION = '4.27.0';
+export const VERSION = '4.27.1';
 
 const HEADERS = {
   'Content-Type': 'application/json',
@@ -53,6 +53,7 @@ export const handler = async () => ({
       'judge-replay-background', 'judge-replay-status',
       'judge-variant-background', 'judge-variant-status', 'demon-board',
       'bet-finder-background', 'multi-league-bet-finder-background',
+      'multi-league-bet-finder-status',
     ],
   }, null, 2),
 });
