@@ -278,12 +278,26 @@ const MAPS = {
     passesattempted: (r) => readStat(r, 'totalPasses'),
     offsides: (r) => readStat(r, 'offsides'),
   },
+  // Tennis does NOT go through readStat/dayIndex's usual summary+boxscore path —
+  // see the tennis branch inside dayIndex(). ESPN's tennis "event" is a whole
+  // tournament, not a single match (matches live under event.groupings[].
+  // competitions[]), and the summary?event= call the rest of this file relies on
+  // 400s for tennis no matter which id is passed — confirmed live, not guessed;
+  // ESPN builds that request as events/{id}/competitions/{id} internally, and a
+  // tournament id and a match id are never the same value. So there is no
+  // reachable per-match box score here, which means aces/double faults/break
+  // points won have no source and are deliberately left OUT of this table —
+  // leaving them mapped would make statResolves() report true and let item M's
+  // filter wave them onto the board for something that can never grade, the
+  // exact failure that filter exists to catch.
+  //
+  // Total games won IS reachable, with no extra call: the scoreboard response
+  // already carries each competitor's set-by-set linescores. dayIndex derives
+  // totalGamesWon by summing them and puts it straight on the row, so the
+  // mapper here just reads that field — no readStat, no statistics array.
   tennis: {
-    aces: (r) => readStat(r, 'aces'),
-    doublefaults: (r) => readStat(r, 'doubleFaults'),
-    breakpointswon: (r) => readStat(r, 'breakPointsWon'),
-    gameswon: (r) => readStat(r, 'gamesWon'),
-    totalgameswon: (r) => readStat(r, 'gamesWon'),
+    gameswon: (r) => (r.totalGamesWon != null ? r.totalGamesWon : null),
+    totalgameswon: (r) => (r.totalGamesWon != null ? r.totalGamesWon : null),
   },
   hockey: {
     goals: (r) => readStat(r, 'goals'),
@@ -326,6 +340,35 @@ async function dayIndex(league, date) {
   // A settled slate never changes, so it caches for hours. A slate with games
   // still running gets a short TTL so the rest of them land promptly.
   const ttl = (d) => (d?.unfinished ? LIVE_TTL : DAY_TTL);
+  // Tennis: an "event" here is a whole tournament, and matches live under
+  // event.groupings[].competitions[] — not event.competitions[] like every
+  // team sport this function otherwise handles. There is also no working
+  // summary?event= call to make (see the comment on MAPS.tennis), so this
+  // reads player+linescores straight off the scoreboard response instead of
+  // fetching a per-match box score at all.
+  if (slug.startsWith('tennis/')) {
+    return cached(`box-${league}-${date}`, ttl, async () => {
+      const sb = await api(`${SITE}/${slug}/scoreboard?dates=${ymd}`);
+      const players = {};
+      let matches = 0, unfinished = 0;
+      for (const ev of sb?.events || []) {
+        for (const g of ev?.groupings || []) {
+          for (const comp of g?.competitions || []) {
+            const done = comp?.status?.type?.completed === true;
+            if (!done) { unfinished++; continue; }
+            matches++;
+            for (const c of comp?.competitors || []) {
+              const name = c?.athlete?.displayName || c?.athlete?.fullName;
+              if (!name) continue;
+              const total = (c.linescores || []).reduce((sum, s) => sum + N(s?.value), 0);
+              players[normKey(name)] = { name, totalGamesWon: total };
+            }
+          }
+        }
+      }
+      return { players, games: matches, unfinished };
+    });
+  }
   const idx = await cached(`box-${league}-${date}`, ttl, async () => {
     const sb = await api(`${SITE}/${slug}/scoreboard?dates=${ymd}`);
     const all = (sb?.events || []).filter((e) => e?.id);
@@ -604,6 +647,25 @@ export const handler = async (event) => {
       const league = String(q.league || 'nba').toLowerCase();
       const slug = SLUGS[league];
       if (!slug) return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ error: `no ESPN slug for ${league}`, leagues: Object.keys(SLUGS) }) };
+
+      // Tennis doesn't take the summary?event= path this probe checks (see
+      // dayIndex/MAPS.tennis), so a key diff against that endpoint would either
+      // 400 or, since the tennis mappers need zero readStat keys, falsely report
+      // "verified" without ever touching the real code path. Check dayIndex's
+      // output directly instead.
+      if (slug.startsWith('tennis/')) {
+        const from = q.date || new Date().toISOString().slice(0, 10);
+        const idx = await dayIndex(league, from);
+        const sample = Object.values(idx?.players || {})[0] || null;
+        return { statusCode: 200, headers: HEADERS, body: JSON.stringify({
+          league, date: from, matchesFound: idx?.games ?? 0, unfinishedMatches: idx?.unfinished ?? 0,
+          playersIndexed: Object.keys(idx?.players || {}).length,
+          sampleRow: sample,
+          verdict: sample ? 'dayIndex is reading players + totalGamesWon straight off the scoreboard — this is the actual grading path, not a summary/box-score key diff.'
+            : 'no finished tennis matches indexed for this date — try ?date=YYYY-MM-DD for a day tennis definitely played',
+          note: 'aces/doubleFaults/breakPointsWon have no reachable source and are not in MAPS.tennis on purpose — see the comment above it.',
+        }, null, 2) };
+      }
 
       const from = q.date || new Date().toISOString().slice(0, 10);
       const found = await latestGameDay(slug, from);

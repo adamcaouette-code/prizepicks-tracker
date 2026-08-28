@@ -29,14 +29,20 @@ export const handler = async (event) => {
 
     // Validate supported leagues. Warn about unsupported ones but don't fail.
     const SUPPORTED = new Set(['mlb', 'wnba', 'nba', 'nfl', 'nhl', 'cfb', 'cbb']);
-    const UNSUPPORTED = new Set(['tennis']); // No rolesFor rules, zero gradeable rate
+    // Grading fix 2026-08-28: Total Games Won now grades (see espn-grade.js's
+    // dayIndex tennis branch), so this is no longer a flat 0% — but it's still
+    // the only tennis stat that grades (aces/double faults/break points won have
+    // no reachable ESPN source), and there is still no rolesFor entry, so a
+    // tennis judge call runs on soccer's role language same as NFL's did before
+    // that got fixed. Not enabling until both are done.
+    const UNSUPPORTED = new Set(['tennis']); // still no rolesFor rules; only one stat type grades
 
     const unsupported = leagues.filter(l => UNSUPPORTED.has(l.toLowerCase()));
     const unknown = leagues.filter(l => !SUPPORTED.has(l.toLowerCase()) && !UNSUPPORTED.has(l.toLowerCase()));
 
     if (unsupported.length || unknown.length) {
       const warnings = [
-        unsupported.length ? `Tennis has no judge rules and 0% gradeable rate (skipped: ${unsupported.join(', ')})` : '',
+        unsupported.length ? `Tennis has no judge role rules yet, and only Total Games Won grades (skipped: ${unsupported.join(', ')})` : '',
         unknown.length ? `Unknown leagues: ${unknown.join(', ')}` : '',
       ].filter(Boolean);
       await store.setJSON(masterJobId, {

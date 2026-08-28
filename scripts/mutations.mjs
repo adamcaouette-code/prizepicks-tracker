@@ -653,4 +653,18 @@ export const MUTATIONS = [
     what: 'the NFL judge is fed soccer role rules (clearances, crosses, goals) again — the exact bug this onboarding fixed',
     from: "league === 'wnba' ? WNBA_ROLES : league === 'nfl' ? NFL_ROLES : SOCCER_ROLES;",
     to: "league === 'wnba' ? WNBA_ROLES : SOCCER_ROLES;" },
+
+  // ======================================================================
+  // Tennis grading: total games won off the scoreboard, not a broken
+  // summary call. See MAPS.tennis and dayIndex's tennis branch.
+  // ======================================================================
+  { id: 'tennis-games-not-summed-across-sets', suite: 'espn-grade', file: 'netlify/functions/espn-grade.js',
+    what: 'total games won reads only the last set instead of summing every set, undercounting every match that went past one set',
+    from: 'const total = (c.linescores || []).reduce((sum, s) => sum + N(s?.value), 0);',
+    to: 'const total = (c.linescores || []).reduce((sum, s) => N(s?.value), 0);' },
+
+  { id: 'tennis-unfinished-match-not-excluded', suite: 'espn-grade', file: 'netlify/functions/espn-grade.js',
+    what: 'a match still in progress is graded off its partial linescores instead of being left pending, the same failure mode isFinished exists to prevent for every other sport',
+    from: "const done = comp?.status?.type?.completed === true;",
+    to: 'const done = true;' },
 ];

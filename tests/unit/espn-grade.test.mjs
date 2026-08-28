@@ -106,6 +106,63 @@ export default async function ({ t }) {
   t.eq('tennis and soccer now route to ESPN', gp.gradersFor('tennis')[0], 'espn');
   t.eq('...soccer too', gp.gradersFor('epl')[0], 'espn');
 
+  // ---- tennis: a whole different shape, not a key-name fix -----------------
+  // ESPN's tennis "event" is a TOURNAMENT — matches live under
+  // event.groupings[].competitions[], not event.competitions[] like every team
+  // sport above. Confirmed live against the real API: the summary?event= call
+  // this file uses for every other league 400s for tennis no matter which id is
+  // passed (a tournament id and a match id are never the same value, and ESPN
+  // builds that request as events/{id}/competitions/{id} from one id). So Total
+  // Games Won is read straight off the scoreboard's linescores instead — no
+  // summary call at all — and aces/double faults/break points won, which would
+  // need that broken call, are not in the mapping.
+  t.ok('total games won resolves', !!mod.resolveStat('tennis', 'Total Games Won'));
+  t.eq('aces has no reachable source and is deliberately unmapped',
+    mod.resolveStat('tennis', 'Aces'), null);
+  t.eq('double faults too', mod.resolveStat('tennis', 'Double Faults'), null);
+  t.eq('break points won too', mod.resolveStat('tennis', 'Break Points Won'), null);
+
+  const tennisScoreboard = (matches) => ({
+    events: [{ id: '363-2026', groupings: [{ grouping: { slug: 'mens-singles' }, competitions: matches }] }],
+  });
+  const match = (id, completed, competitors) => ({
+    id, status: { type: { completed, state: completed ? 'post' : 'in' } }, competitors,
+  });
+  const player = (name, sets) => ({ athlete: { displayName: name }, linescores: sets.map((v) => ({ value: v })) });
+
+  reset();
+  const tennisMock = mockFetch([
+    [/scoreboard/, async () => tennisScoreboard([
+      match('184525', true, [player('Pierre-Hugues Herbert', [6, 4, 6]), player('Kenta Miyoshi', [2, 6, 2])]),
+      match('184526', false, [player('Not Done Yet', [3]), player('Also Not Done', [5])]),
+    ])],
+  ]);
+  let winnerGames, loserGames, liveMatch;
+  try {
+    // 6+4+6 = 16 games won across the three sets.
+    winnerGames = await mod.gradeFromEspn({ league: 'tennis', player: 'Pierre-Hugues Herbert', date: '2026-08-22', stat: 'Total Games Won', line: 14.5 });
+    loserGames = await mod.gradeFromEspn({ league: 'tennis', player: 'Kenta Miyoshi', date: '2026-08-22', stat: 'Total Games Won', line: 9.5 });
+    liveMatch = await mod.gradeFromEspn({ league: 'tennis', player: 'Not Done Yet', date: '2026-08-22', stat: 'Total Games Won', line: 5.5 });
+  } finally { tennisMock.restore(); }
+  t.eq('total games won is the sum of set-by-set linescores, no summary call needed', winnerGames?.result, 16);
+  t.eq('...and grades correctly', winnerGames?.hit, true);
+  t.eq('the other player in the same match gets their own sum', loserGames?.result, 10);
+  t.eq('...also grades correctly', loserGames?.hit, true);
+  t.eq('an unfinished match is excluded, same as every other sport', liveMatch, null);
+
+  // No summary/box-score call was made at all — the whole point of reading
+  // linescores off the scoreboard directly.
+  reset();
+  const noSummaryCall = mockFetch([
+    [/scoreboard/, async () => tennisScoreboard([match('184527', true, [player('Solo Player', [6, 6])])])],
+    [/summary/, async () => { throw new Error('summary should never be called for tennis'); }],
+  ]);
+  let noSummary;
+  try {
+    noSummary = await mod.gradeFromEspn({ league: 'tennis', player: 'Solo Player', date: '2026-08-22', stat: 'Total Games Won', line: 10.5 });
+  } finally { noSummaryCall.restore(); }
+  t.eq('grades fine without ever hitting the broken summary endpoint', noSummary?.result, 12);
+
   // ---- end to end: a WNBA pick grades without PrizePicks ------------------
   reset();
   const day = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);

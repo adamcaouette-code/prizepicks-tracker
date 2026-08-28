@@ -30,7 +30,24 @@ the orchestration and merge are new, preserving the config freeze.
 - **Ready but default to soccer rules:** NBA, NHL, CFB, CBB — untouched, no rolesFor
   block written yet, so the soccer fallback still applies. Do the same NFL treatment
   before relying on any of these for real money.
-- **Unsupported:** Tennis (0% gradeable after item M's stat filter; no rolesFor rules yet)
+- **Grading fixed, still unsupported for orchestration (2026-08-28):** Tennis. The
+  0% was a shape bug, not a naming one — ESPN's tennis "event" is a whole
+  tournament, with matches nested under `event.groupings[].competitions[]`, so
+  the same `event.competitions[0]` read every other sport uses always found
+  nothing. Confirmed live against the real API (not guessed): the `summary?
+  event=` call this file makes for every other league also 400s for tennis no
+  matter which id is passed — ESPN builds it as `events/{id}/competitions/{id}`
+  from a single id, and a tournament id and a match id are never the same value.
+  Total Games Won — PrizePicks' most common tennis prop — is now graded by
+  reading each competitor's set-by-set `linescores` straight off the scoreboard
+  response instead, no summary call needed. Aces, double faults, and break
+  points won have no reachable source through this API and were removed from
+  the mapping on purpose, so item M's filter correctly keeps them off the board
+  instead of logging picks that can never grade. 2/2 targeted mutations killed.
+  Still not enabled in multi-league orchestration: no rolesFor entry exists yet
+  (a tennis judge call still runs on soccer's role language, the same bug NFL
+  had before that got fixed), and only one stat type grades. Both would need to
+  land before flipping it on.
 - **Other leagues:** Can be added by writing a rolesFor block in judge-prompts.js
   and, ideally, a position gate in bet-finder-background.js's dispatch section.
 
