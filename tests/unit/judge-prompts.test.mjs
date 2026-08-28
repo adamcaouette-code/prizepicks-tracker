@@ -61,6 +61,10 @@ export default async function ({ t }) {
   t.ok('both carry the same MLB role rules', psy.includes(mlbRule) && aph.includes(mlbRule));
   t.ok('and both switch to WNBA rules for the WNBA',
     PSYCHE.promptFor('wnba').includes('It is NOT the NBA') && APHRODITE.promptFor('wnba').includes('It is NOT the NBA'));
+  t.ok('and both switch to NFL rules for the NFL',
+    PSYCHE.promptFor('nfl').includes('This is the NFL') && APHRODITE.promptFor('nfl').includes('This is the NFL'));
+  t.ok('NFL props never get soccer terminology — that was the bug being fixed',
+    !APHRODITE.promptFor('nfl').includes('Clearances, blocks, interceptions, tackles'));
   t.ok('soccer is the fallback for anything else',
     APHRODITE.promptFor('epl').includes('Clearances, blocks, interceptions, tackles'));
 

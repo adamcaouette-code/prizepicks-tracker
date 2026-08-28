@@ -108,8 +108,46 @@ is a strong signal. But check WHY an outlier happened (blowout, foul trouble,
 opponent) before trusting the average.
 `;
 
+const NFL_ROLES = `
+This is the NFL. Judge every prop against the player's ROLE first — a stat that does not
+fit the position is a trap no matter how good the number looks:
+- Passing stats (pass yards, completions, attempts, pass TDs, interceptions thrown) belong
+  to QBs. Rushing and receiving stats belong to RB/WR/TE (and mobile QBs for rushing).
+  Defensive stats (tackles, sacks, interceptions, passes defended) belong to defensive
+  players only. A defender with a receiving line, or a skill player with a tackles line,
+  is not a real read — PASS it regardless of the number.
+- Within offense, ROLE inside the depth chart decides volume more than talent does: a
+  team's WR1/lead-back gets the target/carry share; a WR3 or committee back on the same
+  team can have a great matchup and still not see the ball enough to clear a line. Check
+  who the CURRENT lead option is — backfields and receiver rooms reshuffle week to week
+  on injury or a coaching change — before trusting a name alone.
+
+The biggest drivers, in the order they usually matter:
+- INJURY / ACTIVE STATUS. The NFL runs a formal Wed/Thu/Fri injury report and game-day
+  inactives. A questionable tag is a real coin flip on snaps, not a formality — check it
+  in your per-game web search before every prop, not just ones that look shaky.
+- GAME SCRIPT. teamWinPct (when present) signals favorite vs underdog — a heavy favorite
+  tends to lean on the run and trim passing volume once ahead; a heavy underdog throws
+  more, often into garbage time, which lifts WR/TE volume but can hurt the RB's rushing
+  work. Confirm the actual spread/total by search when it changes the read — a close game
+  keeps both offenses on script the whole way.
+- OPPONENT. teamRecord and opponent (when present) are a starting point only — the real
+  question is whether THIS defense is strong or weak against THIS specific stat (pass
+  defense vs run defense are very different units on the same team). Search for it rather
+  than inferring one from the other.
+- WEATHER, for outdoor games. Wind and rain suppress passing yards and kicking distance/
+  accuracy; nothing in the payload carries this, so check it by search when the venue and
+  forecast matter — a dome game never needs this check.
+
+Recent form (recent5) covers a much bigger slice of a 17-game NFL season than the
+equivalent sample would in baseball or basketball, so weight it seriously — but a single
+outlier game is often explained by a blowout script, an injury to the player himself or
+to a teammate ahead of him on the depth chart, or a since-changed opponent, not a repeatable
+trend. Check WHY before trusting the average, same as any other sport.
+`;
+
 const rolesFor = (league) =>
-  league === 'mlb' ? MLB_ROLES : league === 'wnba' ? WNBA_ROLES : SOCCER_ROLES;
+  league === 'mlb' ? MLB_ROLES : league === 'wnba' ? WNBA_ROLES : league === 'nfl' ? NFL_ROLES : SOCCER_ROLES;
 
 // ===========================================================================
 // PSYCHE — the original. DO NOT EDIT.

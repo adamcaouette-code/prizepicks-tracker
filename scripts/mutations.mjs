@@ -635,4 +635,22 @@ export const MUTATIONS = [
     what: 'shrunkProb is computed and logged even when the flag is off, instead of staying null',
     from: '        shrunkProb: SHRINKAGE_ENABLED ? shrinkProb(p.prob, p.oddsType) : null,',
     to: '        shrunkProb: shrinkProb(p.prob, p.oddsType),' },
+
+  // ======================================================================
+  // NFL onboarding — position gate and role rules.
+  // ======================================================================
+  { id: 'nfl-gate-pass-not-restricted-to-qb', suite: 'prop-filter', file: 'netlify/functions/bet-finder-background.js',
+    what: 'a passing-stat prop on a non-QB (WR, CB, ...) is allowed through as a real read instead of blocked as a trap',
+    from: "  if (kind === 'PASS') return role === 'QB';",
+    to: "  if (kind === 'PASS') return true;" },
+
+  { id: 'nfl-gate-def-not-restricted-to-defenders', suite: 'prop-filter', file: 'netlify/functions/bet-finder-background.js',
+    what: 'a defensive-stat prop (tackles, sacks) on an offensive player is allowed through instead of blocked',
+    from: "  if (kind === 'DEF') return role === 'DEF';",
+    to: "  if (kind === 'DEF') return true;" },
+
+  { id: 'nfl-roles-falls-back-to-soccer', suite: 'judge-prompts', file: 'netlify/functions/judge-prompts.js',
+    what: 'the NFL judge is fed soccer role rules (clearances, crosses, goals) again — the exact bug this onboarding fixed',
+    from: "league === 'wnba' ? WNBA_ROLES : league === 'nfl' ? NFL_ROLES : SOCCER_ROLES;",
+    to: "league === 'wnba' ? WNBA_ROLES : SOCCER_ROLES;" },
 ];

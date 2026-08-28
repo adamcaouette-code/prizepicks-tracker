@@ -12,9 +12,27 @@ per-league tags. Each league is judged identically to single-league runs — onl
 the orchestration and merge are new, preserving the config freeze.
 
 **League support status:**
-- **Ready:** MLB, WNBA, NBA, NFL, NHL, CFB, CBB (have rolesFor rules or default to soccer rules)
+- **Fully built:** MLB, WNBA — real rolesFor rules AND a position gate (hard block
+  on unambiguous stat/position traps before the judge ever sees the row).
+- **Fully built (2026-08-28):** NFL — added ahead of the regular season, since PP
+  preseason boards are ending. `NFL_ROLES` replaces the soccer fallback (which had
+  been silently feeding the judge "clearances/crosses/goals" language on every NFL
+  run — an active wrong answer, not just a generic one) with real position-fit,
+  injury-report, game-script, opponent, and weather guidance, plus a position gate
+  (`nflAllows`) mirroring MLB's: blocks a passing stat on a non-QB, a defensive stat
+  on an offensive player, and an offense/kicking stat on a defender or kicker;
+  rushing/receiving stay open for any offensive role since mobile QBs and gadget
+  plays are real. 3/3 targeted mutations killed (scripts/mutations.mjs).
+  Not yet built for NFL: an opponent-defense-rank feed (`fetchOppDefense` is a
+  repo-wide stub returning `{}` for every league, not NFL-specific) and a
+  `lineupConfirmed` signal (MLB-only today, via the confirmed-starter check) — both
+  left to the model's own web search, same as WNBA.
+- **Ready but default to soccer rules:** NBA, NHL, CFB, CBB — untouched, no rolesFor
+  block written yet, so the soccer fallback still applies. Do the same NFL treatment
+  before relying on any of these for real money.
 - **Unsupported:** Tennis (0% gradeable after item M's stat filter; no rolesFor rules yet)
 - **Other leagues:** Can be added by writing a rolesFor block in judge-prompts.js
+  and, ideally, a position gate in bet-finder-background.js's dispatch section.
 
 **Calibration caveat:** Merging leagues into one ranked board assumes tier rates
 are stable across leagues. In practice they differ: MLB goblins hit ~70%, WNBA

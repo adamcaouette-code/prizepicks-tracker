@@ -891,6 +891,49 @@ function mlbAllows(pos, stat) {
   return true;
 }
 
+// ===== football (NFL) =====
+function nflRole(pos) {
+  const p = (pos || '').toUpperCase();
+  if (!p.replace(/[^A-Z]/g, '')) return 'UNK';
+  if (/\bQB\b/.test(p)) return 'QB';
+  if (/\b(RB|FB|HB)\b/.test(p)) return 'RB';
+  if (/\b(WR|TE)\b/.test(p) || p.includes('WIDE') || p.includes('TIGHT END')) return 'REC';
+  if (/\b(K|PK)\b/.test(p) || p.includes('KICKER')) return 'K';
+  if (/\b(LB|CB|S|SS|FS|DB|DL|DE|DT|EDGE|NT|ILB|OLB)\b/.test(p) || p.includes('LINEBACK') ||
+      p.includes('CORNER') || p.includes('SAFETY') || p.includes('DEFENSIVE')) return 'DEF';
+  return 'UNK';
+}
+
+function nflStatKind(stat) {
+  const s = (stat || '').toLowerCase();
+  // explicit unambiguous families first
+  if (s.includes('sack') || s.includes('tackle') || s.includes('passes defended') ||
+      (s.includes('interception') && !s.includes('thrown'))) return 'DEF';
+  if (s.includes('field goal') || s.includes('extra point') || s.includes('kicking')) return 'K';
+  if (s.includes('pass') || s.includes('completion') || s.includes('interceptions thrown')) return 'PASS';
+  if (s.includes('rush')) return 'RUSH';
+  if (s.includes('reception') || s.includes('receiving') || s.includes('target') ||
+      s.includes('longest reception')) return 'REC';
+  // deliberately AMBIGUOUS -> NEUTRAL -> pass: fantasy score, fumbles lost, combined
+  // rush+rec stats can belong to more than one role; never block on those.
+  return 'NEUTRAL';
+}
+
+// Conservative, same posture as MLB/soccer: block only the unambiguous trap. A QB
+// who also rushes is real; a RB who occasionally throws on a trick play is real
+// (rare, but real) — RUSH and REC stay open for any offensive role. What is never
+// real: a defensive player with an offense/kicking line, a kicker with an offense/
+// defense line, or anyone but a QB with a passing line.
+function nflAllows(pos, stat) {
+  const role = nflRole(pos), kind = nflStatKind(stat);
+  if (role === 'UNK' || kind === 'NEUTRAL') return true;
+  if (kind === 'PASS') return role === 'QB';
+  if (kind === 'DEF') return role === 'DEF';
+  if (kind === 'K') return role === 'K';
+  if ((kind === 'RUSH' || kind === 'REC') && (role === 'DEF' || role === 'K')) return false;
+  return true;
+}
+
 // ===== dispatch =====
 // PrizePicks posts many soccer competitions (EPL, MLS, UCL, ...). The gate is about
 // the sport, not one tournament, so match on the sport's stat vocabulary rather than
@@ -902,6 +945,7 @@ function isSoccerStat(stat) {
 }
 function positionAllows(pos, stat, league) {
   if (league === 'mlb') return mlbAllows(pos, stat);
+  if (league === 'nfl') return nflAllows(pos, stat);
   if (isSoccerStat(stat)) return soccerAllows(pos, stat);
   return true; // no gate defined for this league yet -> fail open, never invent traps
 }

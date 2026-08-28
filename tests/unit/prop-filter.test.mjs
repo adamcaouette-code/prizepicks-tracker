@@ -8,7 +8,7 @@
 import { loadFn } from '../helpers/fn.mjs';
 
 export default async function ({ t }) {
-  const { findCandidates, filterToday } = await loadFn('bet-finder-background.js');
+  const { findCandidates, filterToday, positionAllows } = await loadFn('bet-finder-background.js');
 
   // Positions are real: the live position gate (mlbAllows) runs inside
   // findCandidates and drops a pitching stat on a non-pitcher as a trap, so a
@@ -70,6 +70,34 @@ export default async function ({ t }) {
     oddsType: 'standard', matchup: 'CIN vs CWS', league: 'mlb' };
   t.eq('a formula-graded stat (not a column mapping) still passes through',
     findCandidates([fantasyRow], ['standard'], 10, 44, null).map((r) => r.stat), ['Fantasy Score']);
+
+  // ---- NFL position gate (nflAllows, via positionAllows) -------------------
+  // Same conservative posture as the MLB pitcher/hitter gate: block only the
+  // unambiguous traps, fail open on anything ambiguous or unrecognized.
+  t.eq('a passing stat on a WR is blocked — only QBs throw',
+    positionAllows('WR', 'Passing Yards', 'nfl'), false);
+  t.eq('a passing stat on the actual QB is fine',
+    positionAllows('QB', 'Passing Yards', 'nfl'), true);
+  t.eq('a tackles line on a WR is blocked — offense does not record defensive stats',
+    positionAllows('WR', 'Tackles', 'nfl'), false);
+  t.eq('a tackles line on a linebacker is fine',
+    positionAllows('LB', 'Tackles', 'nfl'), true);
+  t.eq('a receiving line on a cornerback is blocked',
+    positionAllows('CB', 'Receiving Yards', 'nfl'), false);
+  t.eq('a rushing line on a kicker is blocked',
+    positionAllows('K', 'Rushing Yards', 'nfl'), false);
+  t.eq('a rushing line on a QB stays open — mobile QBs are real',
+    positionAllows('QB', 'Rushing Yards', 'nfl'), true);
+  t.eq('a rushing line on a RB is fine',
+    positionAllows('RB', 'Rushing Yards', 'nfl'), true);
+  t.eq('a field goal line on a kicker is fine',
+    positionAllows('K', 'Kicking Points', 'nfl'), true);
+  t.eq('a field goal line on a non-kicker is blocked',
+    positionAllows('QB', 'Kicking Points', 'nfl'), false);
+  t.eq('fantasy score is ambiguous — never blocked regardless of position',
+    positionAllows('CB', 'Fantasy Score', 'nfl'), true);
+  t.eq('an unrecognized position string fails open, same as every other gate',
+    positionAllows('', 'Passing Yards', 'nfl'), true);
 
   // ---- filterToday: trust PrizePicks' own boolean over UTC date math -------
   // start_time carries a local offset, so a 10pm ET first pitch is already
