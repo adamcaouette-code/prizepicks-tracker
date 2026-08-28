@@ -30,24 +30,33 @@ the orchestration and merge are new, preserving the config freeze.
 - **Ready but default to soccer rules:** NBA, NHL, CFB, CBB — untouched, no rolesFor
   block written yet, so the soccer fallback still applies. Do the same NFL treatment
   before relying on any of these for real money.
-- **Grading fixed, still unsupported for orchestration (2026-08-28):** Tennis. The
-  0% was a shape bug, not a naming one — ESPN's tennis "event" is a whole
-  tournament, with matches nested under `event.groupings[].competitions[]`, so
-  the same `event.competitions[0]` read every other sport uses always found
-  nothing. Confirmed live against the real API (not guessed): the `summary?
-  event=` call this file makes for every other league also 400s for tennis no
-  matter which id is passed — ESPN builds it as `events/{id}/competitions/{id}`
-  from a single id, and a tournament id and a match id are never the same value.
-  Total Games Won — PrizePicks' most common tennis prop — is now graded by
-  reading each competitor's set-by-set `linescores` straight off the scoreboard
-  response instead, no summary call needed. Aces, double faults, and break
-  points won have no reachable source through this API and were removed from
-  the mapping on purpose, so item M's filter correctly keeps them off the board
-  instead of logging picks that can never grade. 2/2 targeted mutations killed.
-  Still not enabled in multi-league orchestration: no rolesFor entry exists yet
-  (a tennis judge call still runs on soccer's role language, the same bug NFL
-  had before that got fixed), and only one stat type grades. Both would need to
-  land before flipping it on.
+- **Fully built (2026-08-28):** Tennis. Two separate fixes, same day. First, the
+  0% gradeable rate: a shape bug, not a naming one — ESPN's tennis "event" is a
+  whole tournament, with matches nested under `event.groupings[].competitions[]`,
+  so the same `event.competitions[0]` read every other sport in espn-grade.js
+  uses always found nothing. Confirmed live against the real API (not guessed):
+  the `summary?event=` call this file makes for every other league also 400s for
+  tennis no matter which id is passed — ESPN builds it as
+  `events/{id}/competitions/{id}` from a single id, and a tournament id and a
+  match id are never the same value. Total Games Won — PrizePicks' most common
+  tennis prop — is now graded by reading each competitor's set-by-set
+  `linescores` straight off the scoreboard response instead, no summary call
+  needed. Aces, double faults, and break points won have no reachable source
+  through this API and were removed from the mapping on purpose, so item M's
+  filter correctly keeps them off the board instead of logging picks that can
+  never grade. Second, `TENNIS_ROLES`: tennis has no position/role concept the
+  way team sports do, so the rules are about what actually drives Total Games
+  Won for one player in one match — match format (best-of-3 vs Slam best-of-5),
+  how CLOSE the match is (a lopsided match runs fewer total games for both
+  players; an even one runs more, for winner and loser alike — games won is not
+  the same question as who wins), and retirement/fatigue risk, which unlike a
+  DNP is NOT refunded by PrizePicks. Deliberately does not assert a surface
+  effect ("clay is longer", "grass is faster") since that direction genuinely
+  depends on the two specific players and a wrong guess baked into the prompt
+  is worse than no claim — told to check by search instead. 3/3 targeted
+  mutations killed across both fixes. Tennis's board will stay thin relative to
+  other leagues (only one gradeable stat type) — that's expected, not a bug, and
+  it's now in `SUPPORTED` for multi-league orchestration alongside MLB/WNBA/NFL.
 - **Other leagues:** Can be added by writing a rolesFor block in judge-prompts.js
   and, ideally, a position gate in bet-finder-background.js's dispatch section.
 

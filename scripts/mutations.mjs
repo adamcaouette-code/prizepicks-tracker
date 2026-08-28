@@ -667,4 +667,9 @@ export const MUTATIONS = [
     what: 'a match still in progress is graded off its partial linescores instead of being left pending, the same failure mode isFinished exists to prevent for every other sport',
     from: "const done = comp?.status?.type?.completed === true;",
     to: 'const done = true;' },
+
+  { id: 'tennis-roles-falls-back-to-soccer', suite: 'judge-prompts', file: 'netlify/functions/judge-prompts.js',
+    what: 'the tennis judge is fed soccer role rules (clearances, crosses, goals) instead of tennis-specific format/closeness/retirement guidance',
+    from: "league === 'tennis' || league === 'atp' || league === 'wta' ? TENNIS_ROLES : SOCCER_ROLES;",
+    to: 'SOCCER_ROLES;' },
 ];

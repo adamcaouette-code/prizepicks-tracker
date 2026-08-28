@@ -28,21 +28,21 @@ export const handler = async (event) => {
                   body.league ? [body.league] : ['mlb'];
 
     // Validate supported leagues. Warn about unsupported ones but don't fail.
-    const SUPPORTED = new Set(['mlb', 'wnba', 'nba', 'nfl', 'nhl', 'cfb', 'cbb']);
-    // Grading fix 2026-08-28: Total Games Won now grades (see espn-grade.js's
-    // dayIndex tennis branch), so this is no longer a flat 0% — but it's still
-    // the only tennis stat that grades (aces/double faults/break points won have
-    // no reachable ESPN source), and there is still no rolesFor entry, so a
-    // tennis judge call runs on soccer's role language same as NFL's did before
-    // that got fixed. Not enabling until both are done.
-    const UNSUPPORTED = new Set(['tennis']); // still no rolesFor rules; only one stat type grades
+    // Tennis added 2026-08-28: real rolesFor rules (judge-prompts.js) on top of
+    // the grading fix from the same day (espn-grade.js's dayIndex tennis branch).
+    // Its board will be thin relative to other leagues — Total Games Won is the
+    // only tennis stat that grades, since aces/double faults/break points won
+    // have no reachable ESPN source and item M's filter correctly keeps them off
+    // the board — but that's an expected, safe characteristic (same filter every
+    // league goes through), not a reason to keep it out of orchestration.
+    const SUPPORTED = new Set(['mlb', 'wnba', 'nba', 'nfl', 'nhl', 'cfb', 'cbb', 'tennis']);
+    const UNSUPPORTED = new Set(); // nothing currently known-broken; kept for the next one
 
     const unsupported = leagues.filter(l => UNSUPPORTED.has(l.toLowerCase()));
     const unknown = leagues.filter(l => !SUPPORTED.has(l.toLowerCase()) && !UNSUPPORTED.has(l.toLowerCase()));
 
     if (unsupported.length || unknown.length) {
       const warnings = [
-        unsupported.length ? `Tennis has no judge role rules yet, and only Total Games Won grades (skipped: ${unsupported.join(', ')})` : '',
         unknown.length ? `Unknown leagues: ${unknown.join(', ')}` : '',
       ].filter(Boolean);
       await store.setJSON(masterJobId, {
@@ -56,7 +56,7 @@ export const handler = async (event) => {
     if (!leagues.length) {
       return {
         statusCode: 400,
-        body: 'No supported leagues selected. MLB, WNBA, NBA, NFL, NHL, CFB, CBB are ready. Tennis coming later.'
+        body: 'No supported leagues selected. MLB, WNBA, NBA, NFL, NHL, CFB, CBB, Tennis are ready.'
       };
     }
 

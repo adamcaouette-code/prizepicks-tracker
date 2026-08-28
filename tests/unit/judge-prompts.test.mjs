@@ -65,6 +65,12 @@ export default async function ({ t }) {
     PSYCHE.promptFor('nfl').includes('This is the NFL') && APHRODITE.promptFor('nfl').includes('This is the NFL'));
   t.ok('NFL props never get soccer terminology — that was the bug being fixed',
     !APHRODITE.promptFor('nfl').includes('Clearances, blocks, interceptions, tackles'));
+  t.ok('and both switch to tennis rules for tennis',
+    PSYCHE.promptFor('tennis').includes('professional tennis') && APHRODITE.promptFor('tennis').includes('professional tennis'));
+  t.ok('...and for its ATP/WTA aliases too, same as espn-grade.js\'s SLUGS treats them',
+    APHRODITE.promptFor('atp').includes('professional tennis') && APHRODITE.promptFor('wta').includes('professional tennis'));
+  t.ok('tennis props never get soccer terminology either',
+    !APHRODITE.promptFor('tennis').includes('Clearances, blocks, interceptions, tackles'));
   t.ok('soccer is the fallback for anything else',
     APHRODITE.promptFor('epl').includes('Clearances, blocks, interceptions, tackles'));
 

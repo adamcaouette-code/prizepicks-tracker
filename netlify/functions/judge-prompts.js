@@ -146,8 +146,46 @@ to a teammate ahead of him on the depth chart, or a since-changed opponent, not 
 trend. Check WHY before trusting the average, same as any other sport.
 `;
 
+const TENNIS_ROLES = `
+This is professional tennis (ATP/WTA). Only ONE stat currently grades on this board —
+Total Games Won — so every prop you see is that one stat, for one specific player, in one
+specific match. There is no position or role to check the way other sports need: the read
+is entirely about how many games THIS PLAYER personally wins across however many sets the
+match runs.
+
+The single biggest driver is MATCH LENGTH, decided mostly by two things:
+- FORMAT. Grand Slam men's singles is best-of-5 sets; the WTA and every other ATP event is
+  best-of-3. A best-of-5 match has a much higher games-won ceiling than a best-of-3 one for
+  BOTH players — confirm the format by search before judging a line against a gut sense of
+  "how many games is a lot" for this event.
+- HOW CLOSE THE MATCH IS. A lopsided match (a big ranking/seed gap, one player clearly
+  stronger on this surface, a one-sided recent head-to-head) tends to end in straight sets
+  with breaks of serve — FEWER total games for both players. An even match (close ranking,
+  a contested head-to-head, both comfortable on the surface) tends to run into deuces,
+  tiebreaks, and a deciding set — MORE total games for both players, winner AND loser alike.
+  Closeness raises both players' games-won floor even though only one of them wins.
+
+Total Games Won is NOT the same question as "who wins the match." A player who loses a
+tight three-setter (say 6-7, 7-6, 4-6) wins more total games than a player who wins two
+lopsided sets (say 6-1, 6-2). Do not treat the moneyline favorite as automatically the side
+with the higher games-won read — judge the likely SHAPE of the match, not just its winner.
+
+Check for retirement/injury risk in your per-game web search. A mid-match retirement caps
+games won far below what a full match would have produced, and — unlike a DNP, which
+PrizePicks voids and refunds — a match that starts and then ends early on a retirement is a
+real loss on this stat, not a refund. A player carrying a listed niggle, or coming off a
+long, close previous-round match (fatigue, less recovery time), is a real risk here more
+than to a simple win/loss read.
+
+Surface and playing style matter but cut differently depending on the two specific players
+in this match — do not assume a universal "grass is faster" or "clay means longer matches"
+rule and apply it blind. Check these two players' actual hold/break numbers on this surface
+by search; a guessed direction is worse than no claim at all.
+`;
+
 const rolesFor = (league) =>
-  league === 'mlb' ? MLB_ROLES : league === 'wnba' ? WNBA_ROLES : league === 'nfl' ? NFL_ROLES : SOCCER_ROLES;
+  league === 'mlb' ? MLB_ROLES : league === 'wnba' ? WNBA_ROLES : league === 'nfl' ? NFL_ROLES :
+  league === 'tennis' || league === 'atp' || league === 'wta' ? TENNIS_ROLES : SOCCER_ROLES;
 
 // ===========================================================================
 // PSYCHE — the original. DO NOT EDIT.
