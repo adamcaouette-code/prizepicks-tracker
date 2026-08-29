@@ -1834,7 +1834,12 @@ export const handler = async (event) => {
       return p;
     };
 
-    const rowsP = guard(track('props', fetchProps(params.league).then((r) => filterToday(r, params.today))));
+    // Kept separately from the today-filtered rows so an empty "today" board can
+    // say WHY: a league that doesn't play daily (NFL, NHL, CFB, CBB) routinely
+    // has its whole board posted for a future date, and "props not posted yet"
+    // is a wrong answer to that — the props exist, just not for today.
+    const rawRowsP = guard(track('props', fetchProps(params.league)));
+    const rowsP = rawRowsP.then((r) => filterToday(r, params.today));
     const recordsP  = guard(track('records', fetchTeamRecords(params.league)));
     const oddsP     = guard(track('odds', fetchWinProbs(params.league, rowsP)));   // awaits rowsP internally
     const startersP = guard(track('starters', params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null)));
@@ -1909,10 +1914,27 @@ export const handler = async (event) => {
       .slice(0, 15)
       .map((r) => ({ player: r.player, stat: r.stat, line: r.line, position: r.position, matchup: r.matchup }));
     if (!candidates.length) {
-      const why = params.fromLedger
-        ? 'Nothing to re-judge — today\u2019s ledger is empty for this league, or its props are off the board.'
-        : 'No candidates — props not posted yet.';
-      await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: why }, params } });
+      let why;
+      if (params.fromLedger) {
+        why = 'Nothing to re-judge — today\u2019s ledger is empty for this league, or its props are off the board.';
+      } else {
+        const rawRows = await rawRowsP;
+        if (!rawRows.length) {
+          why = 'No candidates — props not posted yet.';
+        } else if (!rows.length) {
+          // The board is real, it just has nothing dated today — routine for a
+          // league that doesn't play daily. Point at the actual next slate
+          // instead of implying the board itself is missing.
+          const nextStart = rawRows.map((r) => r.start).filter(Boolean).sort()[0];
+          const nextDate = nextStart ? String(nextStart).slice(0, 10) : null;
+          why = nextDate
+            ? `No ${params.league.toUpperCase()} games today — the next posted slate starts ${nextDate}. This league doesn't play daily like MLB; rerun the scan on or after that date.`
+            : `No ${params.league.toUpperCase()} games today, and no future slate is posted yet either.`;
+        } else {
+          why = `${rows.length} ${params.league.toUpperCase()} prop(s) today, but none matched the selected tiers or prop filter. Try widening tiers or props.`;
+        }
+      }
+      await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: why }, params, emptyMessage: why } });
       return { statusCode: 202 };
     }
     phaseDone('pulling props');

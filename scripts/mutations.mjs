@@ -672,4 +672,18 @@ export const MUTATIONS = [
     what: 'the tennis judge is fed soccer role rules (clearances, crosses, goals) instead of tennis-specific format/closeness/retirement guidance',
     from: "league === 'tennis' || league === 'atp' || league === 'wta' ? TENNIS_ROLES : SOCCER_ROLES;",
     to: 'SOCCER_ROLES;' },
+
+  // ======================================================================
+  // Empty-board messaging: distinguish "no games today" from "nothing
+  // posted at all" from "filtered to zero" instead of one generic line.
+  // ======================================================================
+  { id: 'empty-board-no-specific-message', suite: 'empty-board-message', file: 'netlify/functions/bet-finder-background.js',
+    what: 'emptyMessage is dropped from the stored result, so the UI falls back to the generic "try widening tiers" line even when the real cause (no games today, here is the next date) is known',
+    from: "result: { board: [], parlay: { error: why }, params, emptyMessage: why } });",
+    to: 'result: { board: [], parlay: { error: why }, params } });' },
+
+  { id: 'empty-board-picks-wrong-next-date', suite: 'empty-board-message', file: 'netlify/functions/bet-finder-background.js',
+    what: 'the next slate date is read off an arbitrary row instead of the SOONEST one, so a mixed board could report a later date than the real next game',
+    from: 'const nextStart = rawRows.map((r) => r.start).filter(Boolean).sort()[0];',
+    to: 'const nextStart = rawRows.map((r) => r.start).filter(Boolean)[0];' },
 ];

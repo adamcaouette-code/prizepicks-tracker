@@ -4,6 +4,45 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## "No candidates" was one message for three different causes (2026-08-29)
+
+Reported live: NFL's Find Bets returned "No bets cleared your filters on this
+slate. Try widening tiers or props." every single time — not a filtering bug,
+not the position gate or NFL_ROLES added the same day. Confirmed by pulling
+PrizePicks' raw NFL feed directly: 2,261 real props posted, `today` boolean
+null on every one of them (PP doesn't set it on a future slate), and every
+`start_time` reading 2026-09-09 through 2026-09-14 — Week 1. Nothing was
+dated "today" because there is no NFL slate today; preseason ended, the
+regular season hasn't started. `filterToday` correctly returned zero rows.
+The bug was the message, not the filter: "props not posted yet" is a real
+claim about the whole board when the true state is "the board is real, just
+not for today" — and that distinction matters most for exactly the leagues
+that don't play daily (NFL, NHL, CFB, CBB), where it will be the common case,
+not an edge case.
+
+Fixed in `bet-finder-background.js`: the raw (pre-today-filter) fetch is kept
+in scope so the zero-candidates branch can tell apart three real causes —
+nothing posted at all, a real board with nothing dated today (names the
+actual next slate date, sorted, not an arbitrary row), or today's board real
+but nothing matching the selected tiers/filter — each with its own message,
+carried in a new `emptyMessage` field. `public/index.html`'s
+`renderBoardResults()` had never read `out.emptyMessage` at all (a gap open
+since the item-M/demon-filtering fix, which built the field but never wired
+the display) — fixed at the same time, so both empty-board causes now
+actually surface instead of showing the same generic line regardless of why.
+6 new tests, 2/2 targeted mutations killed.
+
+While investigating: found `grade-cron`'s scheduled heartbeat had gone silent
+for 3 days (last entry 2026-08-26, none since). Traced it to `grade-cron.js`
+not being a background function despite looping up to 4 days × 15 passes
+internally before writing its heartbeat — with a large backlog that loop
+almost certainly exceeds Netlify's sync timeout and gets killed mid-run,
+before the heartbeat write, which explains the gap without the schedule
+itself being broken. Worked around it this once by draining the backlog
+directly against `/api/grade-picks` (self-time-budgeted, returns cleanly).
+Not yet fixed at the code level — `grade-cron` itself still isn't a
+background function, so this will recur.
+
 ## Multi-league orchestration (foundation in place)
 
 The `/api/multi-league-bet-finder-background` endpoint accepts a `leagues` array
