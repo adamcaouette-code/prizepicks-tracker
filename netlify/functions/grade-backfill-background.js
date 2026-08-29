@@ -2,7 +2,7 @@
 //
 // Grades EVERY day in the pick log, oldest first.
 //
-// The cron only ever targets the last four days (grade-cron.js: day(1)..day(4)).
+// The cron only ever targets the last four days (grade-cron-background.js: day(1)..day(4)).
 // That is correct for keeping up, but it means anything older than four days is
 // permanently out of reach — and the log goes back weeks. When the graders
 // change, as they just have, the whole history needs one sweep to catch up. The

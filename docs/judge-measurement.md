@@ -40,8 +40,21 @@ almost certainly exceeds Netlify's sync timeout and gets killed mid-run,
 before the heartbeat write, which explains the gap without the schedule
 itself being broken. Worked around it this once by draining the backlog
 directly against `/api/grade-picks` (self-time-budgeted, returns cleanly).
-Not yet fixed at the code level — `grade-cron` itself still isn't a
-background function, so this will recur.
+
+**Fixed same day**: renamed to `grade-cron-background.js` — the exact
+mechanism every other `*-background.js` file in this repo already relies on
+(Netlify grants up to 15 minutes instead of the ~10–26s sync limit), just
+never applied to this one because nothing user-facing was ever waiting on
+its response. Nothing about the draining loop changed, only how much wall
+time it's allowed to use. The dev console's manual "run grading now" button
+updated to match: a background function returns an empty 202 immediately, so
+it now polls `/api/grade-cron-heartbeat` until a new entry appears instead of
+expecting a synchronous JSON body. Whether the schedule itself re-registers
+cleanly on this rename is worth confirming against a real heartbeat entry a
+day or two out — renaming a scheduled function is a fresh registration, and
+that's exactly the kind of thing that silently doesn't take effect without a
+live deploy to confirm it (see the 08-15 to 08-25 heartbeat gap above, a
+different failure mode with the same symptom).
 
 ## Multi-league orchestration (foundation in place)
 

@@ -1,4 +1,4 @@
-// netlify/functions/grade-cron.js
+// netlify/functions/grade-cron-background.js
 //
 // Automatic daily grading — no manual clicks. Netlify runs this on the schedule
 // below; it fully DRAINS yesterday and the day before by calling the grader
@@ -7,6 +7,19 @@
 //
 // Manual grading via /api/grade-picks and the dev console still works anytime;
 // this just makes it unnecessary.
+//
+// RENAMED from grade-cron.js (2026-08-29): this loop can run up to 4 days x 15
+// passes, each pass a real HTTP round trip to /api/grade-picks. A standard
+// Netlify function is killed at the sync timeout (~10-26s depending on plan)
+// long before that finishes with any real backlog — which is exactly what
+// happened: the heartbeat below went silent for 3 days because the function
+// kept getting killed before ever reaching its own heartbeat() call at the
+// end, with no error surfaced anywhere (a killed function isn't a caught
+// exception). The `-background` suffix is what tells Netlify to give this up
+// to 15 minutes instead — same mechanism every other `*-background.js` file
+// in this repo already relies on, just never applied here because nothing
+// user-facing was waiting on this one's response. Nothing about the draining
+// LOOP changed, only how much wall time it's allowed.
 
 // Netlify cron is UTC and has no idea about daylight saving, so "3am Pacific" is
 // a different UTC hour depending on the season:

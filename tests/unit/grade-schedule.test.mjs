@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const FN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../netlify/functions/grade-cron.js');
+const FN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../netlify/functions/grade-cron-background.js');
 
 // Returns the Pacific hour as a NUMBER — hour12:false formats midnight-to-9am
 // with a leading zero ("03"), so comparing strings silently never matches.

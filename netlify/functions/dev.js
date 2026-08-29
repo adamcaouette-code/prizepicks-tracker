@@ -121,7 +121,12 @@ export const handler = async () => {
     "async function mlbProbe(){show('MLB raw shapes ...','working');var r=await call('/api/mlb-stats?mode=probe'+mlbDate());show('MLB probe',r.json||r);}",
     "async function mlbSlate(){show('MLB slate ...','working');var r=await call('/api/mlb-stats?mode=slate'+mlbDate());show('MLB slate',r.json||r);}",
     "async function mlbPlayer(){var id=document.getElementById('mlbPlayer').value.trim();if(!id)return show('MLB player','enter a personId');show('MLB player '+id+' ...','working');var r=await call('/api/mlb-stats?mode=player&id='+encodeURIComponent(id));show('MLB player '+id,r.json||r);}",
-    "async function runCron(){show('running grade-cron ...','this drains yesterday + the day before, then settles slips');var r=await call('/api/grade-cron');show('grade-cron',r.json||r);}",
+    // grade-cron-background is a background function: Netlify acks it with an
+    // empty 202 immediately and the real drain runs after, so there is no JSON
+    // result to show here the way every other button on this page has. Poll the
+    // heartbeat instead until a newer entry appears, same signal the table above
+    // reads from.
+    "async function runCron(){show('starting grade-cron-background ...','this drains yesterday + the day before, then settles slips — can take a few minutes');var before=(await call('/api/grade-cron-heartbeat')).json;var beforeAt=before&&before.entries&&before.entries[0]&&before.entries[0].at;await call('/api/grade-cron-background');for(var i=0;i<40;i++){await new Promise(function(r){setTimeout(r,5000);});var hb=(await call('/api/grade-cron-heartbeat')).json;var latest=hb&&hb.entries&&hb.entries[0];if(latest&&latest.at!==beforeAt){show('grade-cron-background — done',latest);return;}show('grade-cron-background — running ('+((i+1)*5)+'s) ...','waiting for a new heartbeat entry');}show('grade-cron-background','still running past 200s — reload this page in a minute to check the heartbeat table');}",
     "async function retrySlips(){show('retrying given-up slip legs ...','clears tombstones, then regrades');var r=await call('/api/grade-slips?retry=1');show('grade-slips retry',r.json||r);}",
     "async function gradeSlips(){show('grading saved slips ...','working');var r=await call('/api/grade-slips');show('grade-slips',r.json||r);}",
     "async function diagnose(){var d=document.getElementById('whyDate').value;if(!d)return show('diagnose','pick a date first');show('diagnosing '+d+' ...','checking every pending pick against PrizePicks');var r=await call('/api/grade-debug?date='+d+'&limit=40');show('why not grading — '+d,r.json||r);}",
