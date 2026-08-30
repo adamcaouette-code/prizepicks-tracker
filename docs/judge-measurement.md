@@ -4,6 +4,48 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## The judge can't reliably count to 5 (2026-08-30)
+
+Reported live: Trea Turner, Plate Appearances over 4.5, reasoning said "5/5
+recent cleared" — PrizePicks' own last-5 chart for the same prop showed
+[4, 4, 5, 5, 5], which clears a 4.5 line 3 times, not 5. Aphrodite's prompt
+deliberately asks the model to COUNT how many of the last 5 cleared the line
+itself and anchor its probability on that count, before reasoning about tier
+or matchup ("ANCHOR ON A COUNT, NOT AN IMPRESSION" in judge-prompts.js) — a
+real, deliberate grounding technique. The model (Vilifiant/Haiku, the default)
+simply got the arithmetic wrong, and the probability it produced was built
+starting from that wrong count.
+
+This was never checked. `cleared` was logged as whatever the model said,
+verbatim, no matter what the pick's own recent5 array actually contained —
+the exact same class of mistake item M exists to catch for a different field
+(trusting a claim the code could have verified instead).
+
+Fixed two places:
+- `bet-finder-background.js`: `cleared` is now recomputed from the pick's own
+  `recent5` + `line` — ground truth, computed the same way the UI's stats
+  panel already computes it independently — instead of trusted from the
+  model. `judgeClearedClaim` keeps what the model actually said, kept
+  separately so disagreement is measurable rather than silently overwritten
+  (worth a look once enough volume accumulates: how often, and does it
+  correlate with the tiers/models with worse Brier scores?).
+- `public/index.html`: the "why" panel now compares the model's raw `cleared`
+  claim against the same ground-truth count and shows an inline warning when
+  they disagree — "⚠ reasoning says 5/5 cleared — the actual last-5 data says
+  3/5" — rather than letting a wrong claim sit unflagged next to a correct
+  number in the stats panel two taps away. The model's reasoning PROSE can't
+  be rewritten after the fact (it's the model's own sentence), so this is a
+  visible flag, not a correction of the text itself.
+
+What this does NOT do: change the prompt, the probability, the tier logic, or
+selection. The wrong `cleared` count already fed a wrong probability for this
+specific historical pick — that can't be undone — but nothing about how
+probabilities get computed changed here, only whether a verifiable factual
+claim is trusted blindly or checked against data the app already has.
+
+7 new tests (mocked against the exact real numbers), full suite unaffected
+elsewhere.
+
 ## "No candidates" was one message for three different causes (2026-08-29)
 
 Reported live: NFL's Find Bets returned "No bets cleared your filters on this

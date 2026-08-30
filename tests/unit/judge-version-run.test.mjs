@@ -113,8 +113,14 @@ export default async function ({ t }) {
   t.eq('the run records which judge produced it', aph.result.params.prompt, 'aphrodite');
   t.eq('every logged pick is tagged with the judge version',
     [...new Set(aph.log.map((p) => p.promptVersion))], ['aphrodite']);
-  t.eq('...and keeps the count the judge anchored on',
-    aph.log.map((p) => p.cleared).sort(), [2, 3, 4]);
+  // cleared is recomputed from the pick's own recent5 (see cleared-count.test.mjs)
+  // rather than trusted from the model, and this fixture's /history mock returns
+  // no games — so ground truth is correctly null here, while judgeClearedClaim
+  // still passes through exactly what the judge said, unmodified.
+  t.eq('with no recent5 available, cleared is null rather than trusting the judge’s number',
+    aph.log.map((p) => p.cleared), [null, null, null]);
+  t.eq('...but what the judge actually claimed is preserved separately',
+    aph.log.map((p) => p.judgeClearedClaim).sort(), [2, 3, 4]);
 
   // Verdict is derived from the probability, not read from the model — the mock
   // never sent one.

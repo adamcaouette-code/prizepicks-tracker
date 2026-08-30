@@ -2157,7 +2157,21 @@ export const handler = async (event) => {
         // report one blended, uninterpretable calibration curve.
         promptVersion: p.promptVersion || judgeVersion,
         judgeModel: p.judgeModel || params.model,
-        cleared: p.cleared ?? null,     // how many of the last 5 cleared, per the judge
+        // Aphrodite is told to COUNT how many of the last 5 cleared the line itself
+        // and anchor its probability on that count — the whole point being a real
+        // number instead of an impression. But counting 5 numbers against a line is
+        // arithmetic, not judgment, and a cheap model gets it wrong: measured live,
+        // Trea Turner's Plate Appearances recent5 was [4,4,5,5,5] against a 4.5 line
+        // (3 clear) and the model's own reasoning text said "5/5 recent cleared" —
+        // wrong, and the probability it gave was built starting from that wrong
+        // count. Recomputed here from the same recent5 this pick already carries,
+        // so `cleared` is always ground truth rather than trusting the model's
+        // count; judgeClearedClaim keeps what the model actually said, kept
+        // separately so disagreement is measurable rather than silently overwritten.
+        cleared: (Array.isArray(p.recent5) && p.recent5.length)
+          ? p.recent5.filter((v) => Number(v) > Number(p.line)).length
+          : null,
+        judgeClearedClaim: p.cleared ?? null,
         standout: p.standout ?? null,  // THEMIS only: did the judge move this 0.10+ off tier rate
         // Item L, instrumentation only — see SHRINKAGE_ENABLED. null while the
         // flag is off, which is every run today; prob (above) is untouched
