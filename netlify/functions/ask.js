@@ -12,20 +12,34 @@
 //   messages: [ { role: 'user'|'assistant', content: '...' }, ... ]   // running thread
 //   // (or) question: 'single question string'
 // }
+// returns { answer, revisedProb, usedSearch, stopReason }
+//
+// revisedProb: the model MAY end its answer with a REVISED_PROB marker (see
+// buildSystem below) if something in the conversation genuinely changes its read
+// on the prop — a confirmed scratch, a lineup change, whatever the user surfaced.
+// Parsed out here and stripped from the displayed answer. null when the model's
+// view hasn't moved, which is the common case — most questions are informational
+// and don't warrant a new number. This NEVER touches the engine's own logged
+// prob/verdict (calibration integrity) or the board's sort/edge/slip math — it is
+// shown to the user as their own follow-up read, not fed back into the app.
 
-const MODEL = 'claude-sonnet-5';   // fast + cheap for the per-pick chat
+// The dated id, not the `claude-haiku-4-5` alias — same reasoning as VILIFIANT in
+// bet-finder-background.js: an id that fails to resolve fails the whole request,
+// and the alias has never been exercised here.
+const MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOKENS = 1024;
 const SEARCH_MAX_USES = 3;           // cap searches so a question can't run away on time/cost
 
-// Spend metering (best-effort). Sonnet 5: $2/$10 per MTok intro until Aug 31 2026
-// (then $3/$15). Web search ~$0.01/search. Update if pricing changes.
+// Spend metering (best-effort). Haiku 4.5: $1/$5 per MTok, same table
+// bet-finder-background.js prices VILIFIANT at. Web search ~$0.01/search.
+// Update if pricing changes.
 import { getStore } from '@netlify/blobs';
 async function recordCost(feature, apiResponse) {
   try {
     const u = apiResponse?.usage || {};
     const inTok = u.input_tokens || 0, outTok = u.output_tokens || 0;
     const searches = u.server_tool_use?.web_search_requests || 0;
-    const usd = (inTok / 1e6) * 2 + (outTok / 1e6) * 10 + searches * 0.01;
+    const usd = (inTok / 1e6) * 1 + (outTok / 1e6) * 5 + searches * 0.01;
     const store = getStore({ name: 'cost-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
     const day = new Date().toISOString().slice(0, 10);
     let arr = [];
@@ -33,6 +47,20 @@ async function recordCost(feature, apiResponse) {
     arr.push({ at: new Date().toISOString(), feature, model: MODEL, inTok, outTok, searches, usd: Math.round(usd * 10000) / 10000 });
     await store.setJSON(day, arr);
   } catch { /* never break the chat */ }
+}
+
+// Parses a trailing "REVISED_PROB: 0.62" line off the model's answer, if present.
+// A plain regex over free text rather than forcing JSON output, because this
+// endpoint also runs web search — tool calls interleave with text blocks, and a
+// strict JSON-output contract fights that. Clamped to [0,1]; anything malformed
+// is treated as no revision rather than guessed at.
+const REVISED_RE = /\n?REVISED_PROB:\s*([\d.]+)\s*$/i;
+function extractRevision(answer) {
+  const m = REVISED_RE.exec(answer || '');
+  if (!m) return { text: answer, revisedProb: null };
+  const v = Number(m[1]);
+  const revisedProb = isFinite(v) && v >= 0 && v <= 1 ? Math.round(v * 1000) / 1000 : null;
+  return { text: answer.slice(0, m.index).trim(), revisedProb };
 }
 
 function buildSystem(pick = {}) {
@@ -65,6 +93,15 @@ function buildSystem(pick = {}) {
     '- If a starter you find via search differs from the one listed above, trust the fresher search result and say so.',
     '- Be honest about uncertainty. Give the reasoning, not just a yes/no. Keep it tight — a few sentences unless asked for more.',
     '- This is research for the user\'s own decisions, not financial advice.',
+    '',
+    'REVISED PROBABILITY. The engine\'s number above is already logged and scored —',
+    'you are not correcting it. But if something YOU surfaced in this conversation',
+    '(a confirmed scratch, a lineup change, weather, a fact the engine did not have)',
+    'genuinely changes your own read on this prop, end your reply with a new line in',
+    'exactly this form: REVISED_PROB: 0.62 — your updated P(over), one number, 0 to 1.',
+    'Omit that line entirely on every other turn — most questions are informational',
+    'and do not warrant a new number. Never include it just because the user asked',
+    'for one; only when your own view has actually moved and you can say why.',
   ].join('\n');
 }
 
@@ -111,10 +148,11 @@ export const handler = async (event) => {
     recordCost('ask', data).catch(() => {});
 
     const blocks = Array.isArray(data.content) ? data.content : [];
-    const answer = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+    const raw = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+    const { text: answer, revisedProb } = extractRevision(raw);
     const usedSearch = blocks.some((b) => b.type === 'server_tool_use' || b.type === 'web_search_tool_result');
 
-    return { statusCode: 200, headers, body: JSON.stringify({ answer: answer || '(no answer returned)', usedSearch, stopReason: data.stop_reason || null }) };
+    return { statusCode: 200, headers, body: JSON.stringify({ answer: answer || '(no answer returned)', revisedProb, usedSearch, stopReason: data.stop_reason || null }) };
   } catch (err) {
     return { statusCode: 500, headers, body: JSON.stringify({ error: String(err.message || err) }) };
   }

@@ -181,7 +181,13 @@ search on. Strip the tags, keep the words, and keep escaping everything else.
 ### Smaller ones
 
 - `POST /api/bet-finder-size` — `{ legs, bankroll, floor, maxStake? }` → parlay sizing/EV
-- `POST /api/ask` — `{ pick, messages }` → `{ answer, usedSearch, stopReason }`
+- `POST /api/ask` — per-pick follow-up chat, live on the board's "ask" panel.
+  `{ pick, messages }` → `{ answer, revisedProb, usedSearch, stopReason }`. Runs on
+  Haiku 4.5. `revisedProb` is null on most turns — only set when the model's own
+  view has genuinely moved mid-chat (a scratch, a lineup change the user surfaced).
+  Shown beside the board's own prob, never substituted for it: the engine's logged
+  prob/verdict and the board's sort/edge/slip math are untouched by anything said
+  in a chat.
 - `POST /api/reevaluate` — re-grades one pick, returns what changed
 - `GET /api/dev`, `GET /api/pp-probe` — internal tooling, not part of the product UI
 
@@ -259,6 +265,12 @@ here. Each needs a home in the new layout.
   (`bySource`). Brier is the number that answers "is this any good" — hit rate alone can't
   tell a sharp engine from a lucky one. If the calibration view gets restyled, those three
   survive.
+- **A chat-side revised probability never overwrites the board's own number.** The `ask`
+  panel's `revisedProb` is the user's own follow-up read, shown beside the engine's logged
+  prob/verdict — not fed back into sort, edge, or slip math, and not written over the
+  pick-log entry that calibration scores. A redesign that lets a chat answer silently
+  change what the board shows or what a slip is built from breaks calibration integrity;
+  keep the two numbers visibly distinct.
 
 ---
 
