@@ -143,6 +143,47 @@ export default async function ({ t, url, browser }) {
   t.ok('even the worst-edge pick can still be added — it is a choice, not a rule',
     await recAdd('Shiny Goblin').evaluate((b) => b.classList.contains('on')));
 
+  // ---- tier chips: browse the leaderboard by payout tier --------------------
+  // "just in case I want to risk it a bit with a higher payout" — the chips let
+  // the user narrow to one tier (e.g. demon-only) without leaving the tab, while
+  // the ranking underneath stays the same edge-based sort.
+  const chipTexts = await page.$$eval('#ledgerRec .rtier', els => els.map((e) => e.textContent.trim()));
+  t.eq('all three tiers are offered', chipTexts, ['Goblin', 'Standard', 'Demon']);
+  t.ok('all three start active — the default view is unfiltered',
+    await page.$$eval('#ledgerRec .rtier', els => els.every((e) => e.classList.contains('active'))));
+
+  // This fixture's only demon leg (Unpriced Under) is an unpriced side, so it
+  // was never eligible in the first place — narrowing to demon-only should
+  // leave the leaderboard with nothing to show, not silently fall back to
+  // showing every tier again.
+  await page.click('#ledgerRec .rtier.g');
+  await page.click('#ledgerRec .rtier.s');
+  await page.waitForFunction(() => !document.querySelector('#ledgerRec .rtier.g').classList.contains('active')
+    && !document.querySelector('#ledgerRec .rtier.s').classList.contains('active'));
+  t.eq('demon-only, with no priced demon pick on this ledger, shows none',
+    await page.$$eval('#ledgerRec .recline', els => els.length), 0);
+  t.ok('...and says so, rather than showing an empty box with no explanation',
+    /No picks in the selected tier/.test(await page.textContent('#ledgerRec')));
+
+  // Deselecting the only remaining active tier is a no-op — the leaderboard
+  // must never end up with zero tiers selected.
+  await page.click('#ledgerRec .rtier.d');
+  t.ok('the last active tier chip cannot be turned off',
+    await page.$eval('#ledgerRec .rtier.d', (e) => e.classList.contains('active')));
+  t.eq('...so the board is still empty, not broken open to every tier again',
+    await page.$$eval('#ledgerRec .recline', els => els.length), 0);
+
+  // Standard + demon: everything comes back except the one goblin pick.
+  await page.click('#ledgerRec .rtier.s');
+  await page.waitForFunction(() => document.querySelectorAll('#ledgerRec .recline').length > 0);
+  const standardDemonNames = await page.$$eval('#ledgerRec .rl-name', els => els.map((e) => e.textContent.trim()));
+  t.eq('standard + demon shows every eligible pick except the goblin one', standardDemonNames.length, 6);
+  t.ok('...Shiny Goblin (goblin tier) is filtered out', !standardDemonNames.includes('Shiny Goblin'));
+
+  // Back to all three tiers, leaving the leaderboard as later assertions expect it.
+  await page.click('#ledgerRec .rtier.g');
+  await page.waitForFunction(() => document.querySelectorAll('#ledgerRec .recline').length === 7);
+
   // The ledger quotes no payout of its own. It hands whatever is in the tray to
   // the endpoint that owns the real per-tier tables — the same path the search
   // board uses, and the one that was corrected when the board was found

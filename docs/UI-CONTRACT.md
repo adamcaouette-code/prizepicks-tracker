@@ -286,6 +286,14 @@ here. Each needs a home in the new layout.
   duplicate LINES of the same prop to one row (they're nested, not independent — showing
   both is noise). Do not reintroduce a per-player cap or game-spreading; those belonged to
   building one slip automatically, not to ranking a list.
+- **The leaderboard's tier chips (Goblin/Standard/Demon) filter, they don't re-rank.**
+  `LEDGER_TIERS` narrows which tiers `ledgerTopPicks` considers before the same edge sort
+  runs — a user chasing a bigger payout taps Demon to see just demon-tier picks with good
+  edge, without changing how "good edge" is judged. At least one tier stays selected at all
+  times; toggling the last active chip off is a no-op rather than leaving the board with
+  nothing (or silently re-selecting everything). When the selected tier(s) have no eligible
+  picks, say so in the box (`.rtempty`) instead of just hiding it — an empty leaderboard
+  with no explanation reads as broken, not "narrow your filter."
 
 ---
 
