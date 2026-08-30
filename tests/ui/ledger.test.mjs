@@ -14,6 +14,7 @@ export default async function ({ t, url, browser }) {
   // of routing ledger legs into it rather than quoting a number here — that
   // endpoint owns the per-tier PrizePicks tables.
   const sized = [];
+  const asked = [];
   const { page, errors, unstubbed } = await openApp(browser, { url, routes: {
     '**/api/pp-leagues*': LEAGUES,
     '**/api/pp-stats*': STATS,
@@ -27,6 +28,11 @@ export default async function ({ t, url, browser }) {
         hitDistribution: [0.05, 0.2, 0.4, 0.35], allHitProb: 0.35,
         breakEvenAllHit: 0.21, breakEvenPerLeg: 0.595, recommended: 'POWER', mixed: false,
       }) });
+    },
+    '**/api/ask': (route, request) => {
+      asked.push(JSON.parse(request.postData() || '{}'));
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        answer: 'Confirmed active tonight.', revisedProb: null, usedSearch: true }) });
     },
   }});
 
@@ -79,53 +85,90 @@ export default async function ({ t, url, browser }) {
   await page.waitForFunction(() => /already on this slip/.test(document.getElementById('trayMsg').textContent));
   t.eq('a second line of the same prop is refused', await page.$$eval('#slipTray .trayleg', l => l.length), 2);
 
-  // ---- the recommended slip ----------------------------------------------
+  // ---- today's best picks: a browsable leaderboard, not an auto-built slip --
+  // Used to auto-assemble one 2-6 leg slip (capped per player, spread across
+  // games). That hid everything else worth seeing. Now it just ranks every
+  // eligible pick by edge and lets the user tap + on whichever ones they want —
+  // no per-player cap, no game-spreading, because there is no longer a single
+  // slip being assembled for them.
   const rec = await page.$$eval('#ledgerRec .recline .rl-name', els => els.map(e => e.textContent.trim()));
-  t.eq('a slip is built from the day\'s board', rec.length, 3);
+  // 7 of the 10 logged picks are eligible: A/B Hitter are already settled,
+  // Unpriced Under fails sidePriced, and Edge Std's two lines of the SAME prop
+  // (Hits 1.5 and 2.5) collapse to one — nested lines were never independent.
+  // Different STATS on the same player (Runs, RBIs) are different props and
+  // all three survive; C Hitter (a pending "fade") is still pending, so it's
+  // eligible too, just ranked last.
+  t.eq('every eligible pick is listed, not capped at a slip-sized handful', rec.length, 7);
+  t.eq('...including the same player under three different stats — no per-player cap anymore',
+    rec.filter(n => /Edge Std/.test(n)).length, 3);
 
-  // EDGE, not percentage. Shiny Goblin is the highest number on the ledger at
-  // 78% and the worst bet on it — a goblin needs 79.4% a leg — so it must not
-  // be on a slip that three ~65% standards clear comfortably.
-  t.ok('the highest percentage on the board is left off, because it is a goblin',
-    !rec.some(n => /Shiny Goblin/.test(n)), rec.join(', '));
-  t.ok('...in favour of lower percentages that actually clear their tier',
-    rec.some(n => /Edge Std/.test(n)) && rec.some(n => /Second Game/.test(n)), rec.join(', '));
+  // EDGE, not percentage. C Hitter is a standard-tier "fade" at 41% — needs
+  // 59.5% to break even, the worst edge on the ledger — and Shiny Goblin is
+  // the highest RAW number on the ledger at 78% but a goblin needs 79.4%, so
+  // it's second-worst. Neither is hidden: this is a leaderboard, not a slip
+  // filter, and the user can still see and choose either.
+  t.eq('ranked by edge, worst last — the fade at 41% sinks to the very bottom',
+    rec[rec.length - 1], 'C Hitter');
+  t.eq('...the misleadingly-high-percentage goblin is second-worst, not first',
+    rec[rec.length - 2], 'Shiny Goblin');
+  t.eq('the best edge leads', rec[0], 'Edge Std');
 
-  // Spread across games before doubling up: a slip stacked on one game is one
-  // weather delay from zero. Edge Std has the three best standards on the board
-  // and still only contributes one leg here.
-  t.eq('each leg comes from a different game', rec.length, new Set(rec).size);
-  t.eq('...so one player cannot fill the slip',
-    rec.filter(n => /Edge Std/.test(n)).length, 1);
+  // A duplicate LINE of the same prop still collapses to one row (the nesting
+  // rule), even though the per-player cap that used to apply alongside it is gone.
+  const recLines = await page.$$eval('#ledgerRec .recline .rl-stat', els => els.map(e => e.textContent.trim()));
+  const nameStat = rec.map((n, i) => `${n}|${recLines[i]}`);
+  t.ok('Edge Std Hits 1.5 (the better-edge line) is the one shown',
+    nameStat.some(s => /Edge Std\|Hits.*1\.5/.test(s)));
+  t.eq('...and the second (2.5) line of the SAME prop does not get its own row',
+    nameStat.some(s => /Edge Std\|Hits.*2\.5/.test(s)), false);
 
-  // An under on a demon line is placeable but unpriced, so it cannot be sized.
-  t.ok('an unpriced side is never put on a slip',
+  // An under on a demon line is placeable but unpriced, so it cannot be ranked
+  // by an edge that is not known.
+  t.ok('an unpriced side never appears in the leaderboard',
     !rec.some(n => /Unpriced Under/.test(n)), rec.join(', '));
-  t.ok('...though it is still shown on the ledger, marked as unpriced',
+  t.ok('...though it is still shown on the ledger itself, marked as unpriced',
     (await page.textContent('#ledgerBody')).includes('price ?'));
 
-  // Loading it hands the legs to the real sizing path rather than quoting a
-  // number the ledger made up.
-  await page.click('#ledgerRecLoad');
+  // ---- adding ONE pick from the leaderboard, not the whole thing at once ----
+  // The tray already has 2 legs from the ledgerBody +buttons clicked above
+  // (Second Game, Edge Std) — pick something NOT already in it so this is
+  // actually exercising the leaderboard's own add buttons, not re-toggling one.
+  const recAdd = (player) => page.locator('#ledgerRec .recline', { hasText: player }).locator('.addbtn');
+  await recAdd('Third Game').click();
   await page.waitForFunction(() => document.querySelectorAll('#slipTray .trayleg').length === 3);
-  t.eq('loading replaces the tray with the recommendation',
-    await page.$$eval('#slipTray .trayleg .tl-name', els => els.map(e => e.textContent.trim())).then(n => n.length), 3);
-  t.ok('...and takes you to the builder where the payout is computed',
-    await page.$eval('#tabSearch', el => !el.hidden));
+  t.ok('the row marks itself as added', await recAdd('Third Game').evaluate((b) => b.classList.contains('on')));
 
-  // The ledger quotes no payout of its own. It hands the legs to the endpoint
-  // that owns the real per-tier tables — the same path the search board uses,
-  // and the one that was corrected when the board was found quoting +70% EV on
-  // goblin slips returning -32%.
+  await recAdd('Shiny Goblin').click();
+  await page.waitForFunction(() => document.querySelectorAll('#slipTray .trayleg').length === 4);
+  t.ok('even the worst-edge pick can still be added — it is a choice, not a rule',
+    await recAdd('Shiny Goblin').evaluate((b) => b.classList.contains('on')));
+
+  // The ledger quotes no payout of its own. It hands whatever is in the tray to
+  // the endpoint that owns the real per-tier tables — the same path the search
+  // board uses, and the one that was corrected when the board was found
+  // quoting +70% EV on goblin slips returning -32%.
   // `sized` is captured in Node, not in the page, so this waits on the right
   // side of the boundary — waitForFunction would be evaluating a variable the
   // browser has never heard of.
   for (let i = 0; i < 60 && !sized.length; i++) await new Promise((r) => setTimeout(r, 100));
   t.ok('the slip is priced by the sizing endpoint, not by the ledger', sized.length > 0);
   const last = sized[sized.length - 1];
-  t.eq('...on exactly the legs it recommended', last.legs.length, 3);
   t.ok('...each carrying the tier its payout depends on',
     last.legs.every((l) => typeof l.oddsType === 'string'), JSON.stringify(last.legs.map((l) => l.oddsType)));
+
+  // ---- ask a question about a ledger pick, same feature as the board -------
+  const mahleRow = page.locator('#ledgerBody .leg', { hasText: 'A Hitter' });
+  await mahleRow.locator('.whybtn[data-panel="ask"]').click();
+  const mahlePanel = mahleRow.locator('.why[data-panel="ask"]');
+  await mahlePanel.waitFor({ state: 'visible' });
+  await mahlePanel.locator('.askinput').fill('is he confirmed tonight');
+  await mahlePanel.locator('.askinput').press('Enter');
+  await page.waitForFunction(
+    () => /Confirmed active tonight/.test(document.querySelector('#ledgerBody .why[data-panel="ask"]').innerText));
+  t.eq('a ledger pick can be asked about too', asked.length, 1);
+  t.eq('...with its own player context', asked[0].pick.player, 'A Hitter');
+  t.ok('...and the answer renders in that card’s panel',
+    /Confirmed active tonight/.test(await mahlePanel.innerText()));
 
   t.eq('no unstubbed API calls', unstubbed, []);
   t.eq('no JS errors', errors, []);

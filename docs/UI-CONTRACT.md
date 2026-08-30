@@ -271,6 +271,21 @@ here. Each needs a home in the new layout.
   pick-log entry that calibration scores. A redesign that lets a chat answer silently
   change what the board shows or what a slip is built from breaks calibration integrity;
   keep the two numbers visibly distinct.
+- **`ask` is available everywhere a pick appears, not just the Search board.** Today's
+  Ledger cards carry it too, since the context genuinely differs — a logged pick-log row
+  doesn't carry `recent5`/`oppSP`/`reasoning`, only what got persisted, and the chat
+  degrades gracefully off that thinner set rather than refusing. Each surface's panels
+  must stay scoped to their own container (`legKey` collides across tabs when the same
+  pick appears on both at once) — see `askPanelEl`'s `root` parameter if reimplementing.
+- **Today's Ledger shows a browsable leaderboard, not an auto-built slip.** It used to
+  assemble one 2-6 leg parlay automatically (capped per player, spread across games) —
+  that hid every other pick worth seeing behind a single load button. Now it ranks up to
+  10 eligible picks by edge and gives each its own add button; the user decides what goes
+  in a slip. Keep the two rules that still matter: rank by edge (never raw probability —
+  a goblin's break-even is ~79%, a demon's ~44%, so raw % misorders badly), and collapse
+  duplicate LINES of the same prop to one row (they're nested, not independent — showing
+  both is noise). Do not reintroduce a per-player cap or game-spreading; those belonged to
+  building one slip automatically, not to ranking a list.
 
 ---
 
