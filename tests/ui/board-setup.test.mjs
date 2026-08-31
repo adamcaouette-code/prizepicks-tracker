@@ -104,6 +104,23 @@ export default async function ({ t, url, browser }) {
   await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
   t.eq('the expensive model is still one click away', job.sent.model, 'claude-opus-4-8');
 
+  // ---- the deep dive toggle -----------------------------------------------
+  // Off by default: it costs and takes meaningfully more, and is meant to run
+  // once a day, not on every scan — a run must not opt into it on its own.
+  t.eq('an ordinary run does not ask for a deep dive', job.sent.deepDive, undefined);
+  t.eq('the checkbox itself starts unchecked',
+    await page.$eval('#deepDiveToggle', (el) => el.checked), false);
+
+  await page.click('#deepDiveToggle');
+  await page.click('#runBtn');
+  await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
+  t.eq('checking it sends the flag', job.sent.deepDive, true);
+
+  await page.click('#deepDiveToggle');
+  await page.click('#runBtn');
+  await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
+  t.eq('unchecking it drops the flag again, rather than staying sticky', job.sent.deepDive, undefined);
+
   // ---- the balanced calibration run --------------------------------------
   // Demon is deliberately NOT active by default in the tier chips, so a normal
   // run produces no demons and the tier gap — the whole point of the behaviour

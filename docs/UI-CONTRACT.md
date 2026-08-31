@@ -107,13 +107,20 @@ is even worthwhile.
 
 ### `POST /api/bet-finder-background` → `GET /api/bet-finder-status?jobId=`
 
-Request: `{ jobId, league, legs, today, tiers, statFilter?, maxPicks? }`
+Request: `{ jobId, league, legs, today, tiers, statFilter?, maxPicks?, deepDive? }`
 → `202`, empty body.
 
 Status: `{ status, step, elapsedMs, typicalMs, phases[], result?, message? }`.
 `typicalMs` is the average of previous runs — good for a real progress bar rather than an
 indeterminate one. `result` carries
-`{ board, players, parlay, parlayLegs, traps, teamRecords, winProbs, oddsStatus, mlbStatus, allPicks, params }`.
+`{ board, players, parlay, parlayLegs, traps, teamRecords, winProbs, oddsStatus, mlbStatus, allPicks, params, deepDive }`.
+
+`deepDive: true` in the request runs the second, per-prop pass described in §6 after the
+normal scan. `result.deepDive` is `null` when the flag wasn't set, otherwise
+`{ requested, completed, errors? }` — `completed` can be less than `requested` if an
+individual call failed (the run still finishes; a failed prop just keeps its stage-1
+number). Any pick object that was re-judged carries `deepDive: true` plus `shallowProb`/
+`shallowEdge` holding the pre-deep-dive read; every other pick carries `deepDive: false`.
 
 ### `GET /api/top-picks?format=json` — today's ledger
 
@@ -294,6 +301,21 @@ here. Each needs a home in the new layout.
   nothing (or silently re-selecting everything). When the selected tier(s) have no eligible
   picks, say so in the box (`.rtempty`) instead of just hiding it — an empty leaderboard
   with no explanation reads as broken, not "narrow your filter."
+- **Deep dive is a second, per-prop pass — not a bigger version of the first one.**
+  A normal run judges the whole board in ONE call sharing a fixed search budget
+  (`JUDGE_MAX_SEARCHES`) across every game; on a full slate most props get zero dedicated
+  research. The `deepDive` flag re-judges the top `DEEP_DIVE_MAX` picks by edge — after the
+  normal screen, not instead of it — one prop per API call, each with its own search. A
+  deep-dived pick's numbers REPLACE its stage-1 entry everywhere downstream (board, parlay
+  legs, pick log); the stage-1 read stays alongside it as `shallowProb`/`shallowEdge` rather
+  than being discarded, so a second opinion that moved the number is visible, not silently
+  applied. Off by default and never sticky — costs and takes meaningfully more, and is
+  meant to run once a day, not on every scan. If extending it: keep the shortlist capped
+  (deep-diving the whole board defeats the point — it's supposed to be the expensive
+  treatment for the props that already cleared the cheap screen, not a replacement for it),
+  and keep each shortlisted prop's `judge()` call on its own `runId` (`${jobId}-deep${i}`) —
+  reusing the batch's `jobId` would each overwrite the batch's saved replay context (and
+  each other's) in the `judge-context` store.
 
 ---
 

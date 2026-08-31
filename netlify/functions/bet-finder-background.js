@@ -54,6 +54,20 @@ const VILIFIANT = 'claude-haiku-4-5-20251001';
 const MODEL = process.env.JUDGE_MODEL || VILIFIANT;
 const JUDGE_MAX_SEARCHES = Number(process.env.JUDGE_MAX_SEARCHES) || 8; // cap web searches so runs don't blow past the timeout
 
+// ---- Deep dive: a second, per-prop judge pass on the shortlist -------------
+// A normal run shares one fixed search budget (JUDGE_MAX_SEARCHES, above)
+// across every game on the slate — on a full board most props get zero
+// dedicated research. Deep dive re-judges just the best-edge props ONE AT A
+// TIME, each its own API call with its own search budget, so the props that
+// are actually in contention get real individual attention instead of a
+// slice of a shared one. It costs and takes meaningfully more (full system
+// prompt overhead repeated per call, plus one search per call instead of one
+// shared across the board) — worth it for the shortlist, not for a board of
+// 40+ props most of which were never competitive. Meant to run once a day,
+// not on every scan.
+const DEEP_DIVE_MAX = Number(process.env.DEEP_DIVE_MAX) || 12;
+const DEEP_DIVE_CONCURRENCY = Number(process.env.DEEP_DIVE_CONCURRENCY) || 3;
+
 // ---- Spend metering (best-effort, never blocks the run) --------------------
 // Prices in USD per million tokens, verified 2026-07: opus-4-8 $5/$25;
 // sonnet-5 $2/$10 intro until Aug 31 2026 (then $3/$15). Web search ~$0.01/search.
@@ -1314,7 +1328,7 @@ function groupByPlayer(board) {
       stat: p.stat, line: p.line, verdict: p.verdict, prob: p.prob,
       oddsType: p.oddsType, key_risk: p.key_risk, reasoning: p.reasoning,
       recent5: p.recent5 || null, recentAvg: p.recentAvg ?? null,
-      inParlay: !!p.inParlay,
+      inParlay: !!p.inParlay, deepDive: !!p.deepDive,
     });
     if (p.inParlay) g.inParlay = true;
     if ((p.prob || 0) > g.bestProb) g.bestProb = p.prob || 0;
@@ -1768,6 +1782,9 @@ export const handler = async (event) => {
       // Re-judge only the props already on today's ledger, rather than pulling a
       // fresh board. See the filter in the handler.
       fromLedger: body.fromLedger === true,
+      // The two-stage run: after the normal scan, individually re-judge the
+      // top DEEP_DIVE_MAX picks by edge, each with its own dedicated search.
+      deepDive: body.deepDive === true,
     };
 
     // ---- Run timer: timestamped phase log + typical-duration ETA ----------
@@ -2080,6 +2097,65 @@ export const handler = async (event) => {
     // Decide each prop's side BEFORE selecting or filtering, so unders compete
     // with overs on equal terms instead of being discarded as weak overs.
     attachSides(picks, params.sides);
+    // Explicit false, not absent — an API consumer checking p.deepDive should
+    // never have to treat undefined and false as two different unknowns.
+    for (const p of picks) p.deepDive = false;
+
+    // ---- Deep dive: re-judge the shortlist one prop at a time -------------
+    // Stage 1 above is the cheap screen — one call, one shared search budget
+    // across the whole board. This is the expensive refine: take the props
+    // that actually cleared the screen (best edge) and give each its OWN
+    // judge call with its OWN search, so the props in contention get real
+    // individual research instead of a slice of a budget shared 40 ways.
+    // Results replace their stage-1 entry in `picks` in place, so everything
+    // downstream (selection, sizing, the board, the pick log) runs on the
+    // deep numbers for anything that got the deep treatment.
+    let deepDiveInfo = null;
+    if (params.deepDive) {
+      const deepStart = Date.now();
+      await tick('deep dive: selecting shortlist');
+      const liveByKey = new Map(live.map((c) => [`${c.player}|${c.stat}|${Number(c.line)}`, c]));
+      const shortlist = picks
+        .filter((p) => p.edge != null && !p.injured && !p.voidReason)
+        .slice()
+        .sort((a, b) => b.edge - a.edge)
+        .slice(0, DEEP_DIVE_MAX)
+        .map((p) => liveByKey.get(`${p.player}|${p.stat}|${Number(p.line)}`))
+        .filter(Boolean);
+
+      const deepResults = [];
+      const deepErrors = [];
+      for (let i = 0; i < shortlist.length; i += DEEP_DIVE_CONCURRENCY) {
+        const batch = shortlist.slice(i, i + DEEP_DIVE_CONCURRENCY);
+        const results = await Promise.all(batch.map((c, bi) => judge(
+          [c], teamRecords, odds.teamWinProbs, params.league, oppDef, params.prompt, params.model,
+          params.searchPolicy === 'always' ? null : voids.confirmedTeams || null, `${jobId}-deep${i + bi}`,
+        ).then((r) => r[0]).catch((err) => {
+          deepErrors.push({ player: c.player, stat: c.stat, message: String(err.message || err) });
+          return null;
+        })));
+        deepResults.push(...results.filter(Boolean));
+        await tick(`deep dive: researched ${Math.min(i + DEEP_DIVE_CONCURRENCY, shortlist.length)}/${shortlist.length}`);
+      }
+      attachSides(deepResults, params.sides);
+
+      const idxByKey = new Map(picks.map((p, idx) => [`${p.player}|${p.stat}|${Number(p.line)}`, idx]));
+      for (const d of deepResults) {
+        const idx = idxByKey.get(`${d.player}|${d.stat}|${Number(d.line)}`);
+        if (idx == null) continue;
+        d.deepDive = true;
+        // The stage-1 read stays on the record next to the deep one, so a
+        // second opinion that moved the number is visible, not just applied.
+        d.shallowProb = picks[idx].prob;
+        d.shallowEdge = picks[idx].edge;
+        picks[idx] = d;
+      }
+      pieceMs.deepDive = Date.now() - deepStart;
+      deepDiveInfo = {
+        requested: shortlist.length, completed: deepResults.length,
+        errors: deepErrors.length ? deepErrors : undefined,
+      };
+    }
 
     const chosen = selectLegs(picks, params.legs);
     // Size on the probability of the side actually taken, not P(over).
@@ -2094,6 +2170,7 @@ export const handler = async (event) => {
       projectionId: p.projectionId || null, start: p.start || null,
       headshot: p.headshot || null, teamLogo: p.teamLogo || null, teamLogoFallback: p.teamLogoFallback || null,
       key_risk: p.key_risk || null, mlbId: p.mlbId || null,
+      deepDive: !!p.deepDive,
     }));
     // How the slip was built, so the card can say it rather than implying it.
     const parlayNote = {
@@ -2172,6 +2249,11 @@ export const handler = async (event) => {
           ? p.recent5.filter((v) => Number(v) > Number(p.line)).length
           : null,
         judgeClearedClaim: p.cleared ?? null,
+        // Whether this row is the stage-1 screen or the individually re-judged
+        // deep dive — so calibration can eventually tell whether the extra
+        // research actually earns its cost, same as source already does for
+        // board vs. ledger.
+        deepDive: !!p.deepDive,
         standout: p.standout ?? null,  // THEMIS only: did the judge move this 0.10+ off tier rate
         // Item L, instrumentation only — see SHRINKAGE_ENABLED. null while the
         // flag is off, which is every run today; prob (above) is untouched
@@ -2229,7 +2311,7 @@ export const handler = async (event) => {
       phases: phaseLog.slice(),
     };
     const emptyMessage = buildEmptyMessage(params.tiers, picks, chosen);
-    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params, emptyMessage } });
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params, emptyMessage, deepDive: deepDiveInfo } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });

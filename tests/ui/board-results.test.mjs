@@ -16,7 +16,7 @@ const LATE_PT = '2026-08-14T22:15:00.000-07:00';   // 1:15am ET tomorrow
 
 const RESULT = { board: [
   { player: 'Elly De La Cruz', team: 'CIN', matchup: 'CIN vs PIT', stat: 'Hits', line: 0.5, pick: 'over',
-    verdict: 'play', prob: 0.68, oddsType: 'goblin', image: null, start: TONIGHT_ET,
+    verdict: 'play', prob: 0.68, oddsType: 'goblin', image: null, start: TONIGHT_ET, deepDive: true,
     key_risk: 'Facing a lefty.', reasoning: 'Cleared this line in 4 of the last 5 — <cite index="1-2">.312 average</cite>.',
     // raw numbers, shaped exactly as attachHistory/attachStarters attach them
     recent5: [1, 0, 2, 1, 1], recentAvg: 1.0,
@@ -88,6 +88,14 @@ export default async function ({ t, url, browser }) {
   const pct = await page.$$eval('#searchResults .pct', els => els.map(e => e.className));
   t.eq('board-mode "pass" is styled as fade, not left bare', pct[await rowAt('Corbin Carroll')], 'pct fade');
   t.ok('probabilities render as percentages', /68%/.test(await page.textContent('#searchResults')));
+
+  // ---- deep dive badge: only on a pick the deep dive actually re-judged ---
+  // Lives next to the matchup line, not inside the player's own name — a row
+  // above is addressed by exact name text (line 77), which already proves a
+  // badge here cannot be leaking into .name's trimmed content.
+  const deepBadges = await page.$$eval('#searchResults .leg', (els) => els.map((e) => !!e.querySelector('.deepbadge')));
+  t.eq('the deep-dived pick carries the badge', deepBadges[await rowAt('Elly De La Cruz')], true);
+  t.ok('nobody else does', deepBadges.filter(Boolean).length === 1, JSON.stringify(deepBadges));
 
   // ---- sort control -------------------------------------------------------
   const sortBtns = await page.$$eval('#searchResults .sortbtn',

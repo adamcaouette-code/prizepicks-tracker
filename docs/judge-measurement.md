@@ -4,6 +4,39 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## Deep dive: per-prop research instead of a bigger shared batch (2026-08-31)
+
+Not a measured finding — a design decision, recorded because the reasoning is
+easy to re-litigate wrong later.
+
+The request: judge every prop on the board individually, "prop by prop,"
+accepting the extra time and cost, once a day. Taken literally that multiplies
+a run's cost by roughly the candidate count: `judge()` sends the full system
+prompt on every call (fixed overhead, currently amortized across up to 44-60
+props in one call) and gives each call its own search budget instead of
+sharing `JUDGE_MAX_SEARCHES` — and searches are already ~80% of what a normal
+run costs (see the "no candidates" cost note below). Isolating every prop pays
+that full overhead for props that were never close to competitive.
+
+What shipped instead: the normal run stays exactly as it is — one call, one
+shared budget, the cheap screen. `deepDive: true` adds a SECOND pass after it:
+take the top `DEEP_DIVE_MAX` (12) picks by EDGE (not raw probability — same
+reasoning as everywhere else this ranks), and re-judge each ONE AT A TIME,
+each its own call with its own dedicated search. The props that already
+cleared the cheap screen get real individual attention — the opposite of
+today's default, where a 40-prop board splits at most 8 searches and most
+props get none — without paying full isolation cost on the props that were
+never going to be bet anyway.
+
+Two things worth measuring once enough volume accumulates, exactly the kind of
+question `deepDive` on the pick-log row exists to answer: (1) does the deep
+number's Brier score actually beat the shallow one for the same props — the
+whole premise is that dedicated research beats a shared budget, and that is a
+testable claim, not an assumption; (2) how often the deep number disagrees
+with the shallow one enough to change verdict or side (`shallowProb`/
+`shallowEdge` are kept on the record specifically so this is answerable
+without needing the raw judge-context snapshots).
+
 ## The judge can't reliably count to 5 (2026-08-30)
 
 Reported live: Trea Turner, Plate Appearances over 4.5, reasoning said "5/5
