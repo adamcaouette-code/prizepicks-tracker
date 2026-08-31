@@ -1,0 +1,376 @@
+:root {
+  --bg: #0d0e13;
+  --panel: #16181f;
+  --panel-2: #1c1f28;
+  --line: #272b37;
+  --text: #eceef5;
+  --dim: #9aa0b4;
+  --dimmer: #6b7185;
+
+  --accent: #7c83ff;
+  --accent-soft: rgba(124, 131, 255, 0.16);
+
+  --muscle: #565d8f;
+  --muscle-hi: #7a83c4;
+  --scenery: #2f333f;
+  --sel: #d8dcff;
+
+  --sheet-h: min(74vh, 720px);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  overscroll-behavior-y: none;
+}
+
+body { display: flex; flex-direction: column; }
+
+/* ------------------------------------------------------------------ header */
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.title small {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--dimmer);
+  letter-spacing: 0.02em;
+  margin-top: 2px;
+}
+
+.viewtoggle {
+  display: flex;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px;
+}
+
+.viewtoggle button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.viewtoggle button[aria-pressed='true'] { background: var(--accent); color: #fff; }
+
+/* -------------------------------------------------------------------- body */
+
+main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 12px 12px;
+}
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  justify-content: center;
+}
+
+svg.figure { height: 100%; width: 100%; max-height: 100%; touch-action: manipulation; }
+
+/* The seam between two muscles is a background-coloured stroke, so each region
+   reads as a separate shape rather than one continuous silhouette. */
+.region {
+  transition: fill 0.16s ease, opacity 0.16s ease;
+  stroke: var(--bg);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+.region.scenery { fill: var(--scenery); }
+
+.region.muscle {
+  fill: var(--muscle);
+  cursor: pointer;
+  outline: none;
+}
+
+@media (hover: hover) {
+  .region.muscle:hover { fill: var(--muscle-hi); }
+}
+
+.region.muscle:focus-visible { stroke: var(--accent); stroke-width: 2; }
+
+/* The halo is a stroke rather than a drop-shadow on purpose. A filter changes
+   the element's hit geometry, so the second tap could fall through onto the
+   neighbouring muscle when it landed near a seam. A stroke grows the shape
+   outward instead, which makes the highlighted muscle easier to tap again. */
+.region.muscle.selected {
+  fill: var(--sel);
+  stroke: rgba(150, 160, 255, 0.55);
+  stroke-width: 3.5;
+}
+
+/* When something is selected, everything else steps back. */
+.figure.has-selection .region.muscle:not(.selected) { opacity: 0.45; }
+.figure.has-selection .region.scenery { opacity: 0.5; }
+
+.detail-line {
+  fill: none;
+  stroke: rgba(0, 0, 0, 0.32);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ prompt */
+
+/* Fixed height, not min-height. The selected state is taller than the idle one,
+   and any growth here shrinks the flexible .stage above — which resizes the
+   figure under the user's finger between the first tap and the second. */
+.prompt {
+  width: 100%;
+  max-width: 420px;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  text-align: center;
+}
+
+.prompt.idle { color: var(--dim); font-size: 13px; }
+
+.prompt .picked { font-size: 15px; font-weight: 700; }
+.prompt .picked em { display: block; font-style: normal; font-size: 11.5px; font-weight: 400; color: var(--dimmer); margin-top: 2px; }
+
+.prompt button {
+  appearance: none;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.prompt button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 500; }
+
+.browse {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  margin-top: 10px;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------- sheet */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 9, 0.66);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s;
+  z-index: 10;
+}
+.scrim.open { opacity: 1; pointer-events: auto; }
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 11;
+  height: var(--sheet-h);
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  border-radius: 20px 20px 0 0;
+  transform: translateY(101%);
+  transition: transform 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sheet.open { transform: translateY(0); }
+/* A closing sheet is still on screen for the length of its transition. Without
+   this it swallows the next tap, which is very easy to hit on the lower half of
+   the body — close the sheet, tap a calf, nothing happens. */
+.sheet:not(.open) { pointer-events: none; }
+
+.grabber { flex: none; padding: 10px 0 4px; display: flex; justify-content: center; }
+.grabber span { width: 38px; height: 4px; border-radius: 99px; background: var(--line); }
+
+.sheet-head {
+  flex: none;
+  padding: 4px 20px 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sheet-head h2 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+.sheet-head .latin { margin: 3px 0 0; font-size: 12.5px; color: var(--accent); font-style: italic; }
+.sheet-head .heads { margin: 5px 0 0; font-size: 11.5px; color: var(--dimmer); }
+
+.closebtn {
+  appearance: none;
+  flex: none;
+  width: 32px; height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sheet-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 18px 20px 40px; }
+
+.sect { margin-bottom: 26px; }
+.sect > h3 {
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+}
+
+ul.plain { margin: 0; padding: 0; list-style: none; }
+ul.plain li {
+  position: relative;
+  padding: 0 0 0 18px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #cfd3e2;
+}
+ul.plain li::before {
+  content: '';
+  position: absolute;
+  left: 3px; top: 8px;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.note {
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: #c3c8da;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 10px 10px 0;
+  padding: 12px 14px;
+}
+
+/* ------------------------------------------------------------- exercises */
+
+.ex {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 13px;
+  padding: 13px 14px;
+  margin-bottom: 10px;
+}
+
+.ex-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.ex-top h4 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+
+.badge {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: #a8aeff;
+}
+.badge.isolation { background: rgba(120, 200, 160, 0.14); color: #7fcfa6; }
+.badge.carry { background: rgba(230, 175, 100, 0.14); color: #e0a866; }
+.badge.stability { background: rgba(200, 140, 220, 0.14); color: #c58fdb; }
+
+.ex-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 9px; font-size: 12px; color: var(--dim); }
+.ex-meta .dose { color: var(--text); font-weight: 600; }
+.ex-why { margin: 0; font-size: 13px; line-height: 1.55; color: #a9afc2; }
+
+/* ---------------------------------------------------------------- browser */
+
+.list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+
+.list button {
+  appearance: none;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 11px;
+  padding: 12px 13px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.list button strong { display: block; font-size: 14px; font-weight: 600; }
+.list button span { display: block; font-size: 11px; color: var(--dimmer); font-style: italic; margin-top: 3px; }
+
+@media (min-width: 860px) {
+  /* Side panel rather than a modal sheet — the figure stays visible beside it,
+     so the scrim only needs to be enough to push the body back, not hide it.
+     You want to see the muscle you are reading about. */
+  .scrim.open { background: rgba(4, 5, 9, 0.28); }
+
+  .sheet {
+    top: 0;
+    left: auto;
+    width: 460px;
+    height: 100%;
+    border-radius: 0;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    transform: translateX(101%);
+  }
+  .sheet.open { transform: translateX(0); }
+  .grabber { display: none; }
+  .sheet-head { padding-top: 20px; }
+}

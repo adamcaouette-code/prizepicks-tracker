@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d0e13" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="description" content="Tap a muscle to see what it does, where you use it in everyday life, and the exercises that train it." />
+    <title>Muscle Map</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="title">
+        Muscle Map
+        <small>Tap once to highlight · tap again for detail</small>
+      </div>
+      <div class="viewtoggle" role="group" aria-label="Body view">
+        <button type="button" data-view="front" aria-pressed="true">Front</button>
+        <button type="button" data-view="back" aria-pressed="false">Back</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="stage"></div>
+      <div class="prompt idle">Tap a muscle to highlight it</div>
+      <button type="button" class="browse">Browse all muscle groups</button>
+    </main>
+
+    <div class="scrim"></div>
+    <aside class="sheet" role="dialog" aria-modal="true" aria-label="Muscle detail" aria-hidden="true">
+      <div class="grabber"><span></span></div>
+      <div class="sheet-head"></div>
+      <div class="sheet-body"></div>
+    </aside>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

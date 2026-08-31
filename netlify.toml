@@ -20,3 +20,16 @@
   for = "/"
   [headers.values]
     Cache-Control = "no-cache, must-revalidate"
+
+# The muscle map is a separate static app under /workout/. Same reasoning as
+# above: the document itself is never cached so a new version is never hidden
+# behind a stale copy, especially once it is on an iOS home screen.
+[[headers]]
+  for = "/workout/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+
+[[headers]]
+  for = "/workout/"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"

@@ -1,0 +1,10 @@
+{
+  "name": "Muscle Map",
+  "short_name": "Muscles",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0d0e13",
+  "theme_color": "#0d0e13",
+  "orientation": "portrait"
+}
