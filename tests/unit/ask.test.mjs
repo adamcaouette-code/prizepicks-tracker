@@ -43,6 +43,32 @@ export default async function ({ t }) {
   t.ok('...including the engine\'s own number, framed as already-scored',
     /75% over/.test(sentBody.system) && /already logged and scored/.test(sentBody.system));
 
+  // ---- the "cleared X of 5" count is computed here, not left for the model -
+  // Same bug already caught once for the board judge: asked to count 5 numbers
+  // against a line, it said "5/5 cleared" on data that actually cleared 3/5.
+  // This fixture is that exact case — [4,4,5,5,5] against a 4.5 line clears on
+  // the three 5s, not the two 4s.
+  t.ok('the system prompt states the precomputed count, not just the raw array',
+    /cleared this exact line \(4\.5\) in 3 of 5/.test(sentBody.system), sentBody.system);
+  t.ok('...and tells the model to use it instead of recounting',
+    /use that number, don't recount it yourself/.test(sentBody.system));
+  t.ok('...and to check any OTHER count it finds against this specific line before citing it',
+    /is a DIFFERENT question than this line asks/.test(sentBody.system));
+
+  // ---- no recent5: the fact is simply absent, nothing crashes --------------
+  const noForm = await ask(
+    { pick: { player: 'No History Guy', stat: 'Hits', line: 1.5 }, question: 'any recent form?' },
+    'No recent-form data was provided for this one.');
+  t.ok('no recent5 means no fabricated count', !/cleared this exact line/.test(noForm.sentBody.system));
+  t.eq('...and the request still succeeds', noForm.res.statusCode, 200);
+
+  // ---- recent5 present but no line: still no fact, since there is nothing to clear against
+  const noLine = await ask(
+    { pick: { player: 'No Line Guy', stat: 'Hits', recent5: [1, 2, 3, 4, 5] }, question: 'q' },
+    'a');
+  t.ok('a count needs a line to mean anything — absent line, no fact stated',
+    !/cleared this exact line/.test(noLine.sentBody.system));
+
   // ---- no marker: no revision, answer passes through untouched -------------
   const plain = await ask({ pick: PICK, question: 'why goblin tier' }, 'Goblin means the line was moved down to make the over easy.');
   t.eq('a plain informational answer has no revision', plain.json.revisedProb, null);

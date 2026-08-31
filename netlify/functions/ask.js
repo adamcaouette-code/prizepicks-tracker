@@ -63,6 +63,28 @@ function extractRevision(answer) {
   return { text: answer.slice(0, m.index).trim(), revisedProb };
 }
 
+// How many of the last 5 games actually cleared THIS line — computed here, not
+// left for the model to count.
+//
+// Same bug class already caught once in bet-finder-background.js: the judge was
+// asked to count 5 numbers against a line and got it wrong ("5/5 recent
+// cleared" on data that actually cleared 3/5) — arithmetic, not judgment, and a
+// cheap model drops it under load. That fix computed `cleared` server-side
+// instead of trusting the model's count. This endpoint carries the exact same
+// risk with the exact same fix available (recent5 + line are both already in
+// the payload) but never got it — buildSystem used to hand over the raw array
+// and let the model do the arithmetic itself, live, while ALSO weighing
+// whatever count a web search turned up. That is how "cleared 4 of 5" logged
+// data produced an answer arguing from "hasn't exceeded five strikeouts in six
+// starts" — a real fact, about the wrong number, because nothing anchored the
+// model to compute against the 2.5 line actually in play.
+function clearedFact(recent5, line) {
+  if (!Array.isArray(recent5) || !recent5.length || line == null || !isFinite(Number(line))) return null;
+  const n = Number(line);
+  const cleared = recent5.filter((v) => isFinite(Number(v)) && Number(v) > n).length;
+  return `cleared this exact line (${line}) in ${cleared} of ${recent5.length}`;
+}
+
 function buildSystem(pick = {}) {
   const f = [];
   const add = (label, val) => { if (val !== undefined && val !== null && val !== '') f.push(`- ${label}: ${val}`); };
@@ -74,7 +96,11 @@ function buildSystem(pick = {}) {
   add('Prop', pick.stat && `${pick.stat} ${pick.line != null ? `(line ${pick.line})` : ''}`);
   add('Engine verdict', pick.verdict && `${pick.verdict}${pick.prob != null ? ` @ ${Math.round(pick.prob * 100)}% over` : ''}`);
   add('Tier', pick.oddsType);
-  if (Array.isArray(pick.recent5)) add('Last 5 games', `${pick.recent5.join(', ')} (avg ${pick.recentAvg ?? '—'})`);
+  if (Array.isArray(pick.recent5)) {
+    const fact = clearedFact(pick.recent5, pick.line);
+    add('Last 5 games', `${pick.recent5.join(', ')} (avg ${pick.recentAvg ?? '—'})`
+      + (fact ? ` — ${fact}` : ''));
+  }
   if (pick.oppSP && pick.oppSP.name) add('Opposing starter', `${pick.oppSP.name} (${pick.oppSP.throws}HP, ${pick.oppSP.era} ERA, ${pick.oppSP.whip} WHIP, ${pick.oppSP.k} K)`);
   if (pick.selfSP && pick.selfSP.name) add('Opposing starter (this pitcher faces)', `${pick.selfSP.name} (${pick.selfSP.throws}HP, ${pick.selfSP.era} ERA)`);
   add('Park index', pick.parkIndex && `${pick.parkIndex} (100 = neutral)`);
@@ -91,6 +117,7 @@ function buildSystem(pick = {}) {
     '- Answer the user\'s question about THIS prop directly and concisely.',
     '- The structured numbers above (recent form, opposing starter, park) are reliable as of this morning. Use web search for anything live or time-sensitive: confirmed lineups, late scratches, injury news, weather, or head-to-head history.',
     '- If a starter you find via search differs from the one listed above, trust the fresher search result and say so.',
+    '- "Last 5 games" already states how many cleared THIS prop\'s line — use that number, don\'t recount it yourself. If you cite a different count from search (a season total, "hasn\'t hit 5+ in six starts", any round number a source framed it around), that is a DIFFERENT question than this line asks. Say explicitly what threshold that count is checking before using it as evidence for or against this specific line.',
     '- Be honest about uncertainty. Give the reasoning, not just a yes/no. Keep it tight — a few sentences unless asked for more.',
     '- This is research for the user\'s own decisions, not financial advice.',
     '',

@@ -284,6 +284,15 @@ here. Each needs a home in the new layout.
   degrades gracefully off that thinner set rather than refusing. Each surface's panels
   must stay scoped to their own container (`legKey` collides across tabs when the same
   pick appears on both at once) — see `askPanelEl`'s `root` parameter if reimplementing.
+- **`ask`'s system prompt states `recent5`'s cleared-count as a computed fact, never a raw
+  array left for the model to count.** `buildSystem()`'s `clearedFact()` computes it from
+  the same `recent5` + `line` the board already cross-checks the judge's own claim against
+  (§ above, "The judge can't reliably count to 5") — a cheap model doing that arithmetic
+  live, in prose, while also weighing a differently-framed count from web search, produced
+  an answer arguing from "hasn't hit 5 Ks in six starts" against a line that only needed 3.
+  If the payload gains a new per-prop count the model might need to reason about, compute
+  it server-side and state it as a fact — don't hand over raw numbers and trust a chat
+  model's arithmetic under load.
 - **Today's Ledger shows a browsable leaderboard, not an auto-built slip.** It used to
   assemble one 2-6 leg parlay automatically (capped per player, spread across games) —
   that hid every other pick worth seeing behind a single load button. Now it ranks up to

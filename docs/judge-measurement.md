@@ -4,6 +4,36 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## The "can't count to 5" bug had a second home: the ask chat (2026-08-31)
+
+Reported live: asked the chat why a 92% goblin (Pitcher Strikeouts, line 2.5 —
+clears on 3+ Ks) looked high, it argued the number down by citing "hasn't
+exceeded five strikeouts in his last six starts" — a real stat, about the
+wrong threshold. Never hitting 5 Ks says nothing about clearing 3; the chat
+had simply lost track of the actual line while reasoning from a rounder,
+more dramatic-sounding number it found via search.
+
+This is the exact bug already fixed once for the board judge ("The judge
+can't reliably count to 5", below): asked to count games against a line, a
+cheap model gets the arithmetic wrong under load. That fix computed `cleared`
+server-side instead of trusting the model's count — but it only touched
+`bet-finder-background.js`'s judge prompt. `ask.js` builds its own system
+prompt from scratch and never inherited it, even though it already receives
+the same `recent5` + `line` the board does (via `askContextOf` on the
+frontend) — it was just handing over the raw array and trusting Haiku to
+relate it to the line correctly, live, while also weighing anything search
+turned up.
+
+Fixed the same way: `buildSystem()` in `ask.js` now computes `cleared` itself
+(`clearedFact()`) and states it as a given fact — "cleared this exact line
+(2.5) in 4 of 5" — instead of a raw array the model has to do arithmetic
+against. Paired with an explicit instruction that any OTHER count the model
+finds via search must be checked against THIS line before being cited as
+evidence, since search results are framed around whatever round number a
+source used, not the specific bet on screen. Neither half alone is the fix —
+the first removes the need to guess at the one number that matters most; the
+second stops a differently-framed stat from search overriding it unchecked.
+
 ## Deep dive: per-prop research instead of a bigger shared batch (2026-08-31)
 
 Not a measured finding — a design decision, recorded because the reasoning is
