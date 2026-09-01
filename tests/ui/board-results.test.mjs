@@ -199,4 +199,46 @@ export default async function ({ t, url, browser }) {
   t.eq('the late PT game is still today out west — no weekday prefix', wrow['Corbin Carroll'], '10:15 PM');
   t.eq('no JS errors (PT viewer)', west.errors, []);
   await west.page.close();
+
+  // ---- an unpriced under does not borrow the over side's tier icon --------
+  // odds_type describes the OVER side only. A goblin line's UNDER can be a
+  // completely different tier on the real PrizePicks card — showing the
+  // goblin icon next to a pick that's actually the under claims a price this
+  // app never confirmed. Reported live: a goblin-icon "Total Bases under 0.5"
+  // at 82% turned out to be a DEMON on the real card once the user checked.
+  const UNVERIFIED_RESULT = { board: [
+    { player: 'Cole Young', team: 'SEA', matchup: 'SEA vs BOS', stat: 'Total Bases', line: 0.5,
+      side: 'under', sideVerdict: 'play', sideProb: 0.82, prob: 0.18, oddsType: 'goblin',
+      sidePriceUnverified: true, image: null },
+    { player: 'Priced Goblin Guy', team: 'TEX', matchup: 'TEX vs OAK', stat: 'Hits', line: 0.5,
+      side: 'over', sideVerdict: 'play', sideProb: 0.80, prob: 0.80, oddsType: 'goblin',
+      sidePriceUnverified: false, image: null },
+  ], timing: RESULT.timing, params: RESULT.params };
+  const unverified = await openApp(browser, {
+    url, timezoneId: 'America/New_York', locale: 'en-US',
+    init: freezeClock('2026-08-14T20:00:00.000-04:00'),
+    routes: { '**/api/pp-leagues*': LEAGUES, '**/api/pp-stats*': STATS, ...jobRoutes('bet-finder', UNVERIFIED_RESULT) },
+  });
+  await unverified.page.click('#tabBtnSearch');
+  await unverified.page.click('#runBtn');
+  await unverified.page.waitForSelector('#searchResults .leg', { timeout: 30000 });
+
+  const legByName = async (name) =>
+    unverified.page.locator('#searchResults .leg', { hasText: name }).first();
+  const coleName = await (await legByName('Cole Young')).locator('.name').innerHTML();
+  t.ok('an unconfirmed side shows a neutral "?" mark, not a tier icon',
+    /class="tiericon unk"/.test(coleName), coleName);
+  t.ok('...never the goblin image the over side actually prices at',
+    !/goblinImg|alt="goblin"/.test(coleName), coleName);
+  t.ok('...and says why, for anyone who checks',
+    /title="[^"]*UNDER[^"]*separately[^"]*"/.test(coleName), coleName);
+
+  const pricedName = await (await legByName('Priced Goblin Guy')).locator('.name').innerHTML();
+  t.ok('a genuinely goblin-priced pick still gets the real goblin icon',
+    /alt="goblin"/.test(pricedName), pricedName);
+  t.ok('...not the unconfirmed mark', !/tiericon unk/.test(pricedName), pricedName);
+
+  t.eq('no unstubbed API calls (unverified-side board)', unverified.unstubbed, []);
+  t.eq('no JS errors (unverified-side board)', unverified.errors, []);
+  await unverified.page.close();
 }

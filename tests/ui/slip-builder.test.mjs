@@ -276,4 +276,28 @@ export default async function ({ t, url, browser }) {
   t.ok('no payout is invented for an unsettled card', !/Paid/.test(body));
   t.eq('and it renders without JS errors', odd.errors, []);
   await odd.page.close();
+
+  // ---- an unpriced under keeps its "?" mark once it reaches the tray -------
+  // odds_type describes the OVER side only, so a manually-added goblin-under
+  // pick still doesn't know its own price once it's in the tray — showing the
+  // goblin icon there would be exactly as misleading as it was on the board.
+  const UNVERIFIED = { board: [
+    { player: 'Cole Young', team: 'SEA', matchup: 'SEA vs BOS', stat: 'Total Bases', statDisplay: 'Total Bases',
+      line: 0.5, side: 'under', sideVerdict: 'play', sideProb: 0.82, prob: 0.18, oddsType: 'goblin',
+      sidePriceUnverified: true, image: null, projectionId: 'PP-U' },
+  ], params: { league: 'mlb' } };
+  const unpriced = await openApp(browser, { url, routes: {
+    '**/api/pp-leagues*': LEAGUES, '**/api/pp-stats*': STATS,
+    ...jobRoutes('bet-finder', UNVERIFIED),
+  }});
+  await unpriced.page.click('#tabBtnSearch');
+  await unpriced.page.click('#runBtn');
+  await unpriced.page.waitForSelector('#searchResults .leg');
+  await unpriced.page.click('#searchResults .addbtn[data-add="Cole Young|Total Bases|0.5|under"]');
+  await unpriced.page.waitForSelector('#slipTray .trayleg');
+  const trayName = await unpriced.page.locator('#slipTray .tl-name').innerHTML();
+  t.ok('the tray shows the same neutral "?" mark, not the goblin icon',
+    /class="tiericon unk"/.test(trayName) && !/alt="goblin"/.test(trayName), trayName);
+  t.eq('no JS errors (unpriced tray leg)', unpriced.errors, []);
+  await unpriced.page.close();
 }

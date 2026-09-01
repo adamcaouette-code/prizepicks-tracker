@@ -333,6 +333,18 @@ here. Each needs a home in the new layout.
   and keep each shortlisted prop's `judge()` call on its own `runId` (`${jobId}-deep${i}`) —
   reusing the batch's `jobId` would each overwrite the batch's saved replay context (and
   each other's) in the `judge-context` store.
+- **A tier icon claims a confirmed price — never show one for a side that doesn't have one.**
+  `odds_type` describes the projection's OVER side only; PrizePicks prices the UNDER of a
+  goblin/demon line separately (confirmed live: a goblin's Less rendered as a demon on the
+  real card), and the feed has no field for it. `tierIcon(tier, unverified)` renders a
+  neutral "?" (`.tiericon.unk`) instead of the over side's tier image whenever
+  `p.sidePriceUnverified` is true, at every place a pick with a live `side` renders: the
+  board (`renderBoardResults`) and the tray (`renderTray`). `recSlipHtml` and
+  `renderLedgerRec` don't need it — both only ever receive picks `selectLegs`/
+  `ledgerTopPicks` already filtered to priced sides. **Known gap:** a SAVED slip doesn't
+  carry `sidePriceUnverified` (the `/api/slips` POST payload never included it), so My Slips
+  still shows the plain over-tier icon on an unpriced-under leg someone added to the tray
+  before saving — fix requires persisting the field through save/load, not just the icon.
 
 ---
 
