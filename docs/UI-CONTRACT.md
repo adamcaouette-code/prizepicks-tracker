@@ -182,8 +182,16 @@ search on. Strip the tags, keep the words, and keep escaping everything else.
   "bands":   [ { "band": "60-70%", "n": 14, "predicted": 0.64, "actual": 0.57 } ],
   "byTier", "byLeague",
   "bySource": { "board": { "n", "hits", "brierSum" }, "slip": { … } },
+  "byModel": { "Vilifiant": { "n", "hits", "brier", "predicted", "actual", "overstatement",
+                              "baseline", "baselineDelta", "beatsBaseline" }, … },
   "plays", "playsLeans", "spend" }
 ```
+
+The HTML page's top headline (the `.cards` grid) is pooled across every model this app has ever
+run — right for comparing configs, wrong for "how good is it right now" once old configs stop
+being used. A **VILIFIANT ONLY** section renders right below it, pulled from `byModel.Vilifiant`
+(same rows the per-model table further down the page uses) — keep this pattern if another model
+becomes the standing default: don't repurpose the pooled headline, add a scoped one beside it.
 
 ### Smaller ones
 

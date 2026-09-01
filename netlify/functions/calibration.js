@@ -913,6 +913,31 @@ function renderHTML(a) {
 
   const card = (v, l, sub) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
 
+  // Vilifiant only — the headline above is pooled across every model this app
+  // has ever run (Psyche/Opus and Sonnet included), which is the right number
+  // for comparing configs but the wrong one for "how good is it right now":
+  // Vilifiant is the only model still in use, and old Opus/Sonnet runs sitting
+  // in the same average make current performance look better or worse than it
+  // is depending on how those compared. Pulled straight from `byModel` — same
+  // rows the per-model table further down uses, just surfaced where it doesn't
+  // require scrolling past a comparison against retired models to find it.
+  const vil = a.byModel?.Vilifiant;
+  const vilEarly = vil && vil.n > 0 && vil.n < 50;
+  const vilBlock = !vil || !vil.n
+    ? `<div class="callout">No Vilifiant-judged picks are graded yet.</div>`
+    : `<div class="cards">
+        ${card(vil.n, 'graded', vilEarly ? 'early — under 50' : '')}
+        ${card(pct(vil.actual), 'over rate', 'predicted ' + pct(vil.predicted))}
+        ${card(vil.brier.toFixed(3) + (vilEarly ? ' <span style="font-size:11px;color:var(--amb)">n=' + vil.n + '</span>' : ''),
+          'brier ↓', vilEarly ? 'early — mostly noise' : 'lower is better')}
+        ${card(
+          vil.baseline == null ? '—' : `<span style="color:${vil.beatsBaseline ? 'var(--grn)' : 'var(--red)'}">${vil.baseline.toFixed(4)}</span>`,
+          'tier-only baseline',
+          vil.baselineDelta == null ? 'not enough graded picks'
+            : vil.beatsBaseline ? `ahead by ${Math.abs(vil.baselineDelta).toFixed(4)}`
+              : `BEHIND by ${vil.baselineDelta.toFixed(4)}`)}
+      </div>`;
+
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#000000"><link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>AtomBets · Calibration</title><style>
@@ -968,6 +993,10 @@ function renderHTML(a) {
         : ''}
     Fitted on the rows it is scored against, which hands it hindsight and makes it harder to beat — the right
     direction for a bar.</div>
+
+  <h2>VILIFIANT ONLY <span style="text-transform:none;letter-spacing:normal;font-weight:400">— the standing default; Psyche/Opus/Sonnet runs above are excluded</span></h2>
+  ${vilBlock}
+
   ${stateNote}
 
   <h2>By engine <a href="/api/calibration?format=json">json ↗</a></h2>

@@ -375,6 +375,31 @@ export default async function ({ t }) {
   t.eq('an unnamed model still shows its id rather than vanishing',
     res6.byModel['claude-opus-4-8'].n, 4);
 
+  // ---- a simple, Vilifiant-only headline, separate from the pooled one -----
+  // Opus and Sonnet are retired — a pooled headline number blends their
+  // history back in every time, which is the wrong number for "how good is
+  // the judge right now." This section exists so that question has an answer
+  // without scrolling past a comparison against models nobody runs anymore.
+  const html6 = (await cal6.handler({ queryStringParameters: {} })).body;
+  t.ok('a Vilifiant-only section renders', /VILIFIANT ONLY/.test(html6));
+  t.ok('...naming which models it deliberately excludes',
+    /Psyche\/Opus\/Sonnet runs above are excluded/.test(html6));
+  // 4 Vilifiant picks @ 0.7, 3 of 4 hit — actual 75%, predicted 70%, and a
+  // hand-computed Brier of ((0.7-1)^2*3 + (0.7-0)^2) / 4 = 0.19.
+  const vilSection = html6.slice(html6.indexOf('VILIFIANT ONLY'), html6.indexOf('VILIFIANT ONLY') + 1200);
+  t.ok('...with its own graded count', />4<\/div><div class="l">graded/.test(vilSection), vilSection.slice(0, 300));
+  t.ok('...its own Brier, hand-computed from just those 4 picks',
+    /0\.190/.test(vilSection), vilSection.slice(0, 400));
+  t.ok('...and its own over rate', /75\.0%/.test(vilSection) && /70\.0%/.test(vilSection), vilSection);
+
+  // ---- no Vilifiant picks yet: says so, doesn't crash or show zeros --------
+  reset();
+  seed('pick-log', DAY, Array.from({ length: 4 }, (_, i) => ({ ...mk('mlb', 0.7, i < 2, i), judgeModel: 'claude-opus-4-8' })));
+  const calNoVil = await loadFn('calibration.js');
+  const htmlNoVil = (await calNoVil.handler({ queryStringParameters: {} })).body;
+  t.ok('an all-Opus log says no Vilifiant picks are graded yet, rather than a crash or a bare "0"',
+    /No Vilifiant-judged picks are graded yet/.test(htmlNoVil));
+
   const html5 = (await cal5.handler({ queryStringParameters: {} })).body;
   t.ok('the table renders', /Judge behaviour — readable the same day/.test(html5));
   t.ok('...and names the tier gap as the test that matters', /<b>Tier gap<\/b> is the headline/.test(html5));
