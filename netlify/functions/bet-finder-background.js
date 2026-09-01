@@ -538,7 +538,10 @@ async function fetchMlbStarters() {
     });
     for (let s = 0; s < sides.length; s++) {
       const me = sides[s], opp = sides[1 - s] || {};
-      const info = { ownStarter: me.starter, oppTeam: opp.teamName || null, oppStarter: opp.starter || null, park };
+      // eventId lets attachStarters cross-check this against PrizePicks' OWN
+      // opponent field — two teams only really belong to the same game if they
+      // both resolve back to this same event.
+      const info = { ownStarter: me.starter, oppTeam: opp.teamName || null, oppStarter: opp.starter || null, park, eventId: e.id };
       for (const k of me.keys) { const nk = normKey(k); if (nk) teamMap[nk] = info; }
     }
   }
@@ -550,12 +553,34 @@ async function fetchMlbStarters() {
 const PP_TO_ESPN_ABBR = { CWS: 'CHW', AZ: 'ARI', WAS: 'WSH', SDP: 'SD', SFG: 'SF', TBR: 'TB', KCR: 'KC', WSN: 'WSH' };
 
 // Attach SP context to MLB candidates (mutates). Null-safe; unmatched teams just skip.
+//
+// PrizePicks and ESPN are TWO INDEPENDENT sources for "who is this player's
+// opponent today" — PrizePicks' own projection feed already says so (c.opp,
+// set from the projection's own description field), and this function's whole
+// job is a SEPARATE lookup of the same fact from ESPN's scoreboard, matched by
+// team name alone with no game/date cross-check against it.
+//
+// Caught live: a Giants (SF) prop reached the judge with opponent "Braves" —
+// ESPN's scoreboard resolved SF to a game teamMap did not actually mean, while
+// PrizePicks' own board correctly said SF vs PIT. The judge caught its own
+// contradiction and downgraded confidence, which is the system working as a
+// last resort — but the real fix is not sending it contradictory data in the
+// first place. If PrizePicks' claimed opponent (c.opp) resolves to a DIFFERENT
+// ESPN event than the one this candidate's own team resolved to, ESPN's
+// oppTeam/oppStarter/park are for the wrong game and get dropped entirely,
+// same as when there is no ESPN match at all.
 function attachStarters(candidates, teamMap) {
-  let hit = 0;
+  let hit = 0, mismatched = 0;
   for (const c of candidates) {
     const alias = PP_TO_ESPN_ABBR[String(c.team || '').toUpperCase()];
     const info = teamMap[normKey(c.team)] || (alias && teamMap[normKey(alias)]);
     if (!info) continue;
+    const oppAlias = PP_TO_ESPN_ABBR[String(c.opp || '').toUpperCase()];
+    const oppInfo = teamMap[normKey(c.opp)] || (oppAlias && teamMap[normKey(oppAlias)]);
+    if (oppInfo && info.eventId && oppInfo.eventId && oppInfo.eventId !== info.eventId) {
+      mismatched++;
+      continue;
+    }
     hit++;
     if (info.oppTeam) c.oppTeam = info.oppTeam;
     if (info.park != null) c.park = info.park;
@@ -563,7 +588,7 @@ function attachStarters(candidates, teamMap) {
     if (pitcherProp) { if (info.ownStarter) c.selfSP = info.ownStarter; }
     else { if (info.oppStarter) c.oppSP = info.oppStarter; }
   }
-  return hit;
+  return { hit, mismatched };
 }
 
 // ---------- ESPN team records (free, no key). Stored now, not yet judged. ----------
@@ -2010,8 +2035,8 @@ export const handler = async (event) => {
     let mlbSlateData = null;
     if (params.league === 'mlb') {
       const sp = startersR.status === 'fulfilled' && startersR.value ? startersR.value : { teamMap: {}, status: { games: 0, starters: 0, message: 'starters fetch failed' } };
-      const attached = attachStarters(candidates, sp.teamMap);
-      mlbStatus = { ...sp.status, attached, checklist,
+      const { hit: attached, mismatched: oppMismatch } = attachStarters(candidates, sp.teamMap);
+      mlbStatus = { ...sp.status, attached, oppMismatch, checklist,
         // How many candidates actually carry recent form. If this is 0 the judge
         // is reading profiles, not production, and every probability is softer
         // than it looks.

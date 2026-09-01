@@ -4,6 +4,44 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## Two uncross-checked sources of "who is the opponent" (2026-08-31)
+
+Reported live: a Giants (SF) prop's "why" panel argued its own probability
+down, reasoning "Opponent listed as Braves, but Devers plays for SF; lineup
+mismatch likely data error." The judge was right to be suspicious — the
+board's own matchup line for the same card correctly read "PIT vs SF." The
+judge caught a real contradiction in what it was sent and hedged; it did not
+hallucinate the Braves out of nothing.
+
+The contradiction was structural, not a one-off model slip. `c.opp` (a
+candidate's opponent) is set from PrizePicks' own projection feed — reliable,
+since PrizePicks itself knows what game a prop is attached to. `attachStarters`
+separately looks up "who is this team's opponent today" from ESPN's
+scoreboard, matched by team name alone, with **no check that the two answers
+describe the same game**. Nothing before this fix required them to agree, so
+whatever mechanism briefly desynced them (a doubleheader, a stale/duplicate
+ESPN listing, a timezone edge on which slate counts as "today" — not fully
+reproduced offline) was free to hand the judge an opponent, opposing starter,
+and park index from a completely different matchup than the one PrizePicks
+actually posted the prop against, with nothing anywhere checking the two
+against each other.
+
+Fixed by giving `fetchMlbStarters`'s teamMap entries an `eventId` (which ESPN
+game they came from), and having `attachStarters` resolve PrizePicks' own
+`c.opp` through the same map before trusting `c.team`'s ESPN match. If the two
+resolve to different events, none of ESPN's context — opponent, opposing
+starter, park — attaches, exactly as if there had been no ESPN match at all;
+an unresolvable `c.opp` (ESPN's slate doesn't cover it) is left alone rather
+than treated as a confirmed mismatch, since there is nothing there to actually
+contradict `info` with. `mlbStatus.oppMismatch` counts how often this fires,
+so a persistently high count is now visible instead of only surfacing as an
+occasional confused "why" panel that happens to catch itself.
+
+This is the same shape of fix as the `cleared`-count fix above and the ask
+chat's threshold-confusion fix: an unverified, uncross-checked value was being
+handed to the judge as if it were fact. The judge hedging when it noticed is
+a good last line of defense, not something to rely on as the first one.
+
 ## The "can't count to 5" bug had a second home: the ask chat (2026-08-31)
 
 Reported live: asked the chat why a 92% goblin (Pitcher Strikeouts, line 2.5 —
