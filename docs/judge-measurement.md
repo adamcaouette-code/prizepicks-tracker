@@ -4,6 +4,61 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## The verdict threshold was tier-blind, and it cost 45 cents on the dollar (2026-09-03)
+
+The question that started this: "am I having bad luck, or is the judging
+messing up?" Neither, mostly. The judge's probabilities are mediocre but they
+are not the binding constraint — **the rule that turns a probability into a
+recommendation was.**
+
+`verdictFor` / `sideVerdictFor` fire "play" at a flat 0.62 and "lean" at 0.54,
+identically for all three tiers. The tiers need 79.4% / 59.5% / 43.7% to break
+even. One number cannot serve three break-evens spanning 36 points, so the
+threshold is 17.4pp too generous on goblins and 18.3pp too strict on demons.
+
+Measured over 2,874 graded over-side picks (2026-06-20 → 08-28), what the
+engine actually recommended as play/lean:
+
+| tier | n | share | hit | needs | gap | 3-pick EV/$ |
+|---|---|---|---|---|---|---|
+| goblin | 1269 | **80%** | 66.9% | 79.4% | **−12.5pp (9.4σ)** | −40% |
+| standard | 231 | 15% | 43.7% | 59.5% | −15.8pp (4.8σ) | −60% |
+| demon | 89 | 6% | 29.2% | 43.7% | −14.5pp (3.0σ) | −70% |
+
+Volume-weighted the recommendation stream is **−45% per dollar**, and the
+goblin gap is stable month over month (−6.3, −8.7, −14.9pp). At 9.4σ that is
+not a cold streak.
+
+It is also not fixable by judging goblins better. Within-goblin ranking
+measures as noise — AUC 0.494 over 1,708 picks, matching item K's independently
+measured ICC of 0.063 — and "every goblin, no thought at all" is −60% EV
+against the judge's own −57%. The judge adds ~3 points to a tier that is 60
+points underwater. The only tier with real discrimination is demons (AUC 0.614,
+~4σ; item K ICC 0.427; outcome-fitted shrink α 0.395 — three independent
+methods agreeing), and the tier-blind threshold labels those "pass" until they
+reach 62%, a bar 18 points above what they need.
+
+Shipped: **the edge guardrail.** `edgeVerdictFor` demotes any verdict to `pass`
+when that pick's own edge is known and negative. Deliberately narrow:
+
+- It refuses to call a known-losing bet a play. It does **not** assert what a
+  good bet looks like — where the positive threshold belongs (≥+2pp? +5pp?)
+  rests on 18–33 picks over 5 days and is left alone until there is volume.
+- An unpriced side (edge `null` — an under on a goblin or demon line) is
+  untouched. We do not know it is negative, and demoting it would assert
+  knowledge we do not have.
+- `sideVerdict` and the board filter are unchanged, so browsing stays exactly
+  as wide as it was; only the claim narrows. The guarded verdict drives the
+  BADGE and the auto-built slip — the surface where a bad recommendation costs
+  money rather than screen space.
+- `verdict` stays in the pick log unchanged and `edgeVerdict` is logged beside
+  it. Redefining what a logged `play` meant halfway through would silently make
+  every before/after calibration comparison compare two different things.
+
+What this does not settle: whether the demon edge is real enough to bet. That
+rests on 16 picks, 12 of them from one slate — under-powered precisely because
+grading had been dead (below). Re-measure once the restored cron has run a week.
+
 ## Grading was never actually on a schedule — not once, in two months (2026-09-03)
 
 Found while auditing why the judge was not beating the tier baseline: the

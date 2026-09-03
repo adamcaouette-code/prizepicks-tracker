@@ -132,12 +132,17 @@ Pick object (same shape the grader and calibration read):
 
 ```jsonc
 { "date", "loggedAt", "league", "projectionId", "player", "stat", "line",
-  "prob", "verdict", "oddsType", "recentAvg", "image", "team", "matchup",
+  "prob", "verdict", "edgeVerdict", "oddsType", "recentAvg", "image", "team", "matchup",
   "result": null, "hit": null, "gradedAt": null }
 ```
 
 `hit` is `null` until the game settles, then `true`/`false`. A pick card needs all three
 states.
+
+`verdict` is the raw probability call and is **historical** — calibration groups by it, so
+its meaning must not be redefined. `edgeVerdict` is the same call with known-losing bets
+demoted to `pass` (§6) and is what a card should badge; it is `null` on rows logged before
+it existed, which fall back to `verdict`.
 
 ### `POST /api/parse-slip` — screenshot → legs
 
@@ -264,6 +269,21 @@ no pitcher props selectable at all.
 ---
 
 ## 6. Honesty features that have to survive the redesign
+
+- **A verdict badge may never contradict the edge printed beside it.** `verdictFor` /
+  `sideVerdictFor` are flat probability cutoffs (0.62 / 0.54) applied to tiers needing
+  79.4% / 59.5% / 43.7%, so a card could read **Play** and **−14.4pp** at the same time —
+  and the resulting recommendation stream measured −45% per dollar over two months, 80% of
+  it goblins that hit 66.9% against a 79.4% requirement (9.4σ). `edgeVerdictFor` demotes
+  any verdict to `pass` when that pick's own edge is known and negative; the board renders
+  `edgeVerdict` in preference to `verdict`. Three rules if you touch this:
+  1. It only refuses known-losing bets. It does not assert what a good bet is — the
+     positive threshold is a separate, far less settled question. Don't quietly add one.
+  2. An unpriced side (edge `null`) is left alone. Not knowing the payout is not the same
+     as knowing it is bad, which is why `edge` is null rather than guessed.
+  3. `sideVerdict` and the board filter stay as they are, so browsing stays wide and only
+     the claims narrow. `edgeVerdict` drives the badge and the auto-built slip. Collapsing
+     these back into one field makes the board go nearly empty on a goblin-heavy slate.
 
 These exist because a confident-looking wrong answer is the failure mode that matters
 here. Each needs a home in the new layout.

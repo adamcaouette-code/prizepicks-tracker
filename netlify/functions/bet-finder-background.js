@@ -1383,6 +1383,44 @@ function playersOf(p) {
 // the side view lives in p.side / p.sideProb / p.sideVerdict.
 const sideVerdictFor = (q) => (q >= 0.62 ? 'play' : q >= 0.54 ? 'lean' : 'pass');
 
+/* THE EDGE GUARDRAIL — a verdict may never call a known-losing bet a play.
+ *
+ * sideVerdictFor above is a fixed probability cutoff (0.62 / 0.54) applied to
+ * all three tiers, and the tiers need 79.4% / 59.5% / 43.7% to break even. So
+ * "play" fires 17.4 POINTS TOO EARLY on a goblin and 18.3 points too late on a
+ * demon, and the app has been labelling structurally-losing bets as its own
+ * best ideas since it was written.
+ *
+ * Measured on the 2,874 graded over-side picks in the log (2026-06-20 →
+ * 08-28), what the engine actually recommended as play/lean:
+ *
+ *   goblin    n=1269  80% of all recommendations  hit 66.9%, needs 79.4%  -12.5pp  (9.4 sigma short)
+ *   standard  n= 231  15%                         hit 43.7%, needs 59.5%  -15.8pp  (4.8 sigma)
+ *   demon     n=  89   6%                         hit 29.2%, needs 43.7%  -14.5pp  (3.0 sigma)
+ *
+ * Volume-weighted that stream is -45% per dollar, stable across all three
+ * months. Not variance: at 9.4 sigma the goblin shortfall is not a cold streak.
+ * And it is not fixable by judging goblins better — the within-goblin ranking
+ * measures as noise (AUC 0.494 over 1,708 picks, item K's ICC 0.063), and
+ * "every goblin, no thought at all" is -60% EV against the judge's own -57%.
+ *
+ * What this does NOT do is assert what a good bet looks like. It only refuses
+ * to call a bet good when its own edge is known to be negative — that is the
+ * part the data settles at 9 sigma. Picking the positive threshold (>= +2pp?
+ * +5pp?) rests on 18-33 picks over 5 days and is deliberately left alone until
+ * there is grading volume behind it.
+ *
+ * An UNPRICED side (edge null — an under on a goblin or demon line, whose
+ * payout PrizePicks never publishes) is left exactly as it was. We do not know
+ * that it is negative, and demoting it would assert knowledge we do not have,
+ * the same reason edge itself is null rather than guessed. The card already
+ * says "price ?" in place of a number.
+ */
+export function edgeVerdictFor(verdict, edge) {
+  if (edge == null || !isFinite(edge)) return verdict;   // unpriced: unchanged
+  return edge < 0 ? 'pass' : verdict;
+}
+
 // A prop on someone who is confirmed NOT to play does not settle at 0 — PrizePicks
 // VOIDS it (DNP) and refunds the leg. That distinction is the whole game here:
 // treated as a 0 it looks like a near-certain under, so the judge was handing out
@@ -1571,6 +1609,14 @@ function attachSides(picks, mode = 'both') {
     const priceKnown = !p.sidePriceUnverified;
     p.breakEven = priceKnown ? (BREAK_EVEN_3PICK[tier] ?? BREAK_EVEN_3PICK.standard) : null;
     p.edge = priceKnown ? Math.round((p.sideProb - p.breakEven) * 10000) / 10000 : null;
+
+    // The honest verdict: sideVerdict, minus any claim that a negative-edge bet
+    // is a play. See edgeVerdictFor. sideVerdict itself is deliberately left as
+    // it was — it is what the board FILTERS on, so browsing stays exactly as
+    // wide as it was and only the claims narrow. Two fields because they answer
+    // two different questions: "is this worth looking at" and "are we willing
+    // to call it a bet".
+    p.edgeVerdict = edgeVerdictFor(p.sideVerdict, p.edge);
   }
   return picks;
 }
@@ -1578,7 +1624,16 @@ function attachSides(picks, mode = 'both') {
 function selectLegs(picks, n, opts = {}) {
   const ord = { play: 0, lean: 1 };
   const pool = picks
-    .filter((p) => (p.sideVerdict || p.verdict) === 'play' || (p.sideVerdict || p.verdict) === 'lean')
+    // edgeVerdict, not sideVerdict: this is the slip the app BUILDS FOR YOU,
+    // which is the one place a bad recommendation costs money rather than
+    // screen space. A leg whose own edge is negative cannot enter it — see
+    // edgeVerdictFor for why that used to be 80% of what went in here. Falls
+    // back through sideVerdict/verdict for picks that never went through
+    // attachSides (the slip judge builds its own legs).
+    .filter((p) => {
+      const v = p.edgeVerdict || p.sideVerdict || p.verdict;
+      return v === 'play' || v === 'lean';
+    })
     // A player MLB says isn't active is not a bet at any price. Never in a
     // recommendation, whatever the number says.
     .filter((p) => !p.injured)
@@ -2188,7 +2243,7 @@ export const handler = async (event) => {
     const parlayLegs = chosen.map((p) => ({
       player: p.player, stat: p.stat, statDisplay: p.statDisplay, line: p.line,
       prob: p.sideProb != null ? p.sideProb : p.prob,   // P(the side we're recommending)
-      probOver: p.prob, pick: p.side || 'over', verdict: p.sideVerdict || p.verdict,
+      probOver: p.prob, pick: p.side || 'over', verdict: p.edgeVerdict || p.sideVerdict || p.verdict,
       oddsType: p.oddsType,
       edge: p.edge, breakEven: p.breakEven,
       team: p.team, matchup: p.matchupLabel || p.matchup,
@@ -2243,6 +2298,13 @@ export const handler = async (event) => {
         projectionId: p.projectionId || idByKey[`${p.player}|${p.stat}|${Number(p.line)}`] || null,
         player: p.player, stat: p.stat, line: p.line,
         prob: p.prob, verdict: p.verdict, oddsType: p.oddsType,
+        // The edge-guarded verdict, logged BESIDE the probability one rather
+        // than replacing it. `verdict` is load-bearing history: calibration
+        // groups by it, and redefining what a logged 'play' meant halfway
+        // through the log would silently make every before/after comparison
+        // compare two different things. This is the field the UI badges and
+        // the auto-slip selects on; `verdict` stays the raw probability call.
+        edgeVerdict: p.edgeVerdict ?? null,
         // WHICH SIDE was recommended, and its probability. p.prob stays P(over)
         // for calibration — that convention is load-bearing and unchanged — but
         // without the side, nothing downstream can tell whether a 0.28 was a

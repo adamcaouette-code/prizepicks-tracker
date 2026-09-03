@@ -90,7 +90,13 @@ export default async function ({ t }) {
   t.ok('every card is an under', (unders.board || []).every((p) => p.side === 'under'));
   t.eq('only props that are genuinely good unders survive',
     (unders.board || []).map((p) => p.player).sort(), ['Lean Under', 'Strong Under']);
-  t.eq('the recommended slip is unders too', (unders.parlayLegs || []).map((l) => l.pick), ['under', 'under']);
+  // One leg, not two. 'Lean Under' is a 0.44 over, so a 0.56 under — and a
+  // standard line needs 59.5% to break even, making it a -3.5pp bet. The edge
+  // guardrail keeps it off the auto-built slip (see edge-verdict.test.mjs);
+  // it is still ON the board directly above, because browsing stays wide and
+  // only the recommendation narrows. What this assertion is for — the slip is
+  // built from unders rather than flipping to overs — is unchanged.
+  t.eq('the recommended slip is unders too', (unders.parlayLegs || []).map((l) => l.pick), ['under']);
   t.eq('...and reports which side it was built for', unders.parlayNote.sides, 'under');
 
   // ---- the recommended slip is not just "top N" ---------------------------
@@ -111,10 +117,16 @@ export default async function ({ t }) {
   // Same slate, but the strongest leg is on the injured list.
   reset();
   const mod = await loadFn('bet-finder-background.js');
+  // Probabilities clear the standard break-even (59.5%) on purpose: with no
+  // oddsType these default to standard, and at the old 0.58/0.57 the edge
+  // guardrail would correctly drop both as -1.5pp and -2.5pp bets — which is
+  // right, but would mean this case stopped testing what it is here to test.
+  // The subject is the INJURY exclusion, so the healthy legs are given numbers
+  // that are genuinely worth recommending.
   const injured = [
-    { player: 'Strong Over', stat: 'Hits', line: 0.5, prob: 0.70, verdict: 'play', matchup: 'A vs B', injured: '10-Day Injured List' },
-    { player: 'Decent Over', stat: 'Hits', line: 1.5, prob: 0.58, verdict: 'lean', matchup: 'C vs D' },
-    { player: 'Third Guy',   stat: 'Hits', line: 1.5, prob: 0.57, verdict: 'lean', matchup: 'E vs F' },
+    { player: 'Strong Over', stat: 'Hits', line: 0.5, prob: 0.72, verdict: 'play', matchup: 'A vs B', injured: '10-Day Injured List' },
+    { player: 'Decent Over', stat: 'Hits', line: 1.5, prob: 0.68, verdict: 'play', matchup: 'C vs D' },
+    { player: 'Third Guy',   stat: 'Hits', line: 1.5, prob: 0.66, verdict: 'play', matchup: 'E vs F' },
   ];
   mod.attachSides(injured, 'both');
   const picked = mod.selectLegs(injured, 3);
