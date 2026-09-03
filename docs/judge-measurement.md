@@ -4,6 +4,58 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
+## Grading died for 5 days, and the fix for the last outage caused it (2026-09-03)
+
+Found while auditing why the judge was not beating the tier baseline: the
+graded log simply stopped on 2026-08-28. Last heartbeat 2026-08-29T21:08:44Z,
+then nothing. 1,159 picks across 08-29 → 09-02 sat at 0% coverage, which means
+every number on `/api/calibration` was being computed off a sample that had
+quietly stopped growing.
+
+Cause: the 2026-08-29 fix for the PREVIOUS grading outage. `grade-cron.js` was
+renamed to `grade-cron-background.js` for the 15-minute execution budget, and
+`export const config = { schedule }` was carried along with it. Netlify treats
+`-background` and *scheduled* as two different kinds of function, and a file
+cannot be both — a background function is invoked over HTTP and returns 202; a
+scheduled function is invoked by cron with a 30s limit. The schedule on a
+`-background` file is never registered. The rename bought the execution budget
+by silently discarding the trigger. Last heartbeat is 68 seconds after that
+commit.
+
+Two things made it invisible for five days, and both are worth more than the
+fix itself:
+
+1. **The verification tested the function, not the schedule.** "Fire it and
+   watch for a heartbeat" passes identically whether or not cron will ever fire
+   it again. The heartbeat that "confirmed" the fix was the manual poke.
+2. **The heartbeat lied about its own trigger.** `trigger` was
+   `process.env.NETLIFY_DEV ? 'local' : 'schedule'` — every deployed
+   invocation stamped `'schedule'` regardless of what actually invoked it. So
+   the manual poke wrote a record indistinguishable from a real cron run, in
+   the one place that would have shown the truth.
+
+Also worth noting: `tests/unit/grade-schedule.test.mjs` stayed green through
+the whole outage. It read the schedule string out of the background file and
+checked the cron expression was well-formed — which it was. It asserted the
+schedule was CORRECT and never that it was REGISTERED.
+
+Fixed as a scheduler shim, which is the supported way to get both properties:
+`grade-cron.js` is scheduled, does nothing but POST to the background function,
+and finishes in well under a second; `grade-cron-background.js` keeps the long
+budget and the draining loop. Plus the three things that make a recurrence
+visible rather than silent:
+
+- the scheduled half writes its own `schedule-dispatch` heartbeat **before** any
+  grading happens, so "the scheduler never fired" and "the scheduler fired and
+  the work died" stop being the same observation;
+- the background half now REPORTS the trigger it was handed instead of
+  asserting one, so a hand-fired run can never again masquerade as a cron run;
+- the test suite now fails if any `-background` file declares a schedule
+  (comments stripped first, since these files discuss the trap at length).
+
+Standing rule: **a schedule must never live on a `-background` file.** If a
+scheduled job needs more than 30 seconds, it needs a shim, not a rename.
+
 ## Two uncross-checked sources of "who is the opponent" (2026-08-31)
 
 Reported live: a Giants (SF) prop's "why" panel argued its own probability

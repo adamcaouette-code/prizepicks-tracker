@@ -20,16 +20,15 @@
 // in this repo already relies on, just never applied here because nothing
 // user-facing was waiting on this one's response. Nothing about the draining
 // LOOP changed, only how much wall time it's allowed.
-
-// Netlify cron is UTC and has no idea about daylight saving, so "3am Pacific" is
-// a different UTC hour depending on the season:
-//   10:00 UTC = 3am PDT (Mar-Nov)   11:00 UTC = 3am PST (Nov-Mar)
-// Firing at both hits 3am Pacific year-round; the off-season one lands at 2am or
-// 4am and simply finds nothing left to do. 14:00 UTC stays as a late backstop for
-// anything whose box score wasn't final at 3am. Grading is idempotent — a pass
-// with nothing to settle costs a blob list and exits — so extra runs are cheap
-// and none of this touches a model.
-export const config = { schedule: '0 10,11,14 * * *' };
+//
+// THE SCHEDULE DOES NOT LIVE HERE, and must never be moved back (2026-09-03).
+// The rename above also carried `export const config = { schedule }` onto this
+// file, where Netlify never registers it: `-background` and scheduled are two
+// different kinds of function and a file cannot be both. That silently removed
+// the trigger — grading last ran 2026-08-29T21:08Z and stopped for five days,
+// leaving 1,159 picks ungraded and the calibration numbers computed off a log
+// that had stopped being written. grade-cron.js is now a scheduled shim that
+// pokes this function over HTTP; see the full note there.
 
 import { getStore } from '@netlify/blobs';
 
@@ -38,7 +37,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Heartbeat. Without a record of when this last fired, "did the cron run?" is
 // unanswerable — you can only observe that nothing got graded, which looks the
 // same whether the schedule never fired or there was simply nothing to settle.
-async function heartbeat(payload) {
+export async function heartbeat(payload) {
   try {
     const store = getStore({ name: 'run-stats', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
     let log = [];
@@ -48,8 +47,21 @@ async function heartbeat(payload) {
   } catch { /* never let bookkeeping break the job */ }
 }
 
-export const handler = async () => {
+export const handler = async (event) => {
   const base = process.env.URL || process.env.DEPLOY_PRIME_URL || 'https://atombets.netlify.app';
+  // REPORT the trigger, never assert it. This used to be
+  // `process.env.NETLIFY_DEV ? 'local' : 'schedule'`, which stamped every
+  // deployed invocation as 'schedule' — including a hand-fired one. That is
+  // precisely how a broken schedule passed verification on 2026-08-29: the
+  // manual poke used to confirm the fix wrote a heartbeat labelled 'schedule',
+  // so the record showed a cron that had in fact already stopped running.
+  // grade-cron.js (the scheduled shim) sends trigger:'schedule'; anything else
+  // reaching this function is a manual or dev invocation and says so.
+  let trigger = process.env.NETLIFY_DEV ? 'local' : 'manual';
+  try {
+    const body = JSON.parse(event?.body || '{}');
+    if (body && typeof body.trigger === 'string' && body.trigger) trigger = body.trigger;
+  } catch { /* no body, or not JSON — it was not the scheduler */ }
   const day = (offset) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
   // Four days back, not two. A day that didn't fully drain in its first 48h was
   // previously never revisited, so those picks stayed pending forever — and a
@@ -110,7 +122,7 @@ export const handler = async () => {
   }
 
   const summary = {
-    trigger: process.env.NETLIFY_DEV ? 'local' : 'schedule',
+    trigger,
     picks: ran.map((r) => ({ date: r.date, graded: r.totalGraded, pending: r.pendingSingles, error: r.error })),
     slipLegsGraded: slips.reduce((a, s) => a + (s.legsGraded || 0), 0),
     slipsSettled: slips.reduce((a, s) => a + (s.slipsSettled || 0), 0),
