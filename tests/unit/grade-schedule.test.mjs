@@ -41,11 +41,29 @@ const hourInLA = (utcHour, isoDate) => {
 export default async function ({ t }) {
   const scheduled = fs.readFileSync(SCHEDULED, 'utf8');
   const background = fs.readFileSync(BACKGROUND, 'utf8');
+  const toml = fs.readFileSync(path.resolve(FN_DIR, '../../netlify.toml'), 'utf8');
 
-  // ---- the schedule is on a file Netlify will register it on ---------------
-  const m = scheduled.match(/schedule:\s*'([^']+)'/);
-  t.ok('a NON-background function carries the schedule', !!m, m && m[1]);
-  t.ok('...and it is not named -background', !/-background\.js$/.test(SCHEDULED));
+  // ---- the schedule is declared where Netlify actually reads it ------------
+  // netlify.toml, NOT in-code config. Both cron functions here use the legacy
+  // `export const handler` signature (runtimeAPIVersion 1), and in-code
+  // `export const config = { schedule }` is a v2-functions feature — on a v1
+  // function it is inert module code. Both files carried one for months and
+  // neither ever fired.
+  const tomlBlock = toml.match(/\[functions\."grade-cron"\]\s*\n\s*schedule\s*=\s*"([^"]+)"/);
+  t.ok('grade-cron is scheduled in netlify.toml, which is what registers it',
+    !!tomlBlock, tomlBlock && tomlBlock[1]);
+  t.ok('calibration-cron is scheduled there too — it had the same silent failure',
+    /\[functions\."calibration-cron"\]\s*\n\s*schedule\s*=\s*"[^"]+"/.test(toml));
+  t.ok('the scheduled function is not named -background', !/-background\.js$/.test(SCHEDULED));
+
+  // If the file ALSO declares an in-code schedule, it must agree with the toml
+  // — two disagreeing declarations is how you end up debugging the wrong one.
+  const inCode = scheduled.match(/schedule:\s*'([^']+)'/);
+  if (inCode) {
+    t.eq('any in-code schedule agrees with the one netlify.toml actually registers',
+      inCode[1], tomlBlock[1]);
+  }
+  const m = tomlBlock;
 
   // THE GUARD. No function file ending in -background may declare a schedule:
   // Netlify silently ignores it, which is indistinguishable from working.

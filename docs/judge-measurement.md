@@ -4,25 +4,41 @@ Working notes for the measurement infrastructure. Recorded here because the
 decisions below are easy to get wrong from a standing start, and each of them
 was reached from data rather than from taste.
 
-## Grading died for 5 days, and the fix for the last outage caused it (2026-09-03)
+## Grading was never actually on a schedule — not once, in two months (2026-09-03)
 
 Found while auditing why the judge was not beating the tier baseline: the
-graded log simply stopped on 2026-08-28. Last heartbeat 2026-08-29T21:08:44Z,
-then nothing. 1,159 picks across 08-29 → 09-02 sat at 0% coverage, which means
-every number on `/api/calibration` was being computed off a sample that had
-quietly stopped growing.
+graded log simply stopped on 2026-08-28, leaving 1,159 picks across
+08-29 → 09-02 at 0% coverage. Every number on `/api/calibration` was being
+computed off a sample that had quietly stopped growing.
 
-Cause: the 2026-08-29 fix for the PREVIOUS grading outage. `grade-cron.js` was
-renamed to `grade-cron-background.js` for the 15-minute execution budget, and
-`export const config = { schedule }` was carried along with it. Netlify treats
-`-background` and *scheduled* as two different kinds of function, and a file
-cannot be both — a background function is invoked over HTTP and returns 202; a
-scheduled function is invoked by cron with a 30s limit. The schedule on a
-`-background` file is never registered. The rename bought the execution budget
-by silently discarding the trigger. Last heartbeat is 68 seconds after that
-commit.
+**The first diagnosis was wrong and is worth recording as such.** The obvious
+suspect was the 2026-08-29 rename of `grade-cron.js` to
+`grade-cron-background.js` (for the 15-minute execution budget), which carried
+`export const config = { schedule }` onto a `-background` file where Netlify
+certainly never registers it. A fix was shipped on that theory. Then the deploy
+API was actually checked, and it said otherwise:
 
-Two things made it invisible for five days, and both are worth more than the
+- `function_schedules: []` on the deploy **before** the rename and on the
+  deploy **after** it. There was no registered schedule to break.
+- All 16 recorded heartbeats are manual invocations. Consecutive gaps run 6, 9,
+  10, 12, 14, 17, 18, 21, 41, 42 seconds — testing bursts on a single afternoon
+  — then 2500s, 1.7h, 80.5h, 114.9h. A cron firing at 10/11/14 UTC daily leaves
+  a 1h / 3h / 20h pattern repeating. No such pattern exists anywhere in the
+  history.
+
+The real cause: **both** cron functions use the legacy `export const handler`
+signature (runtimeAPIVersion 1), and in-code `export const config = { schedule }`
+is a **v2-functions** feature. On a v1 function it is inert module code. So
+`grade-cron` and `calibration-cron` have both carried a well-formed, never-read
+cron expression for their entire existence. Everything that was ever graded was
+graded by hand; grading "stopped" because nobody ran it.
+
+Fixed by declaring both schedules in `netlify.toml`, which works regardless of
+function API version. The only real confirmation is `function_schedules` coming
+back non-empty from the deploy API — nothing observable from inside the app can
+tell you a schedule is registered.
+
+Three things made it invisible for two months, and they are worth more than the
 fix itself:
 
 1. **The verification tested the function, not the schedule.** "Fire it and
@@ -34,27 +50,36 @@ fix itself:
    the manual poke wrote a record indistinguishable from a real cron run, in
    the one place that would have shown the truth.
 
-Also worth noting: `tests/unit/grade-schedule.test.mjs` stayed green through
-the whole outage. It read the schedule string out of the background file and
-checked the cron expression was well-formed — which it was. It asserted the
-schedule was CORRECT and never that it was REGISTERED.
+3. **The test asserted the wrong half.** `tests/unit/grade-schedule.test.mjs`
+   was green for the entire two months. It read the cron string out of the
+   source and checked it was well-formed — which it always was. It asserted the
+   schedule was CORRECT and never that it was REGISTERED, which is precisely
+   the distinction that mattered.
 
-Fixed as a scheduler shim, which is the supported way to get both properties:
-`grade-cron.js` is scheduled, does nothing but POST to the background function,
-and finishes in well under a second; `grade-cron-background.js` keeps the long
-budget and the draining loop. Plus the three things that make a recurrence
-visible rather than silent:
+The long-running half still needs a home, so the split stays: `grade-cron.js`
+is the scheduled entry point and does nothing but POST to the background
+function, finishing in well under the 30s scheduled-function limit;
+`grade-cron-background.js` keeps the 15-minute budget and the draining loop.
+Plus the things that make a recurrence visible rather than silent:
 
 - the scheduled half writes its own `schedule-dispatch` heartbeat **before** any
   grading happens, so "the scheduler never fired" and "the scheduler fired and
   the work died" stop being the same observation;
 - the background half now REPORTS the trigger it was handed instead of
   asserting one, so a hand-fired run can never again masquerade as a cron run;
-- the test suite now fails if any `-background` file declares a schedule
-  (comments stripped first, since these files discuss the trap at length).
+- the test suite now checks `netlify.toml` (the thing that registers) rather
+  than a string in the source, fails if any `-background` file declares a
+  schedule (comments stripped first, since these files discuss the trap at
+  length), and fails if an in-code schedule disagrees with the registered one.
 
-Standing rule: **a schedule must never live on a `-background` file.** If a
-scheduled job needs more than 30 seconds, it needs a shim, not a rename.
+Standing rules:
+- **A schedule is only real if it is in `netlify.toml`** while these functions
+  use the v1 `export const handler` signature. In-code `config` is v2-only.
+- **A schedule must never live on a `-background` file.** If a scheduled job
+  needs more than 30 seconds, it needs a shim, not a rename.
+- **Verify a schedule with `function_schedules` from the deploy API**, never by
+  invoking the function. The two tests look identical and only one of them
+  answers the question.
 
 ## Two uncross-checked sources of "who is the opponent" (2026-08-31)
 

@@ -4,41 +4,51 @@
 // function and record that it fired. The actual draining lives in
 // grade-cron-background.js.
 //
-// WHY THIS FILE EXISTS — a 5-day outage, caused by the fix for the last one.
+// WHY THIS FILE EXISTS — grading was never actually scheduled. Ever.
 //
-// Grading used to be one scheduled function, and it kept getting killed at the
-// sync timeout (~10-26s) partway through draining a real backlog, going silent
-// for days at a time. The fix on 2026-08-29 renamed it to
-// `grade-cron-background.js` for the 15-minute budget — and moved
-// `export const config = { schedule }` along with it.
+// The schedule for this function is declared in netlify.toml, and that is the
+// only place it takes effect. The `export const config` below is kept so the
+// intent is readable next to the code, but it does NOT register anything: this
+// function uses the legacy `export const handler` signature
+// (runtimeAPIVersion 1), and in-code config is a v2-functions feature. A test
+// asserts the two agree so they cannot drift.
 //
-// Those are two DIFFERENT KINDS of function on Netlify and a file cannot be
-// both:
-//   - a background function is defined by the `-background` filename suffix,
-//     is invoked over HTTP, returns 202 immediately, and gets 15 minutes
-//   - a scheduled function is defined by `config.schedule`, is invoked by
-//     Netlify's cron, and gets 30 seconds
-// A `-background` file's `schedule` is simply never registered. So the rename
-// bought the execution budget and silently threw away the trigger: grading ran
-// for the last time at 2026-08-29T21:08Z and did not run again. 1,159 picks
-// across five days went ungraded, which is 1,159 picks missing from the
-// calibration sample — the numbers on /api/calibration were being computed off
-// a log that had quietly stopped being filled in.
+// FOUND 2026-09-03, while auditing why the judge was not beating the tier
+// baseline: the graded log had stopped growing after 2026-08-28, leaving 1,159
+// picks ungraded. The obvious suspect was the 2026-08-29 rename of
+// grade-cron.js to grade-cron-background.js (for the 15-minute budget), which
+// carried `config.schedule` onto a `-background` file where Netlify certainly
+// never registers it. That was the wrong diagnosis, and the evidence says so:
 //
-// The scheduler-shim split is the supported way to have both: this function is
-// scheduled and finishes in well under a second; the background function it
-// pokes keeps the long budget.
+//   - the deploy API reported `function_schedules: []` BOTH before and after
+//     that rename — there was no registered schedule to break
+//   - all 16 recorded heartbeats are manual invocations. The gaps between them
+//     are 6, 9, 10, 12, 14, 17, 18, 21, 41, 42 seconds — testing bursts on one
+//     afternoon — then 2500s, 1.7h, 80.5h, 114.9h. A cron firing at 10/11/14
+//     UTC daily would leave a 1h / 3h / 20h pattern repeating for two months.
+//     There is no such pattern anywhere in the history.
 //
-// WHY THE OUTAGE WAS INVISIBLE, which is the part worth not repeating. The
-// verification at the time was "trigger it and watch for a heartbeat" — which
-// tests the FUNCTION, not the SCHEDULE, and the heartbeat it produced was
-// stamped `trigger: 'schedule'` because that label was hardcoded for anything
-// not running under `netlify dev`. A manual poke was therefore indistinguishable
-// from a real cron fire in the only record that existed. Two things fix that:
-// this function writes its own `schedule-dispatch` entry when the CRON fires
-// (so "did the scheduler run" is answerable on its own), and the background
-// function now reports the trigger it was actually given instead of asserting
-// one.
+// So every pick that ever got graded was graded by hand, and grading "stopped"
+// simply because nobody ran it. The rename didn't break the schedule; the
+// schedule had never worked.
+//
+// WHY IT STAYED INVISIBLE, which is the part worth not repeating:
+//   1. verification was "trigger it and watch for a heartbeat" — that tests the
+//      FUNCTION, not the SCHEDULE, and passes identically either way;
+//   2. the heartbeat lied about its own trigger, stamping every deployed
+//      invocation `'schedule'` regardless of what invoked it, so a manual poke
+//      was indistinguishable from a cron fire in the only record kept;
+//   3. the schedule test read the cron string out of the source and checked it
+//      was well-formed — asserting the schedule was CORRECT, never that it was
+//      REGISTERED.
+// All three are fixed. The real confirmation is `function_schedules` coming
+// back non-empty from the deploy API; nothing observable from inside the app
+// can tell you a schedule is registered.
+//
+// The scheduler-shim split is the supported way to get a long-running job onto
+// a cron: this function is scheduled and finishes in well under the 30s
+// scheduled-function limit; the background function it pokes keeps the
+// 15-minute budget.
 export const config = { schedule: '0 10,11,14 * * *' };
 
 import { heartbeat } from './grade-cron-background.js';

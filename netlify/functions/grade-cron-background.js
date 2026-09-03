@@ -23,12 +23,14 @@
 //
 // THE SCHEDULE DOES NOT LIVE HERE, and must never be moved back (2026-09-03).
 // The rename above also carried `export const config = { schedule }` onto this
-// file, where Netlify never registers it: `-background` and scheduled are two
-// different kinds of function and a file cannot be both. That silently removed
-// the trigger — grading last ran 2026-08-29T21:08Z and stopped for five days,
-// leaving 1,159 picks ungraded and the calibration numbers computed off a log
-// that had stopped being written. grade-cron.js is now a scheduled shim that
-// pokes this function over HTTP; see the full note there.
+// file, where Netlify certainly never registers it: `-background` and scheduled
+// are two different kinds of function and a file cannot be both. (As it turned
+// out that wasn't what broke grading — the deploy API shows no schedule was
+// ever registered for this site, on any deploy, and every heartbeat in two
+// months of history is a manual invocation. The schedule now lives in
+// netlify.toml, which is the only thing that registers one. See grade-cron.js
+// for the evidence.) grade-cron.js is a scheduled shim that pokes this
+// function over HTTP so it keeps the 15-minute budget.
 
 import { getStore } from '@netlify/blobs';
 

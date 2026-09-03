@@ -2,6 +2,35 @@
   publish = "public"
   functions = "netlify/functions"
 
+# SCHEDULES LIVE HERE, and this is the only place they take effect.
+#
+# Both cron functions in this repo use the legacy `export const handler`
+# signature (runtimeAPIVersion 1). In-code `export const config = { schedule }`
+# is a v2-functions feature — on a v1 function Netlify parses it as ordinary
+# module code and never registers a schedule. Both files carried exactly that
+# for months and NEITHER HAS EVER FIRED: the deploy API reported
+# `function_schedules: []` on every deploy checked, and grade-cron's 16
+# recorded heartbeats are all manual invocations (bursts 6-42 seconds apart on
+# one afternoon, then multi-day silences — no 24h cadence anywhere in two
+# months of history). Every pick that ever got graded was graded by hand.
+#
+# Declaring the schedule in netlify.toml works regardless of function API
+# version, and is verifiable: `function_schedules` in the deploy API must come
+# back NON-EMPTY. That check is the only real confirmation — invoking the
+# function over HTTP tests the function, not the schedule, which is how this
+# went unnoticed for so long.
+#
+# Netlify cron is UTC and has no daylight-saving awareness, so "3am Pacific" is
+# 10:00 UTC in summer and 11:00 UTC in winter; firing at both hits 3am Pacific
+# year-round and the off-season one simply finds nothing to do. 14:00 UTC is a
+# late backstop for box scores that were not final at 3am. Grading is
+# idempotent, so extra runs cost a blob read.
+[functions."grade-cron"]
+  schedule = "0 10,11,14 * * *"
+
+[functions."calibration-cron"]
+  schedule = "0 14,15 * * *"
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
