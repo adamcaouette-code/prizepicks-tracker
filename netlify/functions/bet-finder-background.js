@@ -2341,6 +2341,17 @@ export const handler = async (event) => {
         // research actually earns its cost, same as source already does for
         // board vs. ledger.
         deepDive: !!p.deepDive,
+        // The stage-1 probability for this same pick, kept beside the deep one.
+        //
+        // Without it, "is the second look worth it?" can only be answered by
+        // comparing deep rows to shallow rows — two different sets of picks,
+        // and not a fair pair: the deep set is chosen precisely because the
+        // screen liked it most, so any difference is confounded with that
+        // selection. With both numbers on one row it becomes a PAIRED question
+        // — same pick, same game, two probabilities — which the selection can't
+        // bias and which needs a fraction of the sample to answer.
+        shallowProb: p.shallowProb ?? null,
+        shallowEdge: p.shallowEdge ?? null,
         standout: p.standout ?? null,  // THEMIS only: did the judge move this 0.10+ off tier rate
         // Item L, instrumentation only — see SHRINKAGE_ENABLED. null while the
         // flag is off, which is every run today; prob (above) is untouched

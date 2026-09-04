@@ -145,6 +145,85 @@ export default async function ({ t }) {
     (await runCal(many(10, { oddsType: 'standard', prob: 0.6, hits: 5 })))
       .json.byDeepDive.shallow.n, 10);
 
+  // ---- 4b. the paired test, which is the only one that can decide it ------
+  // Deep vs shallow ROWS compares two different sets of picks, and not a fair
+  // pair — the deep set exists because the screen liked it most. Same pick,
+  // same game, two probabilities is immune to that.
+  const paired = await runCal([
+    // 40 picks the screen called 0.80 and the second look cut to 0.55. 20 hit.
+    // The second look is much closer to the truth on every one of them.
+    ...many(40, { oddsType: 'standard', prob: 0.55, shallowProb: 0.80, deepDive: true, hits: 20 }),
+    // Shallow rows carry no shallowProb and must not enter the pair.
+    ...many(60, { oddsType: 'standard', prob: 0.55, deepDive: false, hits: 30 }),
+  ]);
+  const dp = paired.json.deepPaired;
+  t.eq('only deep-dive rows carrying both numbers are paired', dp.n, 40);
+  t.ok('the second look scores the better Brier on the same picks',
+    dp.deepBrier < dp.shallowBrier, `${dp.deepBrier} vs ${dp.shallowBrier}`);
+  t.eq('...and the move it made is reported, not just the result',
+    Math.round(dp.meanMove * 1000) / 1000, 0.25);
+  // The sign test answers a DIFFERENT question from the Brier gap, and this
+  // case is the clearest illustration of why both are reported.
+  //
+  // Cutting 0.80 to 0.55 is pure honesty about the level: it improves the
+  // average penalty a lot. But per pick it helps on exactly the ones that miss
+  // and hurts on exactly the ones that hit, so at a true rate of 50% it lands
+  // closer on precisely half. 20 of 40 is the CORRECT answer here, not a bug —
+  // "better calibrated" and "right more often" are not the same claim, and a
+  // page that collapsed them would let either one launder the other.
+  t.eq('a pure honesty correction wins on Brier and ties on the sign test',
+    [dp.closer, dp.decided], [20, 40]);
+  t.ok('...so the sign test correctly reports no per-pick edge',
+    Math.abs(dp.sigma) < 1e-9, String(dp.sigma));
+
+  // Real discrimination — the second look moving toward the actual outcome
+  // rather than just toward the middle — is what the sign test does detect.
+  const sharp = await runCal(Array.from({ length: 40 }, (_, i) => mk({
+    oddsType: 'standard', deepDive: true, shallowProb: 0.50,
+    prob: i < 20 ? 0.90 : 0.10, hit: i < 20,
+  })));
+  t.eq('a second look that actually discriminates lands closer on every pick',
+    [sharp.json.deepPaired.closer, sharp.json.deepPaired.decided], [40, 40]);
+  t.ok('...which a coin flip does not do 40 times running',
+    sharp.json.deepPaired.sigma > 6, String(sharp.json.deepPaired.sigma));
+
+  // The honest case: a second look that moves numbers the WRONG way must show
+  // as worse, not be smoothed into a null result.
+  const worse = await runCal(Array.from({ length: 40 }, (_, i) => mk({
+    oddsType: 'standard', deepDive: true, shallowProb: 0.50,
+    prob: i < 20 ? 0.10 : 0.90, hit: i < 20,
+  })));
+  t.ok('a second look that makes the number worse is reported as worse',
+    worse.json.deepPaired.brierDelta > 0, String(worse.json.deepPaired.brierDelta));
+  t.eq('...and lands closer on none of them', worse.json.deepPaired.closer, 0);
+  t.ok('...at the same strength, in the other direction',
+    worse.json.deepPaired.sigma < -6, String(worse.json.deepPaired.sigma));
+
+  // Ties are excluded rather than counted as half — a pick the second look
+  // didn't move is not evidence either way.
+  const tied = await runCal(
+    many(20, { oddsType: 'standard', prob: 0.60, shallowProb: 0.60, deepDive: true, hits: 10 }),
+  );
+  t.eq('a pick the second look left alone is not counted as evidence',
+    [tied.json.deepPaired.n, tied.json.deepPaired.decided], [20, 0]);
+  t.eq('...so no verdict is manufactured from it', tied.json.deepPaired.sigma, null);
+
+  // An UNDER's shallowProb is P(over) exactly as prob is, so it takes the same
+  // flip — otherwise the pair compares two different sides of the same line.
+  const pairedUnder = await runCal(
+    many(30, { oddsType: 'standard', side: 'under', prob: 0.20, sideProb: 0.80,
+      shallowProb: 0.45, edge: 0.80 - BE.standard, deepDive: true, hits: 6 }),
+  );
+  // shallow said P(under)=0.55, deep said 0.80, and the under landed 24/30.
+  t.ok('an under is paired on the under, not the over',
+    pairedUnder.json.deepPaired.deepBrier < pairedUnder.json.deepPaired.shallowBrier,
+    `${pairedUnder.json.deepPaired.deepBrier} vs ${pairedUnder.json.deepPaired.shallowBrier}`);
+
+  // With no paired rows yet, the page must say so rather than let the confounded
+  // row comparison read as the answer.
+  t.ok('an empty paired test is flagged, not quietly omitted',
+    deep.html.includes('The paired test has no rows yet'), '');
+
   // ---- 5. the page says all of it out loud -------------------------------
   t.ok('the page shows the guardrail split', html.includes('The edge guardrail'), '');
   t.ok('...states what the picks needed, not just what they hit',
@@ -159,4 +238,10 @@ export default async function ({ t }) {
   const thin = await runCal(many(12, { oddsType: 'goblin', prob: 0.70, hits: 4 }));
   t.ok('a thin bucket is greyed rather than coloured as a finding',
     thin.html.includes('color:var(--dim)'), '');
+
+  // The page must not let the two deep-dive statistics launder each other.
+  t.ok('the page states that Brier and the sign test can honestly disagree',
+    /answer different questions and can honestly disagree/.test(paired.html), '');
+  t.ok('...and says which one is evidence of extra knowledge',
+    /right more often/.test(paired.html) && /less overconfident/.test(paired.html), '');
 }

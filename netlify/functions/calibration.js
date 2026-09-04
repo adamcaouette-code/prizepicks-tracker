@@ -471,6 +471,12 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // at a pick produce a better probability than the batch screen? — is a Brier
     // comparison between these two, and nothing else in this file could make it.
     byDeepDive: { shallow: newBucket(), deep: newBucket() },
+    // The PAIRED version, and the only one that can actually settle the deep
+    // dive's cost. Comparing deep rows to shallow rows compares two different
+    // sets of picks, and not a fair pair — the deep set exists because the
+    // screen liked it most, so any gap is confounded with that selection. Same
+    // pick, same game, two probabilities is immune to it.
+    deepPaired: { n: 0, shallowBrierSum: 0, deepBrierSum: 0, moveSum: 0, closer: 0, decided: 0 },
   };
   // Behaviour runs over ALL picks, not just graded ones — that is the whole
   // point of it. Keyed by version AND model, because "did the instruction land"
@@ -666,6 +672,38 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // rows since v4.33.0; anything older has no field at all and reads as
     // shallow, which is what it was.
     addToBucket(p.deepDive === true ? out.byDeepDive.deep : out.byDeepDive.shallow, sideHit, sideProb, sideBE);
+
+    // The paired test. `shallowProb`, like `prob`, is P(over) — so it takes the
+    // same side flip before the two can be compared at all.
+    const shallowRaw = Number(p.shallowProb);
+    if (p.deepDive === true && isFinite(shallowRaw)) {
+      const sp = isUnder ? 1 - shallowRaw : shallowRaw;
+      const dp = out.deepPaired;
+      dp.n++;
+      dp.shallowBrierSum += (sp - sideHit) ** 2;
+      dp.deepBrierSum += (sideProb - sideHit) ** 2;
+      dp.moveSum += Math.abs(sideProb - sp);
+      // A sign test, which needs no distributional assumption at all: under
+      // "the second look adds nothing", whether it lands closer to the truth is
+      // a coin flip. Picks it didn't move are excluded rather than counted as
+      // half — they are not evidence either way.
+      const dDist = Math.abs(sideProb - sideHit), sDist = Math.abs(sp - sideHit);
+      if (dDist !== sDist) { dp.decided++; if (dDist < sDist) dp.closer++; }
+    }
+  }
+
+  {
+    const dp = out.deepPaired;
+    out.deepPaired = {
+      n: dp.n,
+      shallowBrier: dp.n ? dp.shallowBrierSum / dp.n : null,
+      deepBrier: dp.n ? dp.deepBrierSum / dp.n : null,
+      brierDelta: dp.n ? (dp.deepBrierSum - dp.shallowBrierSum) / dp.n : null,
+      meanMove: dp.n ? dp.moveSum / dp.n : null,
+      closer: dp.closer, decided: dp.decided,
+      // Binomial(decided, 0.5) under the null.
+      sigma: dp.decided ? (dp.closer - dp.decided / 2) / Math.sqrt(dp.decided / 4) : null,
+    };
   }
 
   for (const k of ['kept', 'refused', 'unpriced']) out.guardrail[k] = scoreBucket(out.guardrail[k]);
@@ -1196,6 +1234,25 @@ function renderHTML(a) {
     <b>stage 2 ${a.byDeepDive?.deep?.brier == null ? '—' : a.byDeepDive.deep.brier.toFixed(4)}</b> (lower is better).
     Deep-dive rows are a deliberately biased sample — they are the picks the screen already liked most — so read the
     Brier gap, not the hit rate, and give it a few hundred rows before believing either.</div>
+  <div class="callout${(a.deepPaired?.n || 0) === 0 ? ' amber' : ''}">${(a.deepPaired?.n || 0) === 0
+    ? `<b>The paired test has no rows yet.</b> Comparing deep rows to shallow rows compares two different sets of
+       picks, and the deep set exists <i>because</i> the screen liked it most — so the gap above is confounded with
+       that selection and can't settle anything on its own. Since v4.35.1 every deep-dive row also logs the stage-1
+       probability for the same pick, which turns this into a paired question — same pick, same game, two numbers —
+       that selection cannot bias. It fills in as deep-dive runs grade.`
+    : `<b>Paired — same picks, both numbers.</b> On ${a.deepPaired.n} deep-dive picks the stage-1 screen scored
+       <b>${a.deepPaired.shallowBrier.toFixed(4)}</b> and the second look scored
+       <b>${a.deepPaired.deepBrier.toFixed(4)}</b> (${a.deepPaired.brierDelta <= 0 ? 'better' : 'WORSE'} by
+       ${Math.abs(a.deepPaired.brierDelta).toFixed(4)}), moving the probability
+       ${(a.deepPaired.meanMove * 100).toFixed(1)} points on average. This is the comparison that decides whether
+       the extra cost per run is earning anything; the table above cannot.
+       <br><br>Beside it, a sign test: the second look landed closer to the truth on
+       <b>${a.deepPaired.closer} of ${a.deepPaired.decided}</b> picks it moved
+       (${a.deepPaired.sigma == null ? '—' : `${a.deepPaired.sigma.toFixed(1)}σ`} against a coin flip). <b>These two
+       answer different questions and can honestly disagree.</b> Trimming an overconfident 0.80 to 0.55 improves
+       Brier a lot while helping on exactly the picks that miss and hurting on the ones that hit — so it ties the
+       sign test at 50%. Brier says <i>better calibrated</i>; the sign test says <i>right more often</i>. Only the
+       second is evidence the deep dive knows something extra rather than just being less overconfident.`}</div>
 
   <h2>Judge version — head to head</h2>
   <div class="wrap"><table><thead><tr><th>judge</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${promptRows}</tbody></table></div>

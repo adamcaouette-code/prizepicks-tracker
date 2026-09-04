@@ -187,6 +187,55 @@ Standing rules:
 - **A raw win rate is meaningless across tiers.** Every bucket on that page now
   states what it needed beside what it got.
 
+### The first results (2026-09-04)
+
+Counterfactual over 2,284 graded plays and leans:
+
+| bucket | n | hit | needed | vs needed | σ | 3-leg slip EV |
+|---|---|---|---|---|---|---|
+| kept — edge ≥ 0 | 240 | 56.7% | 61.8% | −5.1pts | −1.6σ | −23% |
+| refused — edge < 0 | 2044 | 63.7% | 76.9% | −13.2pts | −14.1σ | −43% |
+
+**The guardrail is clearly right about what it throws away** — 90% of the
+recommendation volume, losing 43 cents on the dollar at 14σ. It is **not**
+shown to be right about what it keeps: 240 picks at −1.6σ is indistinguishable
+from break-even, and the point estimate is still negative. The honest summary is
+that the guardrail removes a proven loser and leaves something unproven, which
+is an improvement and not yet a profitable engine.
+
+### Making the deep dive answerable too
+
+The same trick doesn't work for the deep dive, and the row comparison it left
+behind is confounded: stage 2 rows (n=109, Brier 0.2031) look better than stage
+1 (n=3962, 0.2319), but stage 2 rows *are the picks stage 1 liked most*, so the
+gap is entangled with that selection.
+
+There is a clean test available and it was one field away: every deep-dive row
+already knew its own stage-1 probability (`d.shallowProb`), it just wasn't
+being logged. Logging it makes the question **paired** — same pick, same game,
+two numbers — which selection cannot bias and which needs a fraction of the
+sample.
+
+Reported two ways, deliberately:
+
+- **Paired Brier** — is the second number better calibrated?
+- **A sign test** on the same pairs — does it land closer to the truth more
+  often than a coin flip?
+
+**These can honestly disagree, and the page says so.** Trimming an overconfident
+0.80 to 0.55 improves Brier a great deal while helping on exactly the picks that
+miss and hurting on the ones that hit — at a true rate of 50% it ties the sign
+test at exactly 50%. Brier says *better calibrated*; the sign test says *right
+more often*. Only the second is evidence the deep dive knows something extra
+rather than merely being less overconfident. Collapsing them into one "is it
+better?" number would let either one launder the other.
+
+Standing rule:
+- **A paired comparison is worth a field.** When two estimates of the same thing
+  exist at different times, log both. Comparing groups instead of pairs costs an
+  order of magnitude in sample size and imports every selection effect that
+  chose the groups.
+
 Regression cover: `tests/unit/guardrail-measure.test.mjs`.
 
 ## The grader queue re-chewed its own head, so most picks were never tried (2026-09-04)
