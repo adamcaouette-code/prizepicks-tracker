@@ -33,7 +33,11 @@ export function gradersFor(league) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const BUDGET_MS = 8000;
+// How long one call spends grading before it returns and lets the caller come
+// back for more. Netlify kills a synchronous function somewhere between 10s and
+// 26s depending on plan, so this stays well under the floor. Overridable so the
+// drain behaviour can be exercised against a budget small enough to bite.
+const BUDGET_MS = Number(process.env.GRADE_BUDGET_MS) || 8000;
 const CONCURRENCY = 3;
 // Attempts are counted PER CALENDAR DAY, not per call — see below. Three days of
 // failing is a real give-up; three calls is not.
@@ -153,6 +157,10 @@ export const handler = async (event) => {
     if (!dayFinal || retry) {
       for (const p of picks) { if (ungraded(p) && !p.ungradeable && p.gradeAttempts) { p.gradeAttempts = 0; reset++; } }
     }
+    // ?retry=1 means "try again NOW". Clearing the attempt COUNT without
+    // clearing the day stamp would leave the once-a-day skip below still
+    // holding the pick back, so the retry would report success and do nothing.
+    if (retry) for (const p of picks) delete p.lastAttemptDay;
     // One-time repair. Attempts used to increment on every grader CALL, and the
     // cron drains in up to 15 passes — so a pick that wasn't instantly gradeable
     // was tombstoned within seconds of its first run, having really been tried
@@ -204,14 +212,41 @@ export const handler = async (event) => {
       p.graderEra = GRADER_ERA;
     }
 
+    const attemptDay = new Date().toISOString().slice(0, 10);
     const needsPpId = (p) => gradersFor(p.league).every((src) => src === 'prizepicks');
+    // ONE ATTEMPT PER PICK PER DAY on a final day — the queue must move forward.
+    //
+    // Each call is budgeted at 8s, which reaches ~57 picks; grade-cron drains a
+    // day by calling repeatedly. But every call rebuilt the queue from the same
+    // head, so the picks that failed last pass were re-tried first on the next
+    // one, and a day only advanced by however many of its leaders happened to
+    // grade. On 2026-08-31 that meant 42 dead soccer/tennis picks sat at the
+    // front eating most of the budget every pass: 293 of 359 picks were never
+    // looked at once, four days running, and the whole day is missing from the
+    // calibration sample as a result.
+    //
+    // A final day's games ended 36h+ ago. If MLB, ESPN and PrizePicks can't
+    // settle a pick now, they will not settle it eight seconds later, so a
+    // second try within the same day buys nothing and costs the tail its turn.
+    // Skipping it makes every pass start where the last one stopped, so the
+    // queue strictly drains. Across DAYS the pick still gets MAX_ATTEMPTS tries.
+    //
+    // A day that is not yet final is the opposite case — games are still
+    // finishing, so re-trying minutes later is exactly right — and the skip
+    // deliberately does not apply there.
+    const triedToday = (p) => dayFinal && p.lastAttemptDay === attemptDay;
     const gradeable = (p) => ungraded(p) && !p.ungradeable
       && (p.projectionId || !needsPpId(p))
+      && !triedToday(p)
       && (dayFinal ? (p.gradeAttempts || 0) < MAX_ATTEMPTS : true);
-    const todo = picks.filter(gradeable);
+    // Never-tried picks lead. A pick that already failed on an earlier day is
+    // both the least likely to grade now and the most likely to be sitting at
+    // the head of the log, so without this it claims the first slots of every
+    // fresh day's budget ahead of picks nothing has ever looked at.
+    const todo = picks.filter(gradeable)
+      .sort((a, b) => (a.gradeAttempts || 0) - (b.gradeAttempts || 0));
 
     const start = Date.now();
-    const attemptDay = new Date().toISOString().slice(0, 10);
     let graded = 0, stillPending = 0, processed = 0, timedOut = false;
 
     for (let i = 0; i < todo.length; i += CONCURRENCY) {
@@ -280,6 +315,10 @@ export const handler = async (event) => {
         revived,
         stillPending,
         remaining,
+        // Picks held back only because they already had their turn today. A
+        // pass reporting remaining:0 with a nonzero count here is finished for
+        // the day, not stuck — the distinction the cron loop stops on.
+        triedToday: picks.filter((p) => ungraded(p) && !p.ungradeable && triedToday(p)).length,
         timedOut,
         resetTombstones: reset,
         repairedLegacyAttempts: repaired,

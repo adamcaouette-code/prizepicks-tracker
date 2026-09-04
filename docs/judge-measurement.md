@@ -136,6 +136,73 @@ Standing rules:
   invoking the function. The two tests look identical and only one of them
   answers the question.
 
+## The grader queue re-chewed its own head, so most picks were never tried (2026-09-04)
+
+The schedule fix above turned grading back on. It did not fix coverage, because
+a second, independent bug was throttling the grader itself — and it had been
+doing so the whole time the schedule was dead, which is why the two were never
+told apart.
+
+The grader is time-budgeted: one call spends 8s and returns, and the cron
+drains a day by calling it repeatedly. But **every call rebuilt the queue from
+the same head**, so whatever failed on the last pass was re-tried FIRST on the
+next one. A day only advanced by however many of its leading picks happened to
+grade. If the leaders were ungradeable, it advanced by nothing, forever.
+
+Measured on 2026-08-31 (359 logged picks, four days after the fact):
+
+| what | value |
+|---|---|
+| `gradeAttempts` across the ungraded | `{ 1: 33, undefined: 326 }` |
+| one pass | `newlyGraded 15, stillPending 42, remaining 302, timedOut true` |
+
+**326 of 359 picks had never been looked at once**, while ~42 dead
+soccer/tennis props at the front ate most of the budget on every pass. Whole
+days were missing from the calibration sample for reasons that had nothing to
+do with the picks in them. The first hypothesis — that the dead
+`api.prizepicks.com` history endpoint was being tried before the working MLB
+and ESPN sources — was wrong: `gradersFor()` already puts PrizePicks last. The
+ordering was fine; the *queue* was not.
+
+The cron loop had the matching half of the same bug. It stopped after two
+passes that graded nothing, which was correct while every pass re-chewed the
+same head — back then "nothing graded" really did mean nothing more ever would.
+Once the queue advances, that rule abandons a tail nobody ever looked at.
+
+Three changes, in `grade-picks.js` and `grade-cron-background.js`:
+
+- **One turn per pick per calendar day, on a day whose games ended 36h+ ago.**
+  If MLB, ESPN and PrizePicks can't settle a pick now, they will not settle it
+  eight seconds later, so a second try today buys nothing and costs the tail its
+  turn. Across DAYS the pick still gets its `MAX_ATTEMPTS`. A day that is *not*
+  final is the opposite case — games are still finishing — and the skip
+  deliberately does not apply there. `?retry=1` clears the day stamp, or "try
+  again now" would report success and do nothing.
+- **Never-tried picks sort ahead of previously-failed ones**, so the guarantee
+  does not depend on log order.
+- **Progress is the queue draining, not picks grading.** The cron loop's stall
+  detector now watches `remaining` as well as `pendingSingles`, and stops on an
+  empty queue rather than on an unproductive pass.
+
+Also widened the drain window from four days to seven, with an 11-minute
+whole-run deadline so seven days of 15 passes each can't exceed the background
+function's budget and die before its heartbeat. 2026-08-29 is why: it fell out
+of the four-day window still holding 181 ungraded picks, with nothing left in
+the system that would ever revisit it.
+
+Standing rules:
+- **A time-budgeted worker that is called repeatedly must advance its queue,
+  not rebuild it.** Otherwise the budget is spent entirely on the items least
+  likely to succeed, and the failure is invisible: every pass looks busy.
+- **"Nothing was produced" is not the same as "nothing is left."** Any
+  drain loop that stops on the first needs to be able to tell them apart —
+  which is why the grader now reports `triedToday` beside `remaining`.
+
+Regression cover: `tests/unit/grade-drain.test.mjs`, which runs a real day
+against a budget small enough to bite and asserts every pick gets exactly one
+turn, plus a scripted cron loop whose first three passes grade nothing. Both
+halves were confirmed to fail with the fix reverted and pass with it in.
+
 ## Two uncross-checked sources of "who is the opponent" (2026-08-31)
 
 Reported live: a Giants (SF) prop's "why" panel argued its own probability

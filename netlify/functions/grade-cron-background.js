@@ -1,9 +1,9 @@
 // netlify/functions/grade-cron-background.js
 //
 // Automatic daily grading — no manual clicks. Netlify runs this on the schedule
-// below; it fully DRAINS yesterday and the day before by calling the grader
-// repeatedly until each day stops making progress (large slates need multiple
-// passes since each grader call is time-budgeted).
+// in netlify.toml; it fully DRAINS the last week by calling the grader
+// repeatedly until each day's queue is empty (large slates need multiple passes
+// since each grader call is time-budgeted).
 //
 // Manual grading via /api/grade-picks and the dev console still works anytime;
 // this just makes it unnecessary.
@@ -65,17 +65,29 @@ export const handler = async (event) => {
     if (body && typeof body.trigger === 'string' && body.trigger) trigger = body.trigger;
   } catch { /* no body, or not JSON — it was not the scheduler */ }
   const day = (offset) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
-  // Four days back, not two. A day that didn't fully drain in its first 48h was
-  // previously never revisited, so those picks stayed pending forever — and a
-  // pick that never grades is a pick silently missing from the calibration
-  // sample. A day with nothing left returns immediately, so the extra passes
-  // cost a blob read each.
-  const targets = [day(1), day(2), day(3), day(4)];
+  // Seven days back, not four. A day that didn't fully drain inside the window
+  // was never revisited again, so its picks stayed pending forever — and a pick
+  // that never grades is a pick silently missing from the calibration sample.
+  // 2026-08-29 is the proof: it fell out of the four-day window still holding
+  // 181 ungraded picks, with nothing left that would ever look at it again.
+  // A day with nothing left returns in one pass, so a clean extra day costs a
+  // blob read.
+  const targets = [day(1), day(2), day(3), day(4), day(5), day(6), day(7)];
+
+  // A whole-run deadline, because the per-day pass cap alone doesn't bound this.
+  // Seven days each allowed 15 time-budgeted passes is more wall clock than the
+  // 15 minutes a background function gets, and a function killed at its limit
+  // never reaches the heartbeat at the end — which is how this job went silent
+  // for three days once already. Stopping early leaves the rest for the next
+  // firing (there are three a day) and still writes the record of what it did.
+  const DEADLINE = Date.now() + 11 * 60 * 1000;
 
   const ran = [];
+  let outOfTime = false;
   for (const d of targets) {
-    let passes = 0, last = null, prevPending = Infinity, stalled = 0;
-    while (passes < 15) {                       // hard cap on passes per day
+    if (Date.now() > DEADLINE) { outOfTime = true; break; }
+    let passes = 0, last = null, prevPending = Infinity, prevRemaining = Infinity, stalled = 0;
+    while (passes < 15 && Date.now() < DEADLINE) {   // hard cap on passes per day
       passes++;
       try {
         const res = await fetch(`${base}/api/grade-picks?date=${d}`);
@@ -86,14 +98,29 @@ export const handler = async (event) => {
       const pending = last && typeof last.pendingSingles === 'number' ? last.pendingSingles : null;
       const remaining = last && typeof last.remaining === 'number' ? last.remaining : null;
 
-      // fully drained: nothing left in the queue for this pass
-      if (pending === 0 || (remaining === 0 && (last?.newlyGraded ?? 0) === 0)) break;
-      // stop if we're not making progress (e.g. all that's left is stillPending retries)
-      if (pending !== null) {
-        if (pending >= prevPending) { stalled++; if (stalled >= 2) break; }
-        else stalled = 0;
-        prevPending = pending;
-      }
+      // Fully drained: nothing left to grade at all, or the queue is empty for
+      // today. On a FINAL day the grader gives each pick one turn per day, so an
+      // empty queue means every pick has had its turn and another pass would
+      // grade nothing. On a day that is NOT final, picks are re-tried freely as
+      // games finish, so an empty queue is only a stopping point if the pass
+      // that emptied it also settled nothing.
+      if (pending === 0 || (remaining === 0 && (last?.dayFinal || (last?.newlyGraded ?? 0) === 0))) break;
+
+      // PROGRESS IS THE QUEUE DRAINING, NOT PICKS GRADING.
+      //
+      // This used to stall out on `pendingSingles` alone, from when every pass
+      // re-tried the same head of the queue: back then a pass that graded
+      // nothing really did mean nothing more would ever grade. It no longer
+      // does. A pass now advances past whatever it tried whether or not any of
+      // it settled, so stopping on "nothing graded" abandons a tail that was
+      // never looked at — two consecutive passes over ungradeable soccer props
+      // was enough to bench the several hundred MLB picks behind them.
+      const progressed = (pending !== null && pending < prevPending)
+        || (remaining !== null && remaining < prevRemaining);
+      if (progressed) stalled = 0;
+      else if (++stalled >= 2) break;
+      if (pending !== null) prevPending = pending;
+      if (remaining !== null) prevRemaining = remaining;
       await sleep(500);
     }
     ran.push({
@@ -125,6 +152,7 @@ export const handler = async (event) => {
 
   const summary = {
     trigger,
+    outOfTime,
     picks: ran.map((r) => ({ date: r.date, graded: r.totalGraded, pending: r.pendingSingles, error: r.error })),
     slipLegsGraded: slips.reduce((a, s) => a + (s.legsGraded || 0), 0),
     slipsSettled: slips.reduce((a, s) => a + (s.slipsSettled || 0), 0),
