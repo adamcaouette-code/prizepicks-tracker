@@ -136,6 +136,59 @@ Standing rules:
   invoking the function. The two tests look identical and only one of them
   answers the question.
 
+## Scoring the edge guardrail without waiting for it (2026-09-04)
+
+v4.34.0 stopped the auto-slip taking a leg whose own edge is negative. That is a
+real behaviour change made on an argument, and nothing on the calibration page
+could score it — the `edgeVerdict` field only exists on rows logged since, so
+checking the decision looked like a months-away problem.
+
+It isn't. **Edge is a function of the probability and the tier, both of which
+every row in the log already carries**, so the split runs over the entire graded
+history as a counterfactual: of everything the engine ever called a play or a
+lean, how did what the guardrail would have KEPT do against what it would have
+REFUSED? That turns a months-away question into a same-day one, at n=2232
+instead of n≈40.
+
+Three sections added to `/api/calibration`:
+
+- **The edge guardrail** — the counterfactual split, with each bucket scored
+  against its own break-even rather than on a raw win rate (67% is a disaster on
+  a goblin and a fortune on a demon), plus σ and the EV of a 3-leg Power play
+  built entirely from that bucket.
+- **Edge verdict** — the same split on the live field, kept deliberately
+  separate. A reconstruction is evidence about a decision, not a measurement of
+  one, and merging them would let the weaker claim borrow the stronger one's n.
+- **Deep dive** — stage 1 vs stage 2, led by **Brier**. Deep-dive rows are the
+  picks the screen already liked most, so their hit rate is a biased sample and
+  cannot settle anything; the claim the deep dive rests on is that an undivided
+  look produces a *better probability*, which is a Brier question.
+
+Two bugs found by writing the test rather than by reading the code:
+
+1. **The unpriced bucket was borrowing the over's break-even.** A demon under
+   came out "13.7 points below its bar" — a bar it does not have, since
+   PrizePicks' `odds_type` prices the over only. Fixed by deriving the bar from
+   the edge (`needed = sideProb − edge`) instead of looking it up by tier, which
+   makes it exact by definition and null in exactly the cases the edge is.
+2. **Unders were scored on the over's outcome.** `prob` is P(over) and `hit` is
+   "the over cleared" throughout that file — a convention the rest of it rests
+   on and that must not change — so a recommended under that LANDED was being
+   counted as a loss. That inverts the measurement on precisely the picks the
+   section exists to judge.
+
+Standing rules:
+- **A behaviour change that can't be scored isn't finished.** If the measurement
+  needs data the change itself will take months to produce, look for the
+  reconstruction first — the quantity is often already in the log.
+- **Never score a bucket against a bar it doesn't have.** Deriving the bar from
+  a quantity that is null when the price is unknown propagates the uncertainty
+  instead of papering over it.
+- **A raw win rate is meaningless across tiers.** Every bucket on that page now
+  states what it needed beside what it got.
+
+Regression cover: `tests/unit/guardrail-measure.test.mjs`.
+
 ## The grader queue re-chewed its own head, so most picks were never tried (2026-09-04)
 
 The schedule fix above turned grading back on. It did not fix coverage, because

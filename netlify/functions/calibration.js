@@ -162,6 +162,65 @@ function scoreAgainstBaseline(target, rows) {
 // real payout tables: goblin 2.0x, standard 4.75x, demon 12.0x. Three legs is the
 // reference because the ORDERING between tiers holds at every size.
 const BREAK_EVEN = { goblin: 2.0 ** (-1 / 3), standard: 4.75 ** (-1 / 3), demon: 12.0 ** (-1 / 3) };
+
+/**
+ * A scored bucket that also tracks what its picks NEEDED to hit. A raw win rate
+ * is unreadable across tiers — 67% is a disaster on goblins and a fortune on
+ * demons — so every bucket carries the sum of its own break-evens alongside its
+ * hits, and `scoreBucket` turns the pair into the only number that means the
+ * same thing everywhere: how far above or below its own bar it landed.
+ */
+const newBucket = () => ({ n: 0, hits: 0, beSum: 0, priced: 0, brierSum: 0, predSum: 0 });
+
+function addToBucket(b, hit, prob, be) {
+  b.n++; b.hits += hit;
+  b.brierSum += (prob - hit) ** 2; b.predSum += prob;
+  if (be != null) { b.beSum += be; b.priced++; }
+}
+
+function scoreBucket(b) {
+  if (!b.n) return { n: 0, rate: null, needed: null, deltaPP: null, sigma: null, ev: null, brier: null };
+  const rate = b.hits / b.n;
+  const needed = b.priced ? b.beSum / b.priced : null;
+  // Under the null "these picks hit exactly their break-even", the count of hits
+  // is Binomial(n, needed) — so the standard error is that of the NULL, not of
+  // the observed rate. Using the observed rate here would make a 0-for-40 run
+  // look infinitely significant.
+  const se = needed == null ? null : Math.sqrt((needed * (1 - needed)) / b.n);
+  return {
+    n: b.n, hits: b.hits, rate,
+    needed,
+    deltaPP: needed == null ? null : (rate - needed) * 100,
+    sigma: se ? (rate - needed) / se : null,
+    // A 3-leg power play built entirely out of this bucket. Break-even is
+    // defined as payout^(-1/3), so (rate / needed)^3 - 1 is that slip's return
+    // per dollar under the assumption legs are independent — which they are not
+    // exactly, but the sign and the order of magnitude survive it.
+    ev: needed ? (rate / needed) ** 3 - 1 : null,
+    brier: b.brierSum / b.n,
+    predicted: b.predSum / b.n,
+  };
+}
+
+/**
+ * The edge on the side that was actually recommended, reconstructed for rows
+ * logged before `edge` existed as a field.
+ *
+ * Rows carrying a real `edge` use it. For the rest: `prob` is P(over) by a
+ * convention the entire log rests on, and before sides existed every
+ * recommendation WAS the over — so subtracting the tier's break-even gives the
+ * exact number the field would have held. An under on a goblin or demon line is
+ * the one case that stays null rather than being guessed: PrizePicks' odds_type
+ * describes the over's payout only, so that side's break-even is genuinely
+ * unknown and pretending otherwise would invent the very quantity being tested.
+ */
+function edgeOfRow(p) {
+  if (p.edge != null && isFinite(Number(p.edge))) return Number(p.edge);
+  if (p.side && p.side !== 'over') return null;
+  const be = BREAK_EVEN[p.oddsType];
+  const prob = Number(p.prob);
+  return be == null || !isFinite(prob) ? null : prob - be;
+}
 // A hit rate on nine picks is not evidence. Printed beside a break-even it
 // invites precisely the conclusion the sample cannot support, so thin cells are
 // suppressed rather than rendered.
@@ -391,6 +450,27 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     margins: {},
     plays: { n: 0, hits: 0 },        // verdict "play"
     playsLeans: { n: 0, hits: 0 },   // verdict "play" or "lean"
+    // THE GUARDRAIL, MEASURED. v4.34.0 stopped the auto-slip taking a leg whose
+    // own edge is negative — a bet the payout says loses even if the judge's
+    // probability is exactly right. That change is only defensible if the legs
+    // it refuses really do lose, so it has to be scoreable, and waiting for new
+    // `edgeVerdict` rows to accumulate would take months.
+    //
+    // It doesn't have to wait. Edge is a function of the probability and the
+    // tier, both of which every row in the log already carries, so the split can
+    // be run over the entire graded history as a counterfactual: of everything
+    // the engine has ever called a play or a lean, how did the ones the
+    // guardrail would have KEPT do against the ones it would have REFUSED?
+    guardrail: { kept: newBucket(), refused: newBucket(), unpriced: newBucket() },
+    // The forward-looking version of the same split, on the field itself. Small
+    // until the log fills, and deliberately separate from the counterfactual
+    // above so a reconstruction is never mistaken for a measurement.
+    byEdgeVerdict: {},
+    // Stage 1 screen vs the individually re-judged deep dive (v4.33.0). The
+    // question the deep dive was built to answer — does a second, undivided look
+    // at a pick produce a better probability than the batch screen? — is a Brier
+    // comparison between these two, and nothing else in this file could make it.
+    byDeepDive: { shallow: newBucket(), deep: newBucket() },
   };
   // Behaviour runs over ALL picks, not just graded ones — that is the whole
   // point of it. Keyed by version AND model, because "did the instruction land"
@@ -548,7 +628,49 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
 
     if (p.verdict === 'play') { out.plays.n++; out.plays.hits += hit; }
     if (p.verdict === 'play' || p.verdict === 'lean') { out.playsLeans.n++; out.playsLeans.hits += hit; }
+
+    // ---- the guardrail, scored ------------------------------------------
+    //
+    // THE SIDE THAT WAS RECOMMENDED, not the over. `prob` is P(over) and `hit`
+    // is "the over cleared" — a convention the rest of this file rests on and
+    // that must not change — but a recommended UNDER that lands is a win, and
+    // scoring it as a loss because the over missed would invert the whole
+    // measurement on exactly the picks this section exists to judge.
+    const isUnder = p.side === 'under';
+    const sideHit = isUnder ? 1 - hit : hit;
+    const sideProb = Number(p.sideProb ?? (isUnder ? 1 - prob : prob));
+    const e = edgeOfRow(p);
+    // The bar this side had to clear, derived from the edge rather than looked
+    // up by tier. Edge IS side probability minus break-even, so this is exact by
+    // definition — and it is null precisely when the edge is, which is what
+    // stops an unpriced under being scored against the OVER's break-even. That
+    // bug shipped in the first draft of this block: a demon under came out
+    // 13.7 points "below its bar", a bar it does not have.
+    const sideBE = e == null || !isFinite(sideProb) ? null : sideProb - e;
+
+    // Restricted to the recommendation stream, because that is the only place a
+    // bad call costs money. A pass the engine never made is not a loss it
+    // avoided, and pooling passes in would flatter both sides of the split.
+    if (p.verdict === 'play' || p.verdict === 'lean') {
+      const bucket = e == null ? out.guardrail.unpriced : (e < 0 ? out.guardrail.refused : out.guardrail.kept);
+      addToBucket(bucket, sideHit, sideProb, sideBE);
+    }
+
+    // Forward-looking, on the field itself. Rows logged before v4.34.0 have no
+    // edgeVerdict and are counted as such rather than being folded into 'pass',
+    // which would read as the guardrail having refused them.
+    const evb = (out.byEdgeVerdict[p.edgeVerdict || 'untagged'] ||= newBucket());
+    addToBucket(evb, sideHit, sideProb, sideBE);
+
+    // Stage 1 screen vs deep dive. `deepDive` is explicitly false on stage-1
+    // rows since v4.33.0; anything older has no field at all and reads as
+    // shallow, which is what it was.
+    addToBucket(p.deepDive === true ? out.byDeepDive.deep : out.byDeepDive.shallow, sideHit, sideProb, sideBE);
   }
+
+  for (const k of ['kept', 'refused', 'unpriced']) out.guardrail[k] = scoreBucket(out.guardrail[k]);
+  for (const k of Object.keys(out.byEdgeVerdict)) out.byEdgeVerdict[k] = scoreBucket(out.byEdgeVerdict[k]);
+  for (const k of ['shallow', 'deep']) out.byDeepDive[k] = scoreBucket(out.byDeepDive[k]);
 
   out.skill = computeSkill(graded);
 
@@ -902,6 +1024,36 @@ function renderHTML(a) {
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
     || '<tr><td colspan="2" class="mut">none — everything gradeable is graded</td></tr>';
 
+  // Guardrail / edge-verdict / deep-dive rows. One shape for all three, since
+  // all three ask the same question: did this group of picks clear its own bar?
+  const evRow = (label, v, note = '') => {
+    if (!v || !v.n) return `<tr><td>${esc(label)}</td><td colspan="6" class="mut">none yet</td></tr>`;
+    // Grey below 50 rows: a coloured verdict on n=12 is a claim the sample
+    // cannot support, and this table exists to stop exactly that kind of claim.
+    const cls = v.deltaPP == null ? ''
+      : ` style="color:${v.n < 50 ? 'var(--dim)' : v.deltaPP >= 0 ? 'var(--grn)' : 'var(--red)'}"`;
+    return `<tr><td>${esc(label)}${note ? ` <span class="mut">${note}</span>` : ''}</td>
+      <td>${v.n}</td><td>${pct(v.rate)}</td><td>${pct(v.needed)}</td>
+      <td${cls}>${v.deltaPP == null ? '—' : `${v.deltaPP >= 0 ? '+' : ''}${v.deltaPP.toFixed(1)}pts`}</td>
+      <td>${v.sigma == null ? '—' : `${v.sigma.toFixed(1)}σ`}</td>
+      <td${cls}>${v.ev == null ? '—' : `${v.ev >= 0 ? '+' : ''}${(v.ev * 100).toFixed(0)}%`}</td></tr>`;
+  };
+  const g = a.guardrail || {};
+  const guardRows = [
+    evRow('kept — edge ≥ 0', g.kept),
+    evRow('refused — edge < 0', g.refused),
+    evRow('unpriced side', g.unpriced, '(payout unknown)'),
+  ].join('');
+  const edgeVerdictRows = ['play', 'lean', 'pass', 'untagged']
+    .filter((k) => a.byEdgeVerdict?.[k]?.n)
+    .map((k) => evRow(k, a.byEdgeVerdict[k], k === 'untagged' ? '(logged before v4.34.0)' : ''))
+    .join('') || '<tr><td colspan="7" class="mut">no rows carry an edge verdict yet</td></tr>';
+  const dd = a.byDeepDive || {};
+  const deepRows = [
+    evRow('stage 1 — batch screen', dd.shallow),
+    evRow('stage 2 — deep dive', dd.deep),
+  ].join('');
+
   const plWin = a.playsLeans.n ? a.playsLeans.hits / a.playsLeans.n : null;
   const record = a.playsLeans.n ? `${a.playsLeans.hits}–${a.playsLeans.n - a.playsLeans.hits}` : '—';
 
@@ -1011,6 +1163,39 @@ function renderHTML(a) {
     <tr><td>play</td><td>${a.plays.n}</td><td>${a.plays.n ? pct(a.plays.hits / a.plays.n) : '—'}</td></tr>
     <tr><td>play + lean</td><td>${a.playsLeans.n}</td><td>${a.playsLeans.n ? pct(plWin) : '—'}</td></tr>
   </tbody></table></div>
+  <div class="callout">A win rate on its own can't be read across tiers — 67% is a disaster on a goblin and a
+    fortune on a demon. Every table below states what its picks <b>needed</b> beside what they got.</div>
+
+  <h2>The edge guardrail</h2>
+  <div class="wrap"><table><thead><tr><th>would the guardrail take it?</th><th>n</th><th>hit</th><th>needed</th><th>vs needed</th><th>σ</th><th>3-leg slip EV</th></tr></thead>
+  <tbody>${guardRows}</tbody></table></div>
+  <div class="callout">Since v4.34.0 the auto-slip refuses a leg whose own <b>edge</b> — its probability minus what
+    its payout needs — is negative: a bet that loses money even if the judge is exactly right. This table is the
+    <b>counterfactual</b> over the whole graded history, not just rows logged since. Edge is a function of the
+    probability and the tier, both of which every row already carries, so every play and lean the engine has ever
+    made can be sorted into what the guardrail would have kept and what it would have thrown away. If "refused"
+    doesn't lose badly, the guardrail is throwing away money and should come out.
+    <br><br><b>σ</b> is measured against the null "these picks hit exactly their break-even", so it answers
+    "could this be luck?" rather than "is this rate precise?". <b>3-leg slip EV</b> is the return per dollar on a
+    Power play built entirely from that row.</div>
+
+  <h2>Edge verdict — the live field</h2>
+  <div class="wrap"><table><thead><tr><th>edgeVerdict</th><th>n</th><th>hit</th><th>needed</th><th>vs needed</th><th>σ</th><th>3-leg slip EV</th></tr></thead>
+  <tbody>${edgeVerdictRows}</tbody></table></div>
+  <div class="callout">The same split on the field itself rather than reconstructed — this is what the app actually
+    badged and what the auto-slip actually selected on. It will stay thin for a while, and it is kept separate from
+    the counterfactual above on purpose: a reconstruction is evidence about a decision, not a measurement of one.</div>
+
+  <h2>Deep dive — is the second look worth it?</h2>
+  <div class="wrap"><table><thead><tr><th>stage</th><th>n</th><th>hit</th><th>needed</th><th>vs needed</th><th>σ</th><th>3-leg slip EV</th></tr></thead>
+  <tbody>${deepRows}</tbody></table></div>
+  <div class="callout">The deep dive re-judges the best-edge picks one at a time instead of in a batch, at real cost
+    per run. The claim it rests on is that an undivided look produces a better probability than the screen does —
+    so the number that settles it is Brier, not win rate:
+    <b>stage 1 ${a.byDeepDive?.shallow?.brier == null ? '—' : a.byDeepDive.shallow.brier.toFixed(4)}</b> vs
+    <b>stage 2 ${a.byDeepDive?.deep?.brier == null ? '—' : a.byDeepDive.deep.brier.toFixed(4)}</b> (lower is better).
+    Deep-dive rows are a deliberately biased sample — they are the picks the screen already liked most — so read the
+    Brier gap, not the hit rate, and give it a few hundred rows before believing either.</div>
 
   <h2>Judge version — head to head</h2>
   <div class="wrap"><table><thead><tr><th>judge</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${promptRows}</tbody></table></div>
