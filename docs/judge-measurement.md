@@ -136,6 +136,92 @@ Standing rules:
   invoking the function. The two tests look identical and only one of them
   answers the question.
 
+## A third of the CFB slate never reached the board (2026-09-08)
+
+"Can you make sure CFB works?" The app said *"No CFB games today — the next
+posted slate starts 2026-09-11"*, and that was exactly true: all 658 posted CFB
+props were for 09-11 and 09-12, none for today. The empty state was right.
+
+The failure was a layer down. **225 of those 658 props — 34% of the slate — had
+no stat mapping**, and `findCandidates` drops an unmapped stat before the judge
+ever sees it (the 2026-08-25 fix, which is the right behaviour: a prop that can
+never be graded is invisible to calibration while still reaching a slip). So a
+third of the CFB board simply did not exist, silently, with nothing anywhere
+reporting it — `/api/grade-audit` shows no CFB backlog precisely *because* those
+props were dropped rather than logged.
+
+The same map serves the NFL: **1,561 of 7,037 posted props, 22%**.
+
+Almost all of it was naming. The NFL slate says "Receiving TDs" and the CFB
+slate says "Rec TDs"; only the first was mapped. Likewise Pass+Rush Yds,
+Rush+Rec Yds, INT, PAT Made, Rec Targets, Tackles+Ast. The rest needed real
+work: "Player Touchdowns" (98 CFB / 471 NFL props) is rushing + receiving TDs.
+
+After the pass: CFB 34% → **1%** unmappable, NFL 22% → **4%**, and what remains
+genuinely has no source.
+
+Every key was read off a real box score via `?mode=probe`, not inferred — CFB
+event 401858210, NFL event 401874394. **The two leagues do not send the same
+keys**, which is the trap:
+
+| key | NFL | CFB |
+|---|---|---|
+| `receivingTargets` | yes | **no** |
+| `sacks-sackYardsLost` (sacks taken) | yes | **no** |
+| `longPassing` | **no** | **no** |
+
+So "Rec Targets" and "Sacks Taken" are mapped, resolve on NFL, and correctly
+*refuse* on CFB rather than falling through to a similarly-named stat.
+
+Three judgement calls worth recording:
+
+- **`Player Touchdowns` excludes return and defensive TDs**, though ESPN sends
+  those keys. Whether PrizePicks counts them isn't established, and the errors
+  aren't symmetric: excluding costs a false MISS on a player whose only score
+  was a return; including risks a false HIT — and a false hit flatters the
+  engine in the calibration log, which is the failure this file exists to avoid.
+  That it is TDs *scored* and not passing TDs was confirmed against the slate,
+  not assumed: every QB "Player Touchdowns" line posted is 0.5, and a starter's
+  passing-TD line would sit at 1.5 or higher.
+- **`INT` needed a guard.** ESPN sends `interceptions` under two groups —
+  passing (thrown) and interceptions (caught) — and `dayIndex` merges a player's
+  groups first-wins. A QB is always in the passing group, so he resolves to
+  thrown, which is what PrizePicks posts (11/11 CFB and 26/26 NFL INT props are
+  QBs). But a defender would resolve to caught under the identical key. The
+  mapping now requires `passingYards` on the row as proof the passing group won,
+  so a non-passer refuses instead of grading a different stat confidently.
+- **`Rush Yards Per Carry` is derived, not read.** ESPN sends
+  `yardsPerRushAttempt`, but rounded to one decimal, and PrizePicks settles on
+  the real quotient — a 4.5 line against a true 4.28 would grade off the rounded
+  4.5 and turn a clear miss into a push.
+
+Deliberately still unmapped, each for a reason: **Longest Completion** (147 NFL
+props — ESPN sends `longRushing` and `longReception` but no `longPassing`, in
+either league); **Shortest FG Made Yds** (only `longFieldGoalMade` is sent); and
+every within-game sequence or period prop — *Completions in First 10 Pass
+Attempts*, *Rush Yards in First 5 Attempts*, *Quarters with N+ ...* — which a
+final box score cannot answer at all and which need play-by-play.
+
+Also: **the trap gate never applied to CFB.** `positionAllows` routed `nfl` to
+`nflAllows` and let everything else fail open, so half the football props the
+app serves were exempt from the check that blocks a WR with a passing line.
+Nothing in `nflAllows` is NFL-specific — it only asks whether a position can
+hold a stat family, and CFB posts the same position codes. Extended by reuse,
+not by a second copy that can drift. Measured against the posted slate it blocks
+nothing today; it matters the week PrizePicks posts a defensive CFB prop.
+
+Standing rules:
+- **A silent drop is worse than a silent failure to grade.** An unmapped stat
+  never reaches the log, so no coverage report can show it. The only way to find
+  this class of gap is to run the live slate's own stat names through the
+  resolver — which is now a test.
+- **Two leagues sharing a mapping table do not share a box score.** Verify keys
+  per league with `?mode=probe`; a key one league sends is not evidence about
+  the other.
+
+Regression cover: `tests/unit/cfb-stats.test.mjs`, driven by the real posted
+slate's stat names and counts and the real box-score group shapes.
+
 ## Scoring the edge guardrail without waiting for it (2026-09-04)
 
 v4.34.0 stopped the auto-slip taking a leg whose own edge is negative. That is a

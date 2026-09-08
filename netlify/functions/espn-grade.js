@@ -213,7 +213,19 @@ const MAPS = {
     passingtds: (r) => readStat(r, 'passingTouchdowns'),
     passcompletions: (r) => readStat(r, 'completions/passingAttempts', 0),
     passattempts: (r) => readStat(r, 'completions/passingAttempts', 1),
-    interceptionsthrown: (r) => readStat(r, 'interceptions'),
+    // "INT" / "Interceptions Thrown" is a QB prop — interceptions THROWN. ESPN
+    // sends `interceptions` under TWO different groups: the passing group
+    // (thrown) and the interceptions group (caught). dayIndex merges a player's
+    // groups first-wins, so a quarterback — who is always in the passing group —
+    // resolves to the thrown count, and that is the case PrizePicks posts (all
+    // 11 INT props on the live CFB slate and all 26 on the NFL one are QBs).
+    // But a defender who never passed would resolve to the CAUGHT count, which
+    // is a different stat wearing the same key. Requiring passingYards on the
+    // row is proof the passing group is the one that won, so a non-passer
+    // refuses rather than grading the wrong number confidently.
+    interceptionsthrown: (r) => (r.index.passingYards == null ? null : readStat(r, 'interceptions')),
+    int: (r) => (r.index.passingYards == null ? null : readStat(r, 'interceptions')),
+    ints: (r) => (r.index.passingYards == null ? null : readStat(r, 'interceptions')),
     rushyards: (r) => readStat(r, 'rushingYards'),
     rushingyards: (r) => readStat(r, 'rushingYards'),
     rushattempts: (r) => readStat(r, 'rushingAttempts'),
@@ -249,6 +261,77 @@ const MAPS = {
     extrapointsmade: (r) => readStat(r, 'extraPointsMade/extraPointAttempts', 0),
     punts: (r) => readStat(r, 'punts'),
     // Full-PPR weighted formula from the published chart, not a column.
+    // ---- PrizePicks' own names for football props -----------------------
+    //
+    // Everything below maps a stat PrizePicks really posts to a key ESPN really
+    // sends — both sides checked live, not inferred. The gap they close was
+    // large and completely silent: 34% of the posted CFB slate (225 of 658
+    // props) and 22% of the NFL one (1,561 of 7,037) had no mapping at all, so
+    // those picks were judged, logged, and then never graded. They never
+    // reached calibration and never counted against anything.
+    //
+    // Most of it was pure naming: the NFL slate says "Receiving TDs" where the
+    // CFB slate says "Rec TDs", and only the first was mapped.
+    rectds: (r) => readStat(r, 'receivingTouchdowns'),
+    rectd: (r) => readStat(r, 'receivingTouchdowns'),
+    passtd: (r) => readStat(r, 'passingTouchdowns'),
+    rushtd: (r) => readStat(r, 'rushingTouchdowns'),
+    passrushyds: (r) => sum(r, ['passingYards', 'rushingYards']),
+    rushrecyds: (r) => sum(r, ['rushingYards', 'receivingYards']),
+    rectargets: (r) => readStat(r, 'receivingTargets'),
+    tacklesast: (r) => readStat(r, 'totalTackles'),
+    patmade: (r) => readStat(r, 'extraPointsMade/extraPointAttempts', 0),
+    puntsinside20: (r) => readStat(r, 'puntsInside20'),
+    // Sacks TAKEN, a QB stat, which ESPN packs into the passing group as
+    // "sacks-sackYardsLost" — a different key from the defensive `sacks` above
+    // that the existing `sacks` mapping reads. The CFB box score omits it
+    // entirely, so this refuses there instead of falling through to sacks MADE.
+    sackstaken: (r) => readStat(r, 'sacks-sackYardsLost', 0),
+    // TDs the player SCORED: rushing plus receiving. Confirmed against the live
+    // slate rather than assumed — every QB "Player Touchdowns" line posted is
+    // 0.5, which is a rushing-TD line; a starter's passing-TD line would sit at
+    // 1.5 or higher, so this is not passing TDs under another name.
+    //
+    // Return and defensive TDs are deliberately EXCLUDED even though ESPN sends
+    // those keys. Whether PrizePicks counts them is not established here, and
+    // the two errors are not equal: excluding one costs a false MISS on a
+    // player whose only score was a return, while including one risks a false
+    // HIT — and a false hit flatters the engine in the calibration log, which is
+    // the failure this whole file is written to avoid.
+    playertouchdowns: (r) => sum(r, ['rushingTouchdowns', 'receivingTouchdowns']),
+    playertds: (r) => sum(r, ['rushingTouchdowns', 'receivingTouchdowns']),
+    totaltouchdowns: (r) => sum(r, ['rushingTouchdowns', 'receivingTouchdowns']),
+    passrushrectds: (r) => sum(r, ['passingTouchdowns', 'rushingTouchdowns', 'receivingTouchdowns']),
+    // Derived rather than read. ESPN does send `yardsPerRushAttempt`, but it is
+    // rounded to one decimal in the box score and PrizePicks settles on the real
+    // quotient — so a 4.5 line against a true 4.53 would grade off the rounded
+    // 4.5 and settle a push as a loss. Yards and attempts are both exact.
+    rushyardspercarry: (r) => {
+      const y = readStat(r, 'rushingYards'), a = readStat(r, 'rushingAttempts');
+      return y == null || !a ? null : y / a;
+    },
+    yardspercarry: (r) => {
+      const y = readStat(r, 'rushingYards'), a = readStat(r, 'rushingAttempts');
+      return y == null || !a ? null : y / a;
+    },
+    completionpercentage: (r) => {
+      const c = readStat(r, 'completions/passingAttempts', 0);
+      const a = readStat(r, 'completions/passingAttempts', 1);
+      return c == null || !a ? null : (c / a) * 100;
+    },
+    // DELIBERATELY NOT MAPPED, and each for a reason worth keeping written down,
+    // because the next person to see them in a coverage report will reach for a
+    // mapping the way this pass did:
+    //   Longest Completion   — ESPN sends longRushing and longReception but no
+    //                          longPassing, in either league. No source exists.
+    //   Shortest FG Made Yds — only longFieldGoalMade is sent.
+    //   Completions in First 10 Pass Attempts, Rush Yards in First 5 Attempts,
+    //   Yards on First Rush Attempt, Quarters/Halves with N+ ...
+    //                        — within-game sequence and period props. A final
+    //                          box score cannot answer them at all; they need
+    //                          play-by-play, which this grader does not read.
+    // An unmapped stat is recorded as conditionally ungradeable, so any of these
+    // lifts by itself the day a source appears — see grade-picks.js.
     fantasyscore: (r) => nflFantasy({
       passingYards: readStat(r, 'passingYards'), passingTouchdowns: readStat(r, 'passingTouchdowns'),
       interceptions: readStat(r, 'interceptions'),

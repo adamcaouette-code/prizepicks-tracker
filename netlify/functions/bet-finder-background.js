@@ -984,7 +984,15 @@ function isSoccerStat(stat) {
 }
 function positionAllows(pos, stat, league) {
   if (league === 'mlb') return mlbAllows(pos, stat);
-  if (league === 'nfl') return nflAllows(pos, stat);
+  // College football is the same sport with the same position codes (the live
+  // CFB slate posts QB/RB/WR/TE/K, exactly what nflRole already reads) and the
+  // same stat vocabulary, so it gets the same gate. Nothing about nflAllows is
+  // NFL-specific — it only asks whether a position can hold a stat family.
+  // Measured against the posted 2026-09-11/12 CFB slate this blocks nothing at
+  // all today; it exists so that half the football props this app serves aren't
+  // quietly exempt from the trap gate the moment PrizePicks posts a defensive
+  // CFB prop.
+  if (league === 'nfl' || league === 'cfb' || league === 'college_football') return nflAllows(pos, stat);
   if (isSoccerStat(stat)) return soccerAllows(pos, stat);
   return true; // no gate defined for this league yet -> fail open, never invent traps
 }
