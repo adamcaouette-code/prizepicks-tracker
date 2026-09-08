@@ -29,6 +29,11 @@ const FRIDAY = {
   ],
   params: { league: 'cfb', legs: 3 },
   slate: { date: '2026-09-11', usedNext: true, nextAvailable: null },
+  // A pick thrown away because the judge priced it off a game that has not been
+  // played. Dropping it is right; dropping it silently would leave a board one
+  // pick shorter with no reason given.
+  staleReads: [{ player: 'Donovan Olugbode', stat: 'Receiving Yards', prob: 0.99,
+    why: 'the judge read this as a game already played — it has not started yet' }],
 };
 
 // Two runs, two different answers — which jobRoutes' single fixed result can't
@@ -105,6 +110,17 @@ export default async function ({ t, url, browser }) {
   await page.click('#runBtn');
   await page.waitForSelector('#searchResults .leg', { timeout: 30000 });
   t.eq('the checkbox makes it the standing behaviour', seq.posts[3]?.slate, 'next');
+
+  // ---- discarded picks are reported, not silently missing ------------------
+  const page1 = await page.$eval('#searchResults', (e) => e.textContent);
+  t.ok('the board says a pick was discarded', /1 pick discarded/.test(page1), page1.slice(0, 300));
+  t.ok('...names it, so it can be checked',
+    /Donovan Olugbode/.test(page1) && /99%/.test(page1), page1.slice(0, 400));
+  t.ok('...and says why, in terms of the thing that was actually wrong',
+    /game had already been played/.test(page1) && /hasn.t started/.test(page1), page1.slice(0, 500));
+  t.ok('the discarded pick is not among the rows',
+    !(await page.$$eval('#searchResults .leg .name', (els) => els.map((e) => e.textContent.trim())))
+      .includes('Donovan Olugbode'), '');
 
   t.eq('no JS errors', errors, []);
 }

@@ -12,7 +12,7 @@ import { getStore } from '@netlify/blobs';
 import { slate as mlbSlate, normKey as mlbNormKey, PP_TO_MLB_ABBR } from './mlb-stats.js';
 import { attachMlbForm } from './mlb-grade.js';
 import { attachEspnForm, markEspnVoids, SLUGS as ESPN_SLUGS_FOR_FORM } from './espn-grade.js';
-import { promptSet, verdictFor } from './judge-prompts.js';
+import { promptSet, verdictFor, slateNote } from './judge-prompts.js';
 // The real PrizePicks payout tables. Imported rather than duplicated — see the
 // note where the old local copy used to be.
 import { tablesForSlip } from './bet-finder-size.js';
@@ -1043,6 +1043,44 @@ function positionAllows(pos, stat, league) {
   return true; // no gate defined for this league yet -> fail open, never invent traps
 }
 
+/**
+ * A pick whose probability rests on the game having already happened.
+ *
+ * The judge is now told the date (see slateNote), which is the actual fix. This
+ * is the backstop for when it gets confused anyway, and it rests on something
+ * the app knows for certain and the model only infers: THE GAME HAS NOT
+ * STARTED. Against that fact, any claim that the outcome is settled is false,
+ * so the probability attached to it is not a forecast at all — it is not merely
+ * too high, it carries no information, which is why these are dropped rather
+ * than demoted to a pass.
+ *
+ * Two independent signals, either sufficient:
+ *
+ *  - the reasoning says the game is over. Matched narrowly and only on an
+ *    unstarted game, so "in games already played this season" — ordinary form
+ *    talk — cannot trip it.
+ *  - a probability at or above 0.97. Not a guess at a threshold: across 4,411
+ *    graded picks the judge has produced 0.90 or higher exactly THREE times and
+ *    never once reached 0.97. A number it has never legitimately produced,
+ *    on a game that has not been played, is a malfunction.
+ */
+const SETTLED_CLAIM = /(?:game|match)\s+(?:is\s+|has\s+been\s+|was\s+)?already\s+(?:been\s+)?(?:played|final|complete[d]?|concluded)|already\s+(?:been\s+)?played\s*[.;—-]|(?:prop\s+)?outcome\s+(?:is\s+)?(?:already\s+)?determined|this\s+(?:game|match)\s+(?:has\s+)?(?:already\s+)?(?:finished|ended|concluded)|final\s+(?:box\s+score|stat\s+line)\s+shows/i;
+const IMPOSSIBLE_PROB = 0.97;
+
+export function settledReadReason(pick, startIso, now = Date.now()) {
+  const start = Date.parse(startIso || '');
+  if (!isFinite(start) || start <= now) return null;   // started, or unknown: not our call
+  const prob = Number(pick?.prob);
+  const text = `${pick?.reasoning || ''} ${pick?.key_risk || ''}`;
+  if (SETTLED_CLAIM.test(text)) {
+    return 'the judge read this as a game already played — it has not started yet, so the result it cited belongs to a different game';
+  }
+  if (isFinite(prob) && prob >= IMPOSSIBLE_PROB) {
+    return `the judge returned ${Math.round(prob * 100)}% on a game that has not started — it has never legitimately gone above 90% in 4,411 graded picks, so this is a read of an outcome, not a forecast`;
+  }
+  return null;
+}
+
 // ---------- screen: keep selected tiers, spread across ALL games ----------
 // Two PrizePicks rows can describe the SAME logical prop — most often a combo posted
 // under each participant — which otherwise reaches the board as two identical cards.
@@ -1288,6 +1326,19 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     const key = c.matchup || c.game;
     const entry = V.entryFor(c);
     if (c.last5) { entry.recent5 = c.last5; entry.recentAvg = c.avg; }  // last 5 for THIS stat
+    // WHEN THE GAME IS. Sent for every prop, on both judge versions, because it
+    // is a fact about the world rather than a way of asking — the same test the
+    // shared blocks in judge-prompts.js are chosen by.
+    //
+    // It was never sent before, and while every scan was a scan of TODAY the
+    // model's assumption that the game was today happened to be right. The
+    // next-slate scan broke that: handed a Friday CFB prop on a Tuesday with no
+    // date, the judge searched the matchup, found a completed box score for a
+    // game with the same two teams, and returned 0.99 with "game already played
+    // — prop outcome determined". The judge had produced 0.90+ exactly 3 times
+    // in 4,411 graded picks before this; that number was not confidence, it was
+    // a false premise.
+    if (c.start) entry.gameDate = String(c.start).slice(0, 10);
     if (teamRecords[c.team]) entry.teamRecord = teamRecords[c.team];     // e.g. "55-30"
     if (winProbs[c.team] != null) entry.teamWinPct = Math.round(winProbs[c.team] * 100); // favored?
     if (c.oppTeam) entry.opponent = c.oppTeam;       // real opponent name when ESPN gave it
@@ -1325,7 +1376,7 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
   // the judge can know rather than just what it costs.
   // Built once and reused for both the call and the snapshot, so what is stored
   // is literally what was sent rather than a reconstruction of it.
-  const system = V.promptFor(league);
+  const system = V.promptFor(league) + slateNote(candidates);
   const userContent = `League: ${String(league).toUpperCase()}\nShortlist grouped by game:\n`
     + JSON.stringify(slim, null, 2);
   const games = Object.entries(slim);
@@ -2249,9 +2300,24 @@ export const handler = async (event) => {
     // graded or logged — and after the DNP filter above, an echoed-back voided
     // prop would sneak straight past it.
     const sentKeys = new Set(live.map((c) => `${c.player}|${c.stat}`));
-    const picks = judged.filter((p) => sentKeys.has(`${p.player}|${p.stat}`));
-    const invented = judged.length - picks.length;
-    if (!picks.length) throw new Error('Claude returned no picks that match the board.');
+    const matched = judged.filter((p) => sentKeys.has(`${p.player}|${p.stat}`));
+    const invented = judged.length - matched.length;
+
+    // Drop anything priced off a result that does not exist yet. The start time
+    // comes from the CANDIDATE rather than the judge's echo, so the check runs
+    // against what PrizePicks posted and not against anything the model said.
+    const startByKey = new Map(live.map((c) => [`${c.player}|${c.stat}`, c.start]));
+    const staleReads = [];
+    const picks = matched.filter((p) => {
+      const why = settledReadReason(p, startByKey.get(`${p.player}|${p.stat}`));
+      if (why) staleReads.push({ player: p.player, stat: p.stat, prob: p.prob ?? null, why });
+      return !why;
+    });
+    if (!picks.length) {
+      throw new Error(staleReads.length && !matched.length - staleReads.length
+        ? `Every pick came back priced off a game that has not been played yet (${staleReads.length}) — nothing on this slate can be trusted, so nothing is shown.`
+        : 'Claude returned no picks that match the board.');
+    }
 
     // Decide each prop's side BEFORE selecting or filtering, so unders compete
     // with overs on equal terms instead of being discarded as weak overs.
@@ -2493,7 +2559,7 @@ export const handler = async (event) => {
       phases: phaseLog.slice(),
     };
     const emptyMessage = buildEmptyMessage(params.tiers, picks, chosen);
-    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params, emptyMessage, deepDive: deepDiveInfo, slate: { date: slateDate, usedNext: slateUsedNext, nextAvailable: null } } });
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params, emptyMessage, deepDive: deepDiveInfo, slate: { date: slateDate, usedNext: slateUsedNext, nextAvailable: null }, staleReads } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });

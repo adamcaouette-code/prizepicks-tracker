@@ -29,6 +29,49 @@
 // These are identical across versions on purpose. If a role rule changes, both
 // versions change together and the comparison stays honest.
 
+/**
+ * WHEN the slate is — appended to whichever version is running.
+ *
+ * This amends PSYCHE, which is otherwise frozen verbatim. The freeze exists so
+ * the two versions stay comparable, and it holds for anything about HOW we ask.
+ * This is not that. Until the next-slate scan existed every run was a run of
+ * today's board, so the model's unstated assumption that the game was today was
+ * simply correct, and both versions were equally right by accident. Handed a
+ * Friday CFB prop on a Tuesday with no date at all, the judge searched the
+ * matchup, found a completed box score for the same two teams, and returned
+ * 0.99 on an unplayed game with "game already played — prop outcome
+ * determined". Leaving one version reading the world wrongly would not preserve
+ * a comparison; it would only mean two versions to distrust.
+ *
+ * The dates come from the props themselves, so this states what the slate IS
+ * rather than asserting a rule about it.
+ */
+export function slateNote(candidates) {
+  const days = [...new Set((candidates || []).map((c) => String(c?.start || '').slice(0, 10))
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort();
+  const today = new Date().toISOString().slice(0, 10);
+  if (!days.length) return '';
+  const future = days.filter((d) => d > today);
+  const when = days.length === 1 ? days[0] : `${days[0]} to ${days[days.length - 1]}`;
+  let note = `
+TODAY'S DATE IS ${today}. Every prop carries "gameDate" — the day THAT prop's game is
+played. This slate is ${when}.
+`;
+  if (future.length) {
+    note += `
+THESE GAMES HAVE NOT BEEN PLAYED YET. They are in the future, and no result for them
+exists anywhere. If a search turns up a box score, a final score or a stat line for
+these teams, it is a DIFFERENT, EARLIER game — never this one, however closely the
+matchup matches. Treat it as form, not as this prop's outcome.
+
+You are forecasting an unplayed event. Never state or imply that the outcome is already
+determined, and never price a prop as though you know how it ended. A probability above
+0.90 on an unplayed prop is almost never justified.
+`;
+  }
+  return note;
+}
+
 const SOCCER_ROLES = `
 Judge every prop against the player's ROLE. A stat must fit the position, or the line
 is a trap no matter how low it looks:

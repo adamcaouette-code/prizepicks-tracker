@@ -136,6 +136,93 @@ Standing rules:
   invoking the function. The two tests look identical and only one of them
   answers the question.
 
+## The judge was never told what day the game was (2026-09-08)
+
+Shipped the next-slate scan in the morning; by evening it had produced this, on
+a Friday CFB prop scanned on a Tuesday:
+
+> **Donovan Olugbode · Receiving Yards over 49.5 · 99% · +19.6pp**
+> *"Game already played. ESPN box score shows Olugbode had 107 receiving yards;
+> prop outcome determined."*
+
+It went straight onto the recommended slip.
+
+**The judge's payload never carried a date.** It sends player, stat, line,
+position, team, opponent and tier — and nothing about *when*. That was invisible
+for as long as every scan was a scan of today, because the model's unstated
+assumption that the game was today was simply correct. The next-slate scan broke
+that assumption without telling anyone, including the model. Asked to search the
+matchup with no date, it found a completed box score for a game between the same
+two teams and priced the prop as settled.
+
+**The edge guardrail waved it through, correctly.** A 99% goblin clears its
+79.4% break-even by 19.6 points. The guardrail asks whether a probability beats
+its payout; it cannot ask whether the probability is real. Worth stating plainly
+because it is the limit of that whole class of check — every downstream filter
+in this app trusts the number.
+
+For scale, from the calibration bands over 4,411 graded picks:
+
+| band | n |
+|---|---|
+| 80-90% | 79 |
+| 90-100% | **3** |
+
+The judge has reached 0.90 three times in four months and has never once reached
+0.97. That 99% was not confidence.
+
+Two fixes, and the order matters:
+
+1. **The root fix: tell it the date.** Every prop now carries `gameDate`, and
+   the prompt states today's date and the slate's range. When the slate is in
+   the future it adds that these games have not been played, that any box score
+   a search turns up is a *different, earlier* game however well the matchup
+   matches, and that above 0.90 on an unplayed prop is almost never justified. A
+   same-day slate gets the date but not the warning — a prompt that cries wolf
+   on every ordinary run stops being read.
+
+   This amends PSYCHE, which is otherwise frozen. The freeze protects the A/B
+   between the two judge versions and holds for anything about *how* we ask;
+   this is about what the world is, which is the same test the shared blocks in
+   that file are already chosen by. Leaving one version reading the world wrongly
+   would not have preserved a comparison, only produced two versions to
+   distrust.
+
+2. **A backstop, resting on a fact the app holds and the model only infers: the
+   game has not started.** Against that, any claim the outcome is settled is
+   false. Either signal is sufficient — reasoning that says the game is over, or
+   a probability at or above 0.97 (drawn where the judge has never actually
+   gone, not guessed). Such picks are *discarded*, not demoted to a pass: a
+   number built on a result that does not exist is not merely too high, it
+   carries no information. They are kept out of the pick log too, since scoring
+   one would be scoring a malfunction as a judgement.
+
+   The pattern is matched narrowly and only on an unstarted game, so ordinary
+   form talk — "in games already played this season he averaged 62 yards" —
+   cannot trip it. A rule that quietly deleted good picks would be a worse
+   failure than the one it prevents.
+
+The discard is announced on the board, naming the pick and the probability.
+Dropping it silently would leave a board one pick shorter with no reason given,
+which is the same dishonesty the DNP void box exists to avoid.
+
+Deliberately NOT covered: a game already under way. A judge reading a live box
+score mid-game is a different question and the app cannot tell a legitimate
+partial read from a broken one, so the rule stays on the case it can be certain
+about. A prop with no start time is likewise left alone.
+
+Standing rules:
+- **A guardrail that checks a number cannot check the premise under it.** The
+  edge guard was working exactly as designed while passing a fabricated 99%.
+- **When a feature changes an assumption, find who was relying on it.** "Every
+  scan is today's scan" was load-bearing in a prompt nobody had reason to look
+  at, and the feature that broke it shipped nine hours earlier the same day.
+
+Regression cover: `tests/unit/stale-read.test.mjs` (23, including the real
+reasoning text verbatim) and the UI half in `tests/ui/next-slate.test.mjs`.
+Confirmed: with the backstop reverted, the 99% lands on both the board and the
+slip.
+
 ## A third of the CFB slate never reached the board (2026-09-08)
 
 "Can you make sure CFB works?" The app said *"No CFB games today — the next
