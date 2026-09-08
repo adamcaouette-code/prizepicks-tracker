@@ -34,6 +34,7 @@ const SEARCH_MAX_USES = 3;           // cap searches so a question can't run awa
 // bet-finder-background.js prices VILIFIANT at. Web search ~$0.01/search.
 // Update if pricing changes.
 import { getStore } from '@netlify/blobs';
+import { clearedCount } from './top-picks.js';
 async function recordCost(feature, apiResponse) {
   try {
     const u = apiResponse?.usage || {};
@@ -79,9 +80,8 @@ function extractRevision(answer) {
 // starts" — a real fact, about the wrong number, because nothing anchored the
 // model to compute against the 2.5 line actually in play.
 function clearedFact(recent5, line) {
-  if (!Array.isArray(recent5) || !recent5.length || line == null || !isFinite(Number(line))) return null;
-  const n = Number(line);
-  const cleared = recent5.filter((v) => isFinite(Number(v)) && Number(v) > n).length;
+  const cleared = clearedCount(recent5, line);
+  if (cleared == null) return null;
   return `cleared this exact line (${line}) in ${cleared} of ${recent5.length}`;
 }
 

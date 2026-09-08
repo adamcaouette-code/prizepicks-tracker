@@ -22,7 +22,7 @@ import { saveContext, searchBlocks, capSearch } from './judge-context.js';
 // The ledger tab is /api/top-picks. A re-judge that defined "today's picks"
 // differently would drift from what the user is looking at, so it borrows the
 // feed's own filters rather than re-deriving them.
-import { latestByPick, isCombo } from './top-picks.js';
+import { latestByPick, isCombo, clearedCount } from './top-picks.js';
 // The exact "can this ever be graded" predicate grade-audit.js already uses to
 // explain why a pick stayed ungraded. Reused rather than re-derived so the two
 // never drift: a stat this says is unmapped here is the same stat grade-audit
@@ -1326,6 +1326,26 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     const key = c.matchup || c.game;
     const entry = V.entryFor(c);
     if (c.last5) { entry.recent5 = c.last5; entry.recentAvg = c.avg; }  // last 5 for THIS stat
+    // THE COUNT, COMPUTED HERE. The prompt tells the judge to count how many of
+    // the last five cleared the line and to START ITS PROBABILITY FROM THAT
+    // COUNT — so the count is load-bearing on the number, not a note beside it.
+    //
+    // It was being left to the model, and the model is bad at it. Measured on
+    // one live board, 74 picks carrying both the model's count and the truth:
+    // it agreed 35 times (47%), and where it disagreed it OVERCOUNTED 34 times
+    // against 5 undercounts. An inflated count anchored high, in the over's
+    // favour, on more than half the board.
+    //
+    // Tanner Bibee's alt lines that day, real values, avg 4.4:
+    //   line 3.5  truth 4  model said 5
+    //   line 4.5  truth 2  model said 3
+    //   line 5    truth 1  model said 3
+    // The app knew all three at the moment it built this payload. It computed
+    // them again afterwards to CHECK the model's answer, and warned on the card
+    // when they differed — catching the error one step after it had already
+    // priced the bet. The number was always available to send.
+    const clearedN = clearedCount(c.last5, c.line);
+    if (clearedN != null) { entry.cleared = clearedN; entry.clearedOf = c.last5.length; }
     // WHEN THE GAME IS. Sent for every prop, on both judge versions, because it
     // is a fact about the world rather than a way of asking — the same test the
     // shared blocks in judge-prompts.js are chosen by.
@@ -2482,9 +2502,7 @@ export const handler = async (event) => {
         // so `cleared` is always ground truth rather than trusting the model's
         // count; judgeClearedClaim keeps what the model actually said, kept
         // separately so disagreement is measurable rather than silently overwritten.
-        cleared: (Array.isArray(p.recent5) && p.recent5.length)
-          ? p.recent5.filter((v) => Number(v) > Number(p.line)).length
-          : null,
+        cleared: clearedCount(p.recent5, p.line),
         judgeClearedClaim: p.cleared ?? null,
         // Whether this row is the stage-1 screen or the individually re-judged
         // deep dive — so calibration can eventually tell whether the extra

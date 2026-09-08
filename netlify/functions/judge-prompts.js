@@ -252,8 +252,11 @@ When a prop includes "recent5" (the player's last 5 results for THIS exact stat)
 the line to the recent values: a line well below the player's typical output is more
 likely to hit; a line above what they usually produce is a pass unless the matchup
 strongly favors it. Note how many of the last 5 cleared the line. Recent form is a
-strong signal — weight it heavily, then adjust for opponent and rotation. If recent5
-is absent, fall back to your own knowledge and search.
+strong signal — weight it heavily, then adjust for opponent and rotation. The prop also
+carries "cleared" — how many of the five cleared this line, counted for you and exact.
+Use that number rather than counting the array yourself; cleared means STRICTLY ABOVE
+the line, since a result landing exactly on it is a push. If recent5 is absent, fall
+back to your own knowledge and search.
 
 Some props are COMBO props — two players bundled into one line (names joined by "+",
 stat ends in "(Combo)", flagged combo:true). Treat these with extra caution:
@@ -407,11 +410,20 @@ to impossible, it belongs near its tier's range, not at 0.05. Reserve anything b
 0.15 for a stat that genuinely cannot happen for this player in this role.
 
 ANCHOR ON A COUNT, NOT AN IMPRESSION. When a prop includes "recent5" (the player's
-last 5 results for THIS exact stat) and "recentAvg", first COUNT how many of the five
-cleared the line and put that number in the "cleared" field. Start your probability
-from that count, then adjust for the tier, the opponent, and rotation risk. Five games
-is a small sample — 3 of 5 is not 0.60, it is weak evidence for something near the
-player's season rate — so let the count set the direction and the tier set the scale.
+last 5 results for THIS exact stat) and "recentAvg", it also carries "cleared" — HOW
+MANY OF THE FIVE CLEARED THIS LINE, already counted for you, and "clearedOf". That
+number is computed from recent5 and is exact. USE IT. Do not recount, and do not
+substitute your own reading of the array; if your instinct disagrees with "cleared",
+"cleared" is right. Copy it into the "cleared" field of your answer unchanged.
+
+Note what counts as cleared: STRICTLY ABOVE the line. A result landing exactly on the
+line is a push, not a clear — "5 or more" is not the same as "over 5", and reading it
+that way overstates the count on every whole-number line.
+
+Start your probability from that count, then adjust for the tier, the opponent, and
+rotation risk. Five games is a small sample — 3 of 5 is not 0.60, it is weak evidence
+for something near the player's season rate — so let the count set the direction and
+the tier set the scale.
 If recent5 is absent, set "cleared" to null and lean harder on the tier and your search.
 
 USE THE WHOLE RANGE. Do not cluster at 0.65 / 0.70 / 0.75. If two props differ in
@@ -454,7 +466,7 @@ one. Say so with the number rather than with a label.
 Respond with ONLY valid JSON, no prose, no fences.
 - prob     = your probability the prop goes OVER the line, 0 to 1. Two decimals.
              This is the whole answer; everything else is supporting detail.
-- cleared  = how many of the last 5 cleared this line (0-5), or null if recent5 was
+- cleared  = copy the "cleared" value from the prop (0-5), or null if recent5 was
              not provided. Count it before you write prob.
 - key_risk = short flag (8 words max) or "none".
 - reasoning = 1-2 sentences. If prob sits outside the tier's range, the reason you
@@ -560,11 +572,20 @@ to impossible, it belongs near its tier's rate, not at 0.05. Reserve anything be
 0.15 for a stat that genuinely cannot happen for this player in this role.
 
 ANCHOR ON A COUNT, NOT AN IMPRESSION. When a prop includes "recent5" (the player's
-last 5 results for THIS exact stat) and "recentAvg", first COUNT how many of the five
-cleared the line and put that number in the "cleared" field. Start your probability
-from that count, then adjust for the tier, the opponent, and rotation risk. Five games
-is a small sample — 3 of 5 is not 0.60, it is weak evidence for something near the
-player's season rate — so let the count set the direction and the tier set the scale.
+last 5 results for THIS exact stat) and "recentAvg", it also carries "cleared" — HOW
+MANY OF THE FIVE CLEARED THIS LINE, already counted for you, and "clearedOf". That
+number is computed from recent5 and is exact. USE IT. Do not recount, and do not
+substitute your own reading of the array; if your instinct disagrees with "cleared",
+"cleared" is right. Copy it into the "cleared" field of your answer unchanged.
+
+Note what counts as cleared: STRICTLY ABOVE the line. A result landing exactly on the
+line is a push, not a clear — "5 or more" is not the same as "over 5", and reading it
+that way overstates the count on every whole-number line.
+
+Start your probability from that count, then adjust for the tier, the opponent, and
+rotation risk. Five games is a small sample — 3 of 5 is not 0.60, it is weak evidence
+for something near the player's season rate — so let the count set the direction and
+the tier set the scale.
 If recent5 is absent, set "cleared" to null and lean harder on the tier and your search.
 
 BE HONEST ABOUT WHICH WAY AN ERROR COSTS. The board bets your HIGHEST numbers — they
@@ -602,7 +623,7 @@ one. Say so with the number rather than with a label.
 Respond with ONLY valid JSON, no prose, no fences.
 - prob     = your probability the prop goes OVER the line, 0 to 1. Two decimals.
              This is the whole answer; everything else is supporting detail.
-- cleared  = how many of the last 5 cleared this line (0-5), or null if recent5 was
+- cleared  = copy the "cleared" value from the prop (0-5), or null if recent5 was
              not provided. Count it before you write prob.
 - standout = true if you moved this prop 0.10 or more off its tier's measured rate,
              false otherwise. Most props are false.

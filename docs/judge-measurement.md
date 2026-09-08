@@ -136,6 +136,90 @@ Standing rules:
   invoking the function. The two tests look identical and only one of them
   answers the question.
 
+## The app knew the count and asked the judge to work it out anyway (2026-09-08)
+
+Reported from a board card:
+
+> **Tanner Bibee · Pitcher Strikeouts under 5 · 52% · −7.5pp**
+> ⚠ *reasoning says 3/5 cleared — the actual last-5 data says 1/5*
+> *"Bibee cleared 5+ K in 3 of 5 recent games (60%)…"*
+
+The question asked was the right one: **why does one half get it wrong while the
+other half gets it right, and why don't they talk to each other?**
+
+They don't, and the reason is that the fix was only ever half-applied. When the
+miscounting was first noticed the response was to recompute `cleared` from
+`recent5` server-side, keep the model's answer beside it as
+`judgeClearedClaim`, and warn on the card when they differ. `ask.js` went
+further and states the count as a fact in the chat prompt. **The judge's own
+payload never got it.** It receives `recent5` and this instruction:
+
+> *first COUNT how many of the five cleared the line … **Start your probability
+> from that count***
+
+So the count is load-bearing on the number, the app holds the correct value at
+the moment it builds the payload, and it sends the array instead — then
+recomputes the truth afterwards to check the answer. The check fires one step
+after the wrong count has already priced the bet.
+
+**Measured, on one live board — 74 picks carrying both numbers:**
+
+| | |
+|---|---|
+| judge agreed with the truth | 35 (**47%**) |
+| overcounted | **34** |
+| undercounted | 5 |
+
+Not a glitch. It is wrong more often than right, and it is wrong in one
+direction — the over's. Bibee's three alt lines that day, from real values
+averaging 4.4:
+
+| line | truth | judge said |
+|---|---|---|
+| 3.5 | 4 | 5 |
+| 4.5 | 2 | 3 |
+| 5 | 1 | **3** |
+
+Worth noting what this is *not*: "5+ K" against a line of 5 is a `>=` reading
+where PrizePicks settles `>`, and that alone would give 2, not 3. The ≥ / >
+confusion is real and now addressed, but it does not explain the error — the
+model was simply miscounting.
+
+Three changes:
+
+- **`clearedCount` is now one exported function** in `top-picks.js`, used by the
+  judge payload, the pick log and `ask.js`. It was three copies of the same
+  arithmetic, which is precisely the shape of the worst bug this repo has had
+  (`one-source-of-truth.test.mjs` exists because of it). Writing it once
+  immediately surfaced a latent bug in the copy being consolidated: `Number(null)`
+  is `0` and `isFinite(0)` is true, so a prop with no line counted every positive
+  result as a clear.
+- **The count is sent, not requested.** Entries carry `cleared` and `clearedOf`;
+  the prompt says to use it, not to recount, and states that a result landing
+  exactly on the line is a push rather than a clear. Applied to all three judge
+  versions — like the game date, this is a fact about the world rather than a
+  way of asking.
+- **The disagreement is finally measured.** Both numbers had been logged since
+  the day the problem was found, expressly so it would be "measurable rather
+  than silently overwritten" — and nothing ever measured it. `clearedShare` is
+  *coverage*, not agreement. The behaviour table now carries agreement rate and
+  signed drift per judge/model. Its meaning changes with this release: it used
+  to measure arithmetic, and now measures compliance — anything below ~95% is a
+  judge not reading the field it was handed.
+
+The inline card warning stays. It is now a backstop rather than the mechanism.
+
+Standing rules:
+- **If the app can compute it, the app computes it.** A model asked to do
+  arithmetic on data the app already holds is a coin flip with a bias, and the
+  bias will point wherever the prompt's framing points.
+- **Logging two numbers so they can be compared is not comparing them.** The
+  fields were right; nothing read them for four months.
+
+Regression cover: `tests/unit/cleared-count.test.mjs`, extended to assert the
+count reaches the judge, that every version's prompt stops asking for it, and
+that the agreement measurement reports direction and not just a rate.
+
 ## The judge was never told what day the game was (2026-09-08)
 
 Shipped the next-slate scan in the morning; by evening it had produced this, on

@@ -19,6 +19,32 @@ import { getStore } from '@netlify/blobs';
 // the re-judge would spend searches on rows nobody is looking at.
 export const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
 
+/**
+ * How many of the last five cleared THIS prop's line. The single definition.
+ *
+ * STRICTLY GREATER THAN the line. A result landing exactly on the line is a
+ * PUSH — PrizePicks refunds it — so it is not a clear, and counting it as one
+ * inflates the number in the over's favour on every whole-number line.
+ *
+ * There were three copies of this arithmetic: ask.js computed it for the chat,
+ * bet-finder recomputed it when writing the pick log, and the judge was simply
+ * asked to work it out for itself. Duplicated arithmetic drifts, and the
+ * flattering copy is the one nobody questions — see one-source-of-truth.test.mjs
+ * for what that cost the last time it happened here.
+ *
+ * Returns null rather than 0 when there is nothing to count, because "no form"
+ * and "form that never cleared" are opposite facts and must not read alike.
+ */
+export function clearedCount(recent5, line) {
+  // `line == null` before Number(): Number(null) is 0 and isFinite(0) is true,
+  // so a missing line would silently count every positive result as a clear —
+  // 5 of 5 on a prop that has no line at all.
+  if (!Array.isArray(recent5) || !recent5.length || line == null || line === '') return null;
+  const n = Number(line);
+  if (!isFinite(n)) return null;
+  return recent5.filter((v) => isFinite(Number(v)) && Number(v) > n).length;
+}
+
 export function latestByPick(picks) {
   const m = new Map();
   for (const p of picks) {

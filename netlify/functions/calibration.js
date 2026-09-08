@@ -487,6 +487,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     const key = `${p.promptVersion || 'psyche (untagged)'} · ${modelName(p.judgeModel)}`;
     const b = (out.behaviour[key] ||= {
       n: 0, sum: 0, sumSq: 0, round: 0, cleared: 0, distinct: new Map(),
+      countBoth: 0, countAgree: 0, countOver: 0, countUnder: 0, countDriftSum: 0,
       byTier: {},
     });
     b.n++; b.sum += prob; b.sumSq += prob * prob;
@@ -495,6 +496,23 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // a verdict first and writes a number to match.
     if (Math.abs(prob * 20 - Math.round(prob * 20)) < 1e-9) b.round++;
     if (p.cleared != null) b.cleared++;
+    // COUNTING, SCORED. Both numbers have been logged since the mismatch was
+    // first noticed — `cleared` computed from recent5, `judgeClearedClaim` as
+    // the model reported it — expressly so disagreement would be "measurable
+    // rather than silently overwritten". It was never actually measured. It
+    // turned out the model agreed 47% of the time and OVERCOUNTED 34 to 5,
+    // while the prompt told it to start its probability from that count.
+    //
+    // Since v4.38.0 the count is supplied instead of asked for, so this stops
+    // measuring arithmetic and starts measuring compliance: a config that still
+    // disagrees is one not reading the field it was handed.
+    if (p.cleared != null && p.judgeClearedClaim != null) {
+      b.countBoth++;
+      const d = Number(p.judgeClearedClaim) - Number(p.cleared);
+      if (d === 0) b.countAgree++;
+      else if (d > 0) { b.countOver++; b.countDriftSum += d; }
+      else { b.countUnder++; b.countDriftSum += d; }
+    }
     b.distinct.set(prob.toFixed(2), (b.distinct.get(prob.toFixed(2)) || 0) + 1);
     const t = (b.byTier[p.oddsType || 'unknown'] ||= { n: 0, sum: 0 });
     t.n++; t.sum += prob;
@@ -504,6 +522,13 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     b.spread = Math.sqrt(Math.max(0, b.sumSq / b.n - b.meanProb ** 2));
     b.roundShare = b.round / b.n;
     b.clearedShare = b.cleared / b.n;
+    b.countChecked = b.countBoth;
+    b.countAgreeShare = b.countBoth ? b.countAgree / b.countBoth : null;
+    // Signed, because the DIRECTION is the whole finding: miscounting scattered
+    // both ways would be noise, and miscounting that runs one way is a bias
+    // pointed at the over.
+    b.countMeanDrift = b.countBoth ? b.countDriftSum / b.countBoth : null;
+    b.countOverShare = b.countBoth ? b.countOver / b.countBoth : null;
     // distinct/n was NOT comparable across configs: it falls mechanically as n
     // grows, so a judge with more picks looks less granular for free. On this
     // log Vilifiant scored 0.246 (51 distinct over 207) against Opus's 0.483
@@ -528,6 +553,7 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     const g = b.byTier.goblin?.meanProb, d = b.byTier.demon?.meanProb;
     b.tierGap = g != null && d != null ? g - d : null;
     delete b.sum; delete b.sumSq; delete b.round; delete b.cleared; delete b.distinct;
+    delete b.countBoth; delete b.countAgree; delete b.countOver; delete b.countUnder; delete b.countDriftSum;
     for (const t of Object.values(b.byTier)) delete t.sum;
   }
 
@@ -1012,7 +1038,9 @@ function renderHTML(a) {
       <td style="color:${gapCol}">${v.tierGap == null ? '—' : (v.tierGap * 100).toFixed(0) + 'pts'}</td>
       <td>${(v.spread * 100).toFixed(1)}</td>
       <td style="color:${rndCol}">${pct(v.roundShare)}</td>
-      <td>${pct(v.clearedShare)}</td><td>${v.effectiveValues} <span class="mut">of ${v.distinctValues}</span></td></tr>`;
+      <td>${pct(v.clearedShare)}</td><td>${v.effectiveValues} <span class="mut">of ${v.distinctValues}</span></td>
+      <td>${v.countChecked ? `<span style="color:${v.countAgreeShare >= 0.95 ? 'var(--grn)' : v.countAgreeShare >= 0.8 ? 'var(--amb)' : 'var(--red)'}">${pct(v.countAgreeShare)}</span>
+        <span class="mut">n=${v.countChecked}${v.countMeanDrift ? `, ${v.countMeanDrift > 0 ? '+' : ''}${v.countMeanDrift.toFixed(2)}` : ''}</span>` : '<span class="mut">—</span>'}</td></tr>`;
   }).join('') || '<tr><td colspan="7" class="mut">No logged picks yet.</td></tr>';
 
   const marginRows = Object.entries(a.margins || {}).sort((x, y) => y[1].n - x[1].n).slice(0, 18).map(([k, v]) => {
@@ -1264,7 +1292,7 @@ function renderHTML(a) {
     cleanest test is running the two on the SAME slate — different nights differ more than the prompts do.</div>
 
   <h2>Judge behaviour — readable the same day</h2>
-  <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>form coverage</th><th>values used</th></tr></thead><tbody>${behRows}</tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>form coverage</th><th>values used</th><th>count agrees</th></tr></thead><tbody>${behRows}</tbody></table></div>
   <div class="callout">Everything else on this page waits for games to settle — weeks before a prompt or model
     change can be judged. This does not: it reads every logged pick, graded or not, so a run can be checked the
     hour it finishes.
@@ -1276,7 +1304,13 @@ function renderHTML(a) {
     perplexity — 2^H over how often each distinct probability appears, i.e. how many values the judge is
     <i>effectively</i> using, with the raw count beside it. A plain distinct/n ratio was not comparable between
     configs: it falls as n grows, so the judge with more picks looked less granular for free; a high share of
-    <b>round numbers</b> (multiples of 0.05) is what you get when a model picks a verdict first and writes a
+    <b>count agrees</b> is how often the judge's own "cleared" matched the truth computed from recent5, with the
+    mean signed drift beside it. This used to measure ARITHMETIC and the judge failed it: on one live board it
+    agreed 47% of the time and overcounted 34 times to 5 — while the prompt told it to <i>start its probability
+    from that count</i>. Since v4.38.0 the count is supplied rather than asked for, so this now measures
+    COMPLIANCE: anything below ~95% is a judge not reading the field it was handed. A positive drift is the
+    expensive direction — it inflates the over.
+    <br><br><b>round numbers</b> (multiples of 0.05) is what you get when a model picks a verdict first and writes a
     number to justify it. <b>Filled "cleared"</b> is a COVERAGE metric, not an obedience one. It was first read as
     instruction-following until the log settled it: of the props that reached the judge carrying recent5, every
     one came back with the count filled, and of those without it, none did — so the floor on this number is set
