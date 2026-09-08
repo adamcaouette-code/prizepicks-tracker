@@ -794,8 +794,16 @@ export const handler = async (event) => {
         gameUsed: { date: found.date, eventId: found.id },
         ...(found.date !== from ? { note: `no finished games on ${from} — used the most recent completed slate instead` } : {}),
         verdict: nBroken === 0 ? `mapping verified against a real box score: all ${working.length} mapped stats resolve`
-          : `${nBroken} of ${working.length + nBroken} mapped stats reference keys ESPN did not send — those grade NOTHING until fixed`,
-        brokenStats: nBroken ? broken : undefined,
+          : `${working.length} of ${working.length + nBroken} mapped stats resolve; ${nBroken} reference keys THIS league does not send`,
+        // "Broken" was the wrong word for all of these. A mapping is shared
+        // across every league of a sport, but the box scores are not: NFL sends
+        // receivingTargets and sacks-sackYardsLost, college football sends
+        // neither. Those mappings refuse on CFB, which is CORRECT — PrizePicks
+        // doesn't post those props there either. Reporting them as breakage
+        // sends the next reader hunting for a bug that isn't one, so the
+        // question to ask is named instead of answered.
+        statsWithNoKeyInThisLeague: nBroken ? broken : undefined,
+        howToRead: nBroken ? 'A mapping that refuses is only a problem if PrizePicks POSTS that prop for this league. If it does, the key is wrong or the stat needs a different source; if it does not, refusing is the correct behaviour and nothing is broken.' : undefined,
         verifiedStats: working,
         unmappedEspnKeys: [...actual].filter((k) => !Object.values(needs).flat().includes(k)),
         groups,

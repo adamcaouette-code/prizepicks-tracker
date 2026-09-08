@@ -252,7 +252,7 @@ export default async function ({ t }) {
   } finally { good.restore(); }
   t.ok('a healthy mapping is reported as verified, not left to interpretation',
     /verified/.test(okProbe.verdict), okProbe.verdict);
-  t.eq('...with nothing listed as broken', okProbe.brokenStats, undefined);
+  t.eq('...with nothing listed as broken', okProbe.statsWithNoKeyInThisLeague, undefined);
   t.ok('...and names the stats it confirmed', okProbe.verifiedStats.includes('points'));
 
   // ESPN renames a key: the probe must SAY so rather than report a clean bill.
@@ -267,10 +267,18 @@ export default async function ({ t }) {
   try {
     bad = JSON.parse((await mod.handler({ queryStringParameters: { mode: 'probe', league: 'nba', date: '2026-08-14' } })).body);
   } finally { drift.restore(); }
-  t.ok('a renamed ESPN key is caught and called out', /grade NOTHING/.test(bad.verdict), bad.verdict);
-  t.ok('...naming the stat that broke', !!bad.brokenStats?.points);
-  t.ok('...and the exact key ESPN stopped sending', bad.brokenStats.points.missing.includes('points'));
-  t.ok('...including combos that silently lost a part', !!bad.brokenStats?.pra);
+  t.ok('a renamed ESPN key is caught and called out',
+    !/verified/.test(bad.verdict) && /does not send/.test(bad.verdict), bad.verdict);
+  // "Broken" was the wrong word for the whole category. A mapping is shared
+  // across a sport but box scores are not — NFL sends receivingTargets and
+  // college football doesn't — so a mapping that refuses on one league is often
+  // correct rather than broken. The probe names the question instead of
+  // answering it, so nobody goes hunting for a bug that isn't there.
+  t.ok('...and says how to tell a real break from a league that just posts less',
+    /only a problem if PrizePicks POSTS that prop/.test(bad.howToRead || ''), bad.howToRead);
+  t.ok('...naming the stat that broke', !!bad.statsWithNoKeyInThisLeague?.points);
+  t.ok('...and the exact key ESPN stopped sending', bad.statsWithNoKeyInThisLeague.points.missing.includes('points'));
+  t.ok('...including combos that silently lost a part', !!bad.statsWithNoKeyInThisLeague?.pra);
   t.ok('...while stats that still work are not flagged', bad.verifiedStats.includes('assists'));
   t.ok('...and the key ESPN sent instead is surfaced as a candidate',
     bad.unmappedEspnKeys.includes('pts'));
@@ -382,6 +390,6 @@ export default async function ({ t }) {
     none = JSON.parse((await mod.handler({ queryStringParameters: { mode: 'probe', league: 'nba', date: '2026-08-17' } })).body);
   } finally { empty.restore(); }
   t.ok('an empty box score is INCONCLUSIVE, not 19 broken stats', /INCONCLUSIVE/.test(none.verdict));
-  t.eq('...and nothing is listed as broken on no evidence', none.brokenStats, undefined);
+  t.eq('...and nothing is listed as broken on no evidence', none.statsWithNoKeyInThisLeague, undefined);
   t.ok('...with a concrete next step', /mode=probe/.test(none.nextStep || ''));
 }
