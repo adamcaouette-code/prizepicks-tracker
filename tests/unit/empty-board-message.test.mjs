@@ -53,7 +53,13 @@ export default async function ({ t }) {
   const r1 = read('bet-jobs', 'empty1');
   t.eq('board is empty', (r1?.result?.board || []).length, 0);
   t.ok('names the actual next slate date, not a generic "not posted" line',
-    /next posted slate starts 2026-09-09/.test(r1?.result?.emptyMessage || ''), r1?.result?.emptyMessage);
+    /next posted slate is 2026-09-09/.test(r1?.result?.emptyMessage || ''), r1?.result?.emptyMessage);
+  // The date is offered as something the page can act on, not only as prose —
+  // otherwise the whole answer is "come back in three days".
+  t.eq('...and hands the page that date as a field it can scan',
+    r1?.result?.slate?.nextAvailable, '2026-09-09');
+  t.ok('the message no longer tells you to come back later, because you needn\'t',
+    !/rerun the scan/.test(r1?.result?.emptyMessage || ''), r1?.result?.emptyMessage);
   t.ok('says this league does not play daily — the real reason, not a guess',
     /doesn't play daily/.test(r1?.result?.emptyMessage || ''));
   t.eq('parlay.error carries the same message, so nothing reading the old field breaks',

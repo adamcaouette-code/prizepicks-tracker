@@ -389,6 +389,52 @@ function filterToday(rows, todayOnly) {
   return rows.filter((r) => (typeof r.today === 'boolean' ? r.today : String(r.start).startsWith(td)));
 }
 
+/**
+ * The next posted game day, for leagues that don't play daily.
+ *
+ * MLB plays every day, so "today" is always the right board. CFB plays Saturday
+ * (plus a Thursday/Friday game or two) and NFL Sunday/Monday/Thursday — so most
+ * mornings their whole posted board is for a future date and "today" is empty.
+ * Scanning was simply unavailable on those days.
+ *
+ * NEXT, not TOMORROW. Asked on a Tuesday with the CFB board posted for Friday
+ * and Saturday, this returns Friday — it finds the earliest day that actually
+ * has games rather than stepping forward one day at a time into more emptiness.
+ *
+ * Grouped by the venue-local date in PrizePicks' own start_time, which is what
+ * a game day means to a bettor and what the empty-state message already quoted.
+ */
+function nextSlate(rows) {
+  const upcoming = rows
+    .filter((r) => !(typeof r.today === 'boolean' ? r.today : false))
+    .map((r) => String(r.start || '').slice(0, 10))
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort();
+  const date = upcoming[0] || null;
+  if (!date) return { date: null, rows: [] };
+  return { date, rows: rows.filter((r) => String(r.start || '').startsWith(date)) };
+}
+
+/**
+ * Which board to judge: today's, or the next day that has one.
+ *
+ * 'next' NEVER skips a live slate — if today has games it returns today, so the
+ * option is safe to leave on. It only reaches forward when there is nothing
+ * else to look at.
+ *
+ * Returns the slate's own DATE alongside its rows, and that date is not
+ * cosmetic: a pick logged under the day it was judged rather than the day the
+ * game is played can never be graded, because every grader looks up a box score
+ * by date. Scanning Friday's CFB board on Tuesday and logging it as Tuesday
+ * would put the whole slate permanently outside calibration.
+ */
+function selectSlate(rows, mode) {
+  const today = filterToday(rows, true);
+  if (mode !== 'next' || today.length) return { rows: today, date: null, usedNext: false };
+  const nxt = nextSlate(rows);
+  return { rows: nxt.rows, date: nxt.date, usedNext: !!nxt.date };
+}
+
 // ---------- PrizePicks last-5 history (their own data, perfect name match) ----------
 // One call per candidate: /projections/{id}/history -> last 5 stat_values for THAT prop.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1841,6 +1887,10 @@ export const handler = async (event) => {
       floor: Number(body.floor) || 0,
       legs: Number(body.legs) || 3,
       today: body.today !== false,
+      // 'today' (default) or 'next'. 'next' still prefers today whenever today
+      // has games — see selectSlate — so it can be left on without ever
+      // silently scanning past a live slate.
+      slate: String(body.slate || '').toLowerCase() === 'next' ? 'next' : 'today',
       maxStake: body.maxStake ? Number(body.maxStake) : null,
       tiers: Array.isArray(body.tiers) && body.tiers.length ? body.tiers : ['goblin', 'standard'],
       statFilter: body.statFilter ? String(body.statFilter) : null, // e.g. "home runs" — judge only this prop type
@@ -1944,7 +1994,19 @@ export const handler = async (event) => {
     // has its whole board posted for a future date, and "props not posted yet"
     // is a wrong answer to that — the props exist, just not for today.
     const rawRowsP = guard(track('props', fetchProps(params.league)));
-    const rowsP = rawRowsP.then((r) => filterToday(r, params.today));
+    // The slate's own date, when it isn't today's. Set here and read by the pick
+    // log far below, because a pick logged under the day it was judged rather
+    // than the day the game is played can never be graded.
+    let slateDate = null;
+    let slateUsedNext = false;
+    let nextSlateDate = null;
+    const rowsP = rawRowsP.then((r) => {
+      if (!params.today) return r;                 // explicit "whole board" mode, unchanged
+      const picked = selectSlate(r, params.slate);
+      slateDate = picked.date;
+      slateUsedNext = picked.usedNext;
+      return picked.rows;
+    });
     const recordsP  = guard(track('records', fetchTeamRecords(params.league)));
     const oddsP     = guard(track('odds', fetchWinProbs(params.league, rowsP)));   // awaits rowsP internally
     const startersP = guard(track('starters', params.league === 'mlb' ? fetchMlbStarters() : Promise.resolve(null)));
@@ -2030,16 +2092,25 @@ export const handler = async (event) => {
           // The board is real, it just has nothing dated today — routine for a
           // league that doesn't play daily. Point at the actual next slate
           // instead of implying the board itself is missing.
-          const nextStart = rawRows.map((r) => r.start).filter(Boolean).sort()[0];
-          const nextDate = nextStart ? String(nextStart).slice(0, 10) : null;
+          const nextDate = nextSlate(rawRows).date;
+          // Telling someone to come back in three days is a worse answer than
+          // scanning the board that is already posted. The date is offered as
+          // something the page can act on, not just as prose.
           why = nextDate
-            ? `No ${params.league.toUpperCase()} games today — the next posted slate starts ${nextDate}. This league doesn't play daily like MLB; rerun the scan on or after that date.`
+            ? `No ${params.league.toUpperCase()} games today — the next posted slate is ${nextDate}. This league doesn't play daily like MLB.`
             : `No ${params.league.toUpperCase()} games today, and no future slate is posted yet either.`;
+          nextSlateDate = nextDate;
         } else {
           why = `${rows.length} ${params.league.toUpperCase()} prop(s) today, but none matched the selected tiers or prop filter. Try widening tiers or props.`;
         }
       }
-      await store.setJSON(jobId, { status: 'done', result: { board: [], parlay: { error: why }, params, emptyMessage: why } });
+      await store.setJSON(jobId, { status: 'done', result: {
+        board: [], parlay: { error: why }, params, emptyMessage: why,
+        // What the page needs to offer "scan it anyway" instead of "come back
+        // Friday": the date, and whether asking again would actually change
+        // anything (it would not if nothing at all is posted).
+        slate: { date: null, usedNext: false, nextAvailable: nextSlateDate },
+      } });
       return { statusCode: 202 };
     }
     phaseDone('pulling props');
@@ -2287,7 +2358,12 @@ export const handler = async (event) => {
     // probability Claude gave, verdict, tier — plus graded:null to fill in later.
     try {
       const logStore = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
-      const day = new Date().toISOString().slice(0, 10);
+      // The date of the GAMES, not of the run. These are the same thing on every
+      // ordinary scan and different exactly when a next-slate scan reached
+      // forward — and getting it wrong there would log a whole CFB Saturday
+      // under the Tuesday it was judged on, where no grader would ever look for
+      // it. loggedAt below still records when the forecast was actually made.
+      const day = slateDate || new Date().toISOString().slice(0, 10);
       const stamp = new Date().toISOString();
       // Keyed by LINE as well as player and stat. The same collision fixed in
       // attachSource lives here: a prop posted at three lines wrote all three log
@@ -2417,7 +2493,7 @@ export const handler = async (event) => {
       phases: phaseLog.slice(),
     };
     const emptyMessage = buildEmptyMessage(params.tiers, picks, chosen);
-    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params, emptyMessage, deepDive: deepDiveInfo } });
+    await store.setJSON(jobId, { status: 'done', totalMs: Date.now() - runStart, phases: phaseLog.slice(), result: { board, players, parlay, parlayLegs, traps, teamRecords, winProbs: odds.teamWinProbs, oddsStatus: { status: odds.status, message: odds.message, remaining: odds.remaining, used: odds.used }, parlayNote, voidedCount: voids.total, unmatchedPicks: invented, mlbStatus, mlbInjuries: mlbSlateData?.injuries || null, mlbGames: mlbSlateData?.games || null, timing, allPicks: picks, params, emptyMessage, deepDive: deepDiveInfo, slate: { date: slateDate, usedNext: slateUsedNext, nextAvailable: null } } });
     return { statusCode: 202 };
   } catch (err) {
     if (jobId) await store.setJSON(jobId, { status: 'error', message: String(err.message || err) });

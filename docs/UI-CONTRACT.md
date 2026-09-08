@@ -107,13 +107,34 @@ is even worthwhile.
 
 ### `POST /api/bet-finder-background` → `GET /api/bet-finder-status?jobId=`
 
-Request: `{ jobId, league, legs, today, tiers, statFilter?, maxPicks?, deepDive? }`
+Request: `{ jobId, league, legs, today, tiers, statFilter?, maxPicks?, deepDive?, slate? }`
 → `202`, empty body.
 
 Status: `{ status, step, elapsedMs, typicalMs, phases[], result?, message? }`.
 `typicalMs` is the average of previous runs — good for a real progress bar rather than an
 indeterminate one. `result` carries
-`{ board, players, parlay, parlayLegs, traps, teamRecords, winProbs, oddsStatus, mlbStatus, allPicks, params, deepDive }`.
+`{ board, players, parlay, parlayLegs, traps, teamRecords, winProbs, oddsStatus, mlbStatus, allPicks, params, deepDive, slate }`.
+
+`slate: 'next'` in the request scans the next day that has games when today has none —
+for leagues that don't play daily (CFB is Saturday plus the odd Thursday/Friday, NFL is
+Sunday/Monday/Thursday), whose whole posted board is usually dated forward. It is
+**next, not tomorrow**: asked on a Tuesday against a board posted for Friday and
+Saturday it scans Friday. It never skips a live slate — if today has games it scans
+today — so it is safe as a standing preference.
+
+`result.slate` is `{ date, usedNext, nextAvailable }`:
+
+- `date` — the day actually scanned, or `null` on an ordinary today scan
+- `usedNext` — true only when the scan reached forward. **The board must say so.** A
+  board of Friday's games is visually identical to tonight's, and acting on one thinking
+  it is the other is the whole risk of the feature.
+- `nextAvailable` — on an EMPTY board, the next posted date, or `null` if nothing is
+  posted at all. Present so the page can offer a one-click rescan rather than printing
+  a sentence telling the user to come back in three days.
+
+Picks from a forward scan are logged under the day the **games are played**, not the day
+they were judged — every grader looks a box score up by date, so the alternative is a
+slate no grader will ever look for. `loggedAt` still records when the forecast was made.
 
 `deepDive: true` in the request runs the second, per-prop pass described in §6 after the
 normal scan. `result.deepDive` is `null` when the flag wasn't set, otherwise
