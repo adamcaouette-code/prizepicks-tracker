@@ -1473,7 +1473,44 @@ export const handler = async (event) => {
     let picks = days.flat();
     if (q.league) picks = picks.filter((p) => p.league === q.league);
 
+    // ?gradedSince / ?gradedUntil - filter on WHEN A PICK WAS GRADED, which is a
+    // different question from ?days (the date-keyed log, i.e. when it was LOGGED).
+    // A pre-registered check whose scope is "rows graded after date D" cannot use
+    // ?days: a pick logged in June and graded in September belongs in that window,
+    // and one logged in September but still pending does not.
+    //
+    // Compared on the DATE PART, so gradedSince=2026-08-25 excludes the whole of
+    // the 25th rather than whatever fraction of it a timestamp comparison would
+    // leave in. Ungraded rows carry gradedAt null and drop out by construction.
+    const dayOf = (ts) => (typeof ts === 'string' ? ts.slice(0, 10) : null);
+    if (q.gradedSince) picks = picks.filter((p) => { const d = dayOf(p.gradedAt); return !!d && d > q.gradedSince; });
+    if (q.gradedUntil) picks = picks.filter((p) => { const d = dayOf(p.gradedAt); return !!d && d <= q.gradedUntil; });
+
     const agg = aggregate(picks);
+
+    // With a graded-window filter on, report what is actually IN the window by
+    // the picks' own game dates.
+    //
+    // This exists because a bulk backfill grades old picks with a fresh
+    // gradedAt, so "graded after D" can quietly be full of games from well
+    // before D. For an out-of-sample check that is the in-sample data wearing a
+    // new timestamp, and it would pass silently. The spread of game months is
+    // what makes it visible, so it is reported beside every windowed number
+    // rather than left for someone to think to ask about.
+    if (q.gradedSince || q.gradedUntil) {
+      const byMonth = {};
+      for (const p of picks) {
+        const d = dayOf(p.date);
+        const m = d ? d.slice(0, 7) : 'unknown';
+        byMonth[m] = (byMonth[m] || 0) + 1;
+      }
+      agg.gradedWindow = {
+        gradedSince: q.gradedSince || null,
+        gradedUntil: q.gradedUntil || null,
+        n: picks.length,
+        gameMonths: Object.fromEntries(Object.entries(byMonth).sort()),
+      };
+    }
 
     // ---- API spend (from cost-log, written by judge/ask/reevaluate) --------
     // perRun breaks a judge call into its parts. The month's bill is a single

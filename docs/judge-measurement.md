@@ -1518,6 +1518,99 @@ changing filters, when in fact it is unsolvable within the current configuration
 Copy change only — no changes to thresholds, verdictFor, selectLegs, or the
 prompt.
 
+## The pre-registered demon check: has-form replicated, no-form died (2026-09-09)
+
+Run against the prediction registered 2026-08-25. The post-registration demon
+sample is n=570, well past the n ≥ 150 gate, so the check is due and this is it.
+
+**Window.** Picks LOGGED since 2026-08-25 (`?days=15`), not `gradedAt >
+2026-08-25` as registered. The literal scope needs `?gradedSince`, added in
+v4.39.0 and not yet deployed when this was run. The substitution is deliberate
+and it errs conservative: a log-date window is a strict subset of the
+graded-date one, and it is the subset that cannot contain backfilled rows. The
+grade-cron fix on 09-03 and the backfills after it stamped old picks with fresh
+`gradedAt` values, so the literal window would have swept June games into an
+"out-of-sample" check — the in-sample data the hypothesis was generated from,
+wearing a new timestamp. Repeated at `?days=14` to move the boundary off the
+registration day itself: 0.5976 ± 0.0294 on n=540. Nothing here turns on which
+side of 08-25 the cutoff falls.
+
+### The pooled number: inconclusive, by the rule as written
+
+| | AUC | SE | n | 95% CI | z from 0.5 |
+|---|---|---|---|---|---|
+| demon, pooled | 0.5949 | 0.0287 | 570 | 0.539 – 0.651 | 3.31 |
+
+The registered reading has three branches and this is the third. The point
+estimate is **below 0.60**, so "replicates" is not met. It sits 3.3σ from 0.5
+with an interval excluding it, so "dies here" is not met either. The interval
+spans 0.60, which is what inconclusive looks like when it is honest.
+
+Per the standing text: **extend the window rather than reinterpreting it.** A
+point estimate of 0.5949 against a bar of 0.60 is the single result most likely
+to get talked across, and the registration exists to stop exactly that.
+
+### The split the pooling was hiding
+
+Both `byFormCoverage` cells were named in the registered scope, and they did
+not do the same thing:
+
+| bucket | registered (08-25) | now | n | z from 0.5 | change |
+|---|---|---|---|---|---|
+| has form | 0.644 ± 0.049 (n=205) | **0.6400 ± 0.0386** | 348 | 3.63 | z = −0.06 |
+| no form | 0.689 ± 0.065 (n=147) | **0.5100 ± 0.0430** | 222 | 0.23 | z = −2.30 |
+
+Has-form replicated to within a rounding error on a sample 70% larger — the
+kind of agreement that is hard to get by accident. No-form collapsed onto
+chance, a 2.3σ move, and its interval now contains 0.5 comfortably.
+
+The pooled 0.5949 is the average of a survivor and a casualty, and quoting it
+alone describes neither. It also accounts for the shape of the pooled result
+without any reinterpretation: the bar was missed because half the estimate
+stopped existing.
+
+Read plainly, the original two-bucket observation was **one effect and one
+multiple-comparisons artifact**, not two supporting samples. That is the exact
+failure mode the registration named in advance — "two supporting samples drawn
+from one inspection are one finding, not two" — and it turns out to have been
+generous by one.
+
+### What this does and does not license
+
+Nothing changes. The standing prohibition below stays in force: no change to
+selection, sizing, tier weighting or any prompt on the strength of this.
+
+- The pooled check is inconclusive, and the registered instruction on that
+  branch is to extend the window, not to act.
+- Has-form demon is now the only tier-bucket in the system with a replicated
+  out-of-sample effect. It is also, per "Distance to break-even by tier", the
+  bucket furthest from profitable: demons in this window hit 23.9% against a
+  43.7% break-even, a 19.8pp gap. Discrimination and profitability are separate
+  quantities and this closes none of the second one.
+- No-form demon should be treated as dead until something other than the
+  original inspection revives it.
+
+### The window's tier gaps, for context
+
+| tier | n | hit | needs | gap |
+|---|---|---|---|---|
+| goblin | 1396 | 61.8% | 79.4% | −17.6pp |
+| standard | 625 | 49.6% | 59.5% | −9.9pp |
+| demon | 570 | 23.9% | 43.7% | −19.8pp |
+
+`baselineDelta` over this window is −0.0003: the judge has drawn level with the
+three-row tier lookup and is not yet ahead of it. Goblins are 3.8pp worse here
+than over the full log, and they remain 57% of graded volume.
+
+### Follow-up, once `?gradedSince` is deployed
+
+Re-run the literal registered scope and report it beside this one. If the two
+disagree, the difference is backfill contamination and `gameMonths` shows it
+directly. The prediction is recorded here so it cannot be fitted afterwards:
+they should agree on has-form, and the literal window should read slightly
+BETTER on the pooled number, because the rows it adds are older games judged by
+an older configuration against a log that has since been cleaned.
+
 ## Standing constraints
 
 Prompt text, model, search budget, payload contents, selection logic and the
