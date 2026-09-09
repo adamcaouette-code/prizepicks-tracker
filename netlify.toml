@@ -31,6 +31,21 @@
 [functions."calibration-cron"]
   schedule = "0 14,15 * * *"
 
+# The line-snapshot archive. Every 10 minutes, per the brief.
+#
+# THE SCHEDULE LIVES HERE AND ONLY HERE. These functions use the v1
+# `export const handler` signature, and an in-code `export const config` is
+# never registered for those — see docs/judge-measurement.md for the two months
+# of dead grading that taught us. snapshot-cron.js is a thin scheduled shim that
+# pokes snapshot-background.js over HTTP so the capture keeps a 15-minute budget
+# instead of the ~26s a scheduled function gets.
+#
+# 144 firings a day. The PrizePicks half of a capture is free; the book half is
+# metered and budgeted per capture — see SNAPSHOT_ODDS_BUDGET in
+# snapshot-background.js before raising the cadence.
+[functions."snapshot-cron"]
+  schedule = "*/10 * * * *"
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"

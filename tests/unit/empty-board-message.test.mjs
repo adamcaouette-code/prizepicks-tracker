@@ -12,6 +12,9 @@
 import { loadFn, mockFetch } from '../helpers/fn.mjs';
 import { reset } from '../helpers/blobs.mjs';
 
+// Days from today, so the fixtures stay in the future however long this lives.
+const plus = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+
 const leagues = () => ({ data: [{ id: '9', type: 'league', attributes: { name: 'NFL', projections_count: 2000 } }] });
 
 const proj = (rows) => ({
@@ -43,8 +46,13 @@ export default async function ({ t }) {
     // Later date listed FIRST on purpose — the soonest slate must be picked by
     // sorting, not by whichever row the board happens to list first.
     ['partner-api.prizepicks.com/projections', async () => proj([
-      { player: 'Future Gal', stat: 'Receptions', line: 4.5, start: '2026-09-10T20:00:00.000-04:00' },
-      { player: 'Future Guy', stat: 'Receiving Yards', line: 45.5, start: '2026-09-09T20:00:00.000-04:00' },
+      // RELATIVE to now, never fixed. These were written as literal dates that
+      // were in the future at the time, and the suite broke the morning the
+      // clock reached them: the "next slate" row became TODAY's slate, the
+      // board stopped being empty, and a test about the empty board silently
+      // started exercising a different branch.
+      { player: 'Future Gal', stat: 'Receptions', line: 4.5, start: `${plus(3)}T20:00:00.000-04:00` },
+      { player: 'Future Guy', stat: 'Receiving Yards', line: 45.5, start: `${plus(2)}T20:00:00.000-04:00` },
     ])],
   ]);
   try {
@@ -53,11 +61,11 @@ export default async function ({ t }) {
   const r1 = read('bet-jobs', 'empty1');
   t.eq('board is empty', (r1?.result?.board || []).length, 0);
   t.ok('names the actual next slate date, not a generic "not posted" line',
-    /next posted slate is 2026-09-09/.test(r1?.result?.emptyMessage || ''), r1?.result?.emptyMessage);
+    new RegExp(`next posted slate is ${plus(2)}`).test(r1?.result?.emptyMessage || ''), r1?.result?.emptyMessage);
   // The date is offered as something the page can act on, not only as prose —
   // otherwise the whole answer is "come back in three days".
   t.eq('...and hands the page that date as a field it can scan',
-    r1?.result?.slate?.nextAvailable, '2026-09-09');
+    r1?.result?.slate?.nextAvailable, plus(2));
   t.ok('the message no longer tells you to come back later, because you needn\'t',
     !/rerun the scan/.test(r1?.result?.emptyMessage || ''), r1?.result?.emptyMessage);
   t.ok('says this league does not play daily — the real reason, not a guess',

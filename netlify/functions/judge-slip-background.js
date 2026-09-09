@@ -31,6 +31,9 @@
 
 import { getStore } from '@netlify/blobs';
 import { buildSlipJudge } from './slip-judge-prompt.js';
+// The stat -> book-market table lives in one place now; this file used to own
+// the only copy. See odds-markets.js.
+import { marketFor, statKey } from './odds-markets.js';
 import {
   PP_LEAGUE_IDS, ODDS_SPORT_KEYS, PP_TO_ESPN_ABBR,
   fetchProps, attachHistory,
@@ -50,49 +53,6 @@ const MAX_SEARCHES = Number(process.env.SLIP_JUDGE_MAX_SEARCHES) || 4;
 // one bulk pull for the whole slate, so we only fetch the exact markets this
 // slip's legs need and cache each (event, market-set) for a short window.
 const DK_LINE_CACHE_MS = 15 * 60 * 1000;
-
-const MLB_HIT_MARKETS = {
-  hits: 'batter_hits', totalbases: 'batter_total_bases', rbi: 'batter_rbis', rbis: 'batter_rbis',
-  runs: 'batter_runs_scored', runsscored: 'batter_runs_scored',
-  homeruns: 'batter_home_runs', hr: 'batter_home_runs',
-  singles: 'batter_singles', doubles: 'batter_doubles', triples: 'batter_triples',
-  walks: 'batter_walks', strikeouts: 'batter_strikeouts', stolenbases: 'batter_stolen_bases',
-  hitsrunsrbis: 'batter_hits_runs_rbis', fantasyscore: 'batter_fantasy_score',
-};
-const MLB_PIT_MARKETS = {
-  strikeouts: 'pitcher_strikeouts', hitsallowed: 'pitcher_hits_allowed',
-  walks: 'pitcher_walks', walksallowed: 'pitcher_walks',
-  earnedruns: 'pitcher_earned_runs', outsrecorded: 'pitcher_outs', pitchingouts: 'pitcher_outs',
-};
-const HOOPS_MARKETS = {
-  points: 'player_points', rebounds: 'player_rebounds', assists: 'player_assists',
-  threes: 'player_threes', threepointersmade: 'player_threes',
-  blocks: 'player_blocks', steals: 'player_steals', turnovers: 'player_turnovers',
-  ptsrebsasts: 'player_points_rebounds_assists', pra: 'player_points_rebounds_assists',
-  ptsrebs: 'player_points_rebounds', pr: 'player_points_rebounds',
-  ptsasts: 'player_points_assists', pa: 'player_points_assists',
-  rebsasts: 'player_rebounds_assists', ra: 'player_rebounds_assists',
-  fantasyscore: 'player_fantasy_points', fantasypoints: 'player_fantasy_points',
-};
-const NFL_MARKETS = {
-  passyards: 'player_pass_yards', passingyards: 'player_pass_yards',
-  passtds: 'player_pass_tds', passingtds: 'player_pass_tds',
-  rushyards: 'player_rush_yards', rushingyards: 'player_rush_yards',
-  rushtds: 'player_rush_tds', rushingtds: 'player_rush_tds',
-  receptions: 'player_receptions',
-  receivingyards: 'player_reception_yards', recyards: 'player_reception_yards',
-  receivingtds: 'player_reception_tds', rectds: 'player_reception_tds',
-  sacks: 'player_sacks',
-};
-
-// exact-key only (no fuzzy contains) — a wrong market is worse than no market
-function marketFor(league, stat, role) {
-  const k = statKey(stat);
-  if (league === 'mlb') return (role === 'PIT' ? MLB_PIT_MARKETS : MLB_HIT_MARKETS)[k] || null;
-  if (league === 'nba' || league === 'wnba') return HOOPS_MARKETS[k] || null;
-  if (league === 'nfl') return NFL_MARKETS[k] || null;
-  return null; // no DK player-prop coverage wired for this league (e.g. soccer's defensive stats)
-}
 
 function findBookLine(dkMarkets, marketKey, playerName) {
   const pk = normKey(playerName);
@@ -182,9 +142,6 @@ async function attachBookLines(working, league, games) {
 // Loose stat-name match: PP's own board text vs whatever parse-slip's vision pass
 // read off the card ("PRA" vs "Pts+Rebs+Asts", "Rebounds" vs "Rebounds", etc).
 // Exact (normalized) match wins; otherwise fall back to substring overlap.
-function statKey(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-}
 function statsLikelyMatch(a, b) {
   const ka = statKey(a), kb = statKey(b);
   if (!ka || !kb) return false;

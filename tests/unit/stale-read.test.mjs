@@ -25,9 +25,14 @@
 import { loadFn, mockFetch } from '../helpers/fn.mjs';
 import { reset, read } from '../helpers/blobs.mjs';
 
-const NOW = Date.parse('2026-09-08T12:00:00Z');
-const FRIDAY = '2026-09-11T17:00:00.000-04:00';   // not played
-const SATURDAY_PAST = '2026-09-06T17:00:00.000-04:00';
+// RELATIVE to now, never fixed. A literal date here is a test that passes until
+// the clock reaches it and then quietly starts asserting the opposite thing —
+// "has not been played yet" is only true of a date that is still ahead.
+const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+const NOW = Date.now();
+const TODAY = day(0);
+const FRIDAY = `${day(3)}T17:00:00.000-04:00`;        // not played
+const SATURDAY_PAST = `${day(-2)}T17:00:00.000-04:00`;
 
 export default async function ({ t }) {
   const { settledReadReason, slateNote } = await loadFn('bet-finder-background.js');
@@ -35,9 +40,11 @@ export default async function ({ t }) {
   const note = (rows) => jp.slateNote(rows);
 
   // ---- the judge is told when the game is --------------------------------
-  const future = note([{ start: FRIDAY }, { start: '2026-09-12T20:00:00.000-04:00' }]);
-  t.ok('the prompt states today\'s date', /TODAY.S DATE IS 2026-09-08/.test(future), future.slice(0, 120));
-  t.ok('...and the range the slate covers', /2026-09-11 to 2026-09-12/.test(future), future);
+  const future = note([{ start: FRIDAY }, { start: `${day(4)}T20:00:00.000-04:00` }]);
+  t.ok('the prompt states today\'s date',
+    new RegExp(`TODAY.S DATE IS ${TODAY}`).test(future), future.slice(0, 120));
+  t.ok('...and the range the slate covers',
+    new RegExp(`${day(3)} to ${day(4)}`).test(future), future);
   t.ok('...and says plainly that these games have not been played',
     /HAVE NOT BEEN PLAYED YET/.test(future), '');
   t.ok('...and that a box score it finds is a DIFFERENT game, which is the exact mistake made',

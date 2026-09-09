@@ -14,14 +14,34 @@ const roundTrip = (v) => {
   try { return JSON.parse(JSON.stringify(v)); } catch { return v; }
 };
 
+// Per-store ETags and metadata, so conditional writes behave as they really do.
+const etagsByStore = new Map();
+const metaByStore = new Map();
+let etagSeq = 0;
+
 export function getStore({ name }) {
   if (!stores.has(name)) stores.set(name, new Map());
+  if (!etagsByStore.has(name)) etagsByStore.set(name, new Map());
+  if (!metaByStore.has(name)) metaByStore.set(name, new Map());
   const s = stores.get(name);
+  const etags = etagsByStore.get(name);
+  const meta = metaByStore.get(name);
+  const write = (k, v, opts = {}) => {
+    const exists = s.has(k);
+    if (opts.onlyIfNew && exists) return { modified: false };
+    if (opts.onlyIfMatch !== undefined && etags.get(k) !== opts.onlyIfMatch) return { modified: false };
+    s.set(k, roundTrip(v));
+    const etag = `"${++etagSeq}"`;
+    etags.set(k, etag);
+    if (opts.metadata) meta.set(k, roundTrip(opts.metadata));
+    return { modified: true, etag };
+  };
   return {
     async list({ prefix } = {}) {
       const keys = [...s.keys()].filter((k) => !prefix || k.startsWith(prefix));
       return { blobs: keys.map((key) => ({ key })) };
     },
+    async getMetadata(k) { return s.has(k) ? { etag: etags.get(k) || '"0"', metadata: meta.get(k) || {} } : null; },
     // The real client returns the parsed object for { type: 'json' } and a string
     // otherwise; setJSON is the only writer here, so values come back as stored.
     //
@@ -42,8 +62,16 @@ export function getStore({ name }) {
     // The cold path passed, the suite passed, and the bug only appeared in
     // production on the second request. Round-tripping through JSON here means
     // any non-serializable value fails in the tests instead.
-    async setJSON(k, v) { s.set(k, roundTrip(v)); },
-    async set(k, v) { s.set(k, roundTrip(v)); },
+    // CONDITIONAL WRITES, because the append-only ledger depends on them.
+    //
+    // The real client takes { onlyIfNew: true } and returns { modified: false }
+    // — WITHOUT throwing — when the key already exists. Ignoring the option
+    // here would make every append-only test pass against a store that happily
+    // overwrites, which is the precise illusion the notes above this one were
+    // written about. onlyIfMatch is the update-side twin: it succeeds only if
+    // the caller has seen the current version.
+    async setJSON(k, v, opts) { return write(k, v, opts); },
+    async set(k, v, opts) { return write(k, v, opts); },
     async delete(k) { s.delete(k); },
   };
 }
@@ -61,6 +89,21 @@ export function read(storeName, key) {
 }
 
 export function reset(storeName) {
-  if (storeName) stores.delete(storeName);
-  else stores.clear();
+  if (storeName) { stores.delete(storeName); etagsByStore.delete(storeName); metaByStore.delete(storeName); }
+  else { stores.clear(); etagsByStore.clear(); metaByStore.clear(); }
+}
+
+/** Every key in a store, for tests that assert on what was appended. */
+export function keys(storeName) {
+  return [...(stores.get(storeName)?.keys() ?? [])].sort();
+}
+
+/**
+ * Write straight past the append-only layer, the way a rogue caller or a
+ * hand-run script would. Tests use this to prove the GUARD is what stops an
+ * overwrite, rather than the absence of anyone trying.
+ */
+export function forceWrite(storeName, key, value) {
+  if (!stores.has(storeName)) stores.set(storeName, new Map());
+  stores.get(storeName).set(key, roundTrip(value));
 }
