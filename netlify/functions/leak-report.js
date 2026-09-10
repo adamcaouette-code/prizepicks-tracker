@@ -31,6 +31,13 @@
 // ===========================================================================
 
 import { allBets, allResults } from './ledger-store.js';
+// STATIC import, with an import attribute. `new URL('./x.json', import.meta.url)`
+// does NOT resolve inside the Netlify function bundle — the module is rewritten
+// and the JSON is not beside it — and this endpoint shipped returning
+// {"error":"Invalid URL"} in production while every unit test passed, because
+// the tests exercise the pure functions and never the handler. Same pattern as
+// snapshot-background.js, which has worked all along.
+import PAYOUT_TABLES from './payout-tables.json' with { type: 'json' };
 import { configFor, breakEven, payoutTable } from './payout-engine.js';
 import { wilson } from './scoreboard.js';
 
@@ -456,10 +463,8 @@ ${d.slices.map(cell).join('')}</tbody></table>`).join('')}
 export const handler = async (event) => {
   const q = event?.queryStringParameters || {};
   try {
-    const { readFile } = await import('node:fs/promises');
-    const payoutConfigs = JSON.parse(await readFile(new URL('./payout-tables.json', import.meta.url), 'utf8')).configs;
     const rep = await loadReport({
-      payoutConfigs,
+      payoutConfigs: PAYOUT_TABLES.configs,
       minSlips: q.minSlips ? Number(q.minSlips) : undefined,
       minLegs: q.minLegs ? Number(q.minLegs) : undefined,
     });

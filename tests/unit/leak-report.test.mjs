@@ -235,4 +235,32 @@ export default async function ({ t }) {
     { payoutConfigs: CONFIGS },
   );
   t.eq('a half-settled slip contributes nothing', partial.length, 0);
+
+  // =========================================================================
+  // 9. THE HANDLER ITSELF — the gap that shipped a 500
+  //
+  // Every assertion above exercises the pure functions. The endpoint shipped to
+  // production returning {"error":"Invalid URL"} and the whole suite stayed
+  // green, because nothing ever called the handler. It loaded its payout tables
+  // with `new URL('./payout-tables.json', import.meta.url)`, which does not
+  // resolve inside the Netlify function bundle.
+  //
+  // A handler that 500s is not a pure-function bug and cannot be caught by
+  // pure-function tests. So: invoke it.
+  // =========================================================================
+  const { loadFn } = await import('../helpers/fn.mjs');
+  const { reset } = await import('../helpers/blobs.mjs');
+  reset();
+  const fn = await loadFn('leak-report.js');
+  const res = await fn.handler({ queryStringParameters: { format: 'json' } });
+  t.eq('the endpoint answers 200 on an EMPTY ledger', res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  t.ok('...with a real report, not an error', body.overall != null && body.questions != null,
+    String(res.body).slice(0, 120));
+  t.ok('...answering both questions even with nothing in the log',
+    /cannot be made at all|cannot be answered yet/.test(body.questions.goblinsVsDemons.answer),
+    body.questions.goblinsVsDemons.answer);
+  const page = await fn.handler({ queryStringParameters: {} });
+  t.eq('the app page answers 200 too', page.statusCode, 200);
+  t.ok('...as HTML', /text\/html/.test(page.headers['Content-Type']), page.headers['Content-Type']);
 }

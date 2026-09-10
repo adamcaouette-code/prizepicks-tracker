@@ -47,6 +47,13 @@ import { fetchProps } from './bet-finder-background.js';
 import { fairFromBooks } from './fair-odds.js';
 import { translate } from './alt-line.js';
 import { propKey, listCaptures, getCapture } from './ledger-store.js';
+// STATIC, for the same reason as leak-report.js — and here the failure was
+// SILENT rather than a 500: loadJson() caught the error and returned {}, so the
+// scheduled run would have used built-in defaults and quietly ignored every
+// threshold in stale-lines-config.json.
+import STALE_CONFIG from './stale-lines-config.json' with { type: 'json' };
+import BOOK_WEIGHTS from './book-weights.json' with { type: 'json' };
+import MARKET_MODELS from './market-models.json' with { type: 'json' };
 
 export const STORES = {
   state: 'stale-line-state',     // per-prop gap history, for persistence
@@ -518,11 +525,7 @@ const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Orig
 export const handler = async (event) => {
   const q = event?.queryStringParameters || {};
   try {
-    const [config, weights, models] = await Promise.all([
-      loadJson('./stale-lines-config.json'),
-      loadJson('./book-weights.json'),
-      loadJson('./market-models.json'),
-    ]);
+    const config = STALE_CONFIG, weights = BOOK_WEIGHTS, models = MARKET_MODELS;
     if (q.followUp) {
       return { statusCode: 200, headers: HEADERS, body: JSON.stringify(await followUp({ day: q.day, weights, config }), null, 2) };
     }
@@ -532,9 +535,3 @@ export const handler = async (event) => {
     return { statusCode: 500, headers: HEADERS, body: JSON.stringify({ error: String(err.message || err) }) };
   }
 };
-
-async function loadJson(rel) {
-  const { readFile } = await import('node:fs/promises');
-  try { return JSON.parse(await readFile(new URL(rel, import.meta.url), 'utf8')); }
-  catch { return {}; }
-}

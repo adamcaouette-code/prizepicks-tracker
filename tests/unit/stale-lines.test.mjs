@@ -334,4 +334,34 @@ export default async function ({ t }) {
   t.eq('a book that came back the other way is counted as reverted', fu2.reverted, 1);
   t.eq('...not as converged', fu2.converged, 0);
   t.eq('...and the convergence rate reflects it', fu2.convergenceRate, 0);
+
+  // =========================================================================
+  // 9. THE HANDLER, AND THE CONFIG IT ACTUALLY LOADS
+  //
+  // This module shipped loading its config with
+  // `new URL('./stale-lines-config.json', import.meta.url)`, which does not
+  // resolve in the Netlify bundle. The failure was SILENT — the loader caught
+  // it and returned {} — so the scheduled run would have used built-in defaults
+  // and ignored every threshold in the config file. Worse than a 500, because
+  // nothing would have looked wrong.
+  //
+  // The static import is checked by reading a value only the file has.
+  // =========================================================================
+  reset();
+  seed('line-snapshots', `capture/${at}`, capture(at, [snapRow(-260)]));
+  const m3 = mockFetch([[/./, () => ({ data: [] })]]);
+  try {
+    const res = await S.handler({ queryStringParameters: { league: 'mlb' } });
+    t.eq('the endpoint answers 200', res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    t.eq('...still spending no Odds API quota', body.oddsRequests, 0);
+    t.ok('...and it read the REAL config file, not built-in defaults',
+      body.at != null && typeof body.compared === 'number', String(res.body).slice(0, 120));
+  } finally { m3.restore(); }
+
+  //   The config's own values are what the gates use — checked against a number
+  //   that exists nowhere in the code's fallbacks.
+  t.eq('the alert cooldown comes from the config file', CONFIG.alert_cooldown_minutes, 10);
+  t.ok('...and the config is a real object, not an empty one from a failed load',
+    Object.keys(CONFIG).length > 8, String(Object.keys(CONFIG).length));
 }

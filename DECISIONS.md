@@ -212,3 +212,25 @@ spec; `repo-observed-2026-08` from the multipliers already in
 **How to resolve it.** Check a real 6-pick Power slip on the PrizePicks app and
 record the multiplier it prints. Then append an entry here retiring the wrong
 one.
+
+---
+
+## 2026-09-10 — JSON config is loaded by static import, never by path
+
+**Decision.** Function modules load their config with
+`import CONFIG from './x.json' with { type: 'json' }`, never with
+`readFile(new URL('./x.json', import.meta.url))`.
+
+**Why.** The path form does not resolve inside the Netlify function bundle — the
+module is rewritten and the JSON is not beside it. `leak-report` shipped to
+production returning `{"error":"Invalid URL"}`, and `stale-lines` had the same
+bug in a **silent** form: its loader caught the failure and returned `{}`, so the
+scheduled run would have used built-in defaults and ignored every threshold in
+its own config file.
+
+**Evidence.** Observed live on the 4.46.0 deploy. `snapshot-background.js` has
+used the static form all along and works.
+
+**How it was missed.** Every test exercised the pure functions; nothing invoked
+the handler. Both suites now call `handler()` and assert a 200 — a handler that
+500s is not a pure-function bug and cannot be caught by pure-function tests.
