@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "id": "optimizer-2026-09",
+  "effective_date": "2026-09-10",
+
+  "THESE_ARE_HARD_CONSTRAINTS": "Not preferences, not penalties in a scoring function. A slip violating any of them is never generated, never scored and never shown. A soft penalty would let a large enough EV buy its way past a correlation limit, which is exactly backwards: the limits exist because the EV estimate is least trustworthy in the cases they rule out.",
+
+  "constraints": {
+    "max_legs_per_game": 2,
+    "max_legs_per_team": 2,
+    "max_legs_per_player": 1,
+    "min_leg_probability": 0.35,
+    "allow_low_confidence_legs": false,
+    "allowed_sports": null,
+    "max_legs": 6,
+    "min_legs": 2,
+    "notes": {
+      "max_legs_per_game": "Three legs from one game is not three bets, it is one bet on that game with extra steps. The copula prices the dependence, but a matrix estimated on a handful of overlapping games is exactly where the model is weakest, so the limit is structural rather than something EV is allowed to argue with.",
+      "max_legs_per_player": "One leg per player, full stop. Two markets on the same player are close to a copy of each other — a hitter's hits and his total bases are the same at-bats — and same_player is the relationship with the strongest measured correlations in the whole table. Raising this to 2 is a decision to bet the same thing twice.",
+      "min_leg_probability": "A floor on the leg's own win probability, independent of price. Below about a third the projection is usually saying 'this rarely happens' rather than 'this is mispriced', and the tail of the distribution is where every model in this stack is least calibrated.",
+      "allow_low_confidence_legs": "The judge and the projection model both flag thin evidence. Off by default: a leg the model itself is unsure of does not belong in a slip whose payout requires every leg to land.",
+      "allowed_sports": "null means every sport. Set to a list to narrow, e.g. after the scoreboard shows one sport is not beating the book."
+    }
+  },
+
+  "staking": {
+    "bankroll": 1000,
+    "kelly_multiplier": 0.25,
+    "max_stake_per_slip": 50,
+    "max_slate_stake": 100,
+    "notes": {
+      "kelly_multiplier": "Quarter Kelly. Full Kelly is optimal only if the probabilities are exactly right, and the scoreboard cannot yet distinguish this model's calibration from miscalibrated. A quarter gives up a quarter of the growth rate for a fraction of the drawdown.",
+      "max_slate_stake": "A PORTFOLIO cap, applied after the slips are chosen. Kelly sizes each bet as if it were the only one; several slips off one slate share legs, games and weather, so their stakes are not additive in risk. When the recommended total exceeds this, every stake is scaled down proportionally and the report says so rather than silently truncating the list."
+    }
+  },
+
+  "search": {
+    "beam_width": 40,
+    "top_n": 5,
+    "prefilter_slack": 0.05,
+    "screen_paths": 5000,
+    "final_paths": 100000,
+    "seed": 20260910,
+    "notes": {
+      "beam_width": "How many partial slips survive at each size. 40 across a board of a few hundred props costs a second and finds the optimum on every synthetic case in the test suite; it is a heuristic and the report says so.",
+      "prefilter_slack": "How far below the hopeless bound a leg may sit and still be kept. See THE_PREFILTER_IS_ADMISSIBLE_ONLY_UNDER_INDEPENDENCE in slip-optimizer.js — correlation can rescue a leg the independent bound rejects, and this is the margin bought to cover that.",
+      "screen_paths": "Pricing every beam candidate at final_paths took 29 seconds on a 40-prop board \u2014 measured. So candidates are SCREENED at 5k paths (standard error ~0.007 on P(all hit)) and only a generous multiple of top_n is re-priced at final_paths. A candidate mis-ranked at the screen can fall outside that multiple; the multiple is the margin bought against it. The beam itself is guided by the exact INDEPENDENT EV, which is closed-form, so no simulation runs during the search at all."
+    }
+  },
+
+  "reporting": {
+    "min_ev_per_unit": 0.0,
+    "min_distinct_legs": 2,
+    "min_distinct_note": "The raw top five off a real board are five permutations of one idea. That is a correct ranking and a useless report. Each reported slip must differ from every earlier one by at least this many legs. The RUNNER-UP DIFF is exempt \u2014 it compares against the true second best, which is exactly where a one-leg swap is the informative thing to see.",
+    "min_ev_note": "NEVER PROPOSE A NEGATIVE-EV SLIP. This is a floor on what may be reported at all, not a tie-breaker. At 0.0 a slip must be strictly better than break-even to appear; if nothing on the board clears it the answer is 'no bet today', and the optimizer returns that rather than the least-bad losing slip."
+  }
+}

@@ -323,6 +323,94 @@ export function evFromJoint({ config, slipType, joint, legs, stake = 1 }) {
  * whose top multiplier is below 1 is a losing product at p = 1, and returning
  * 1.0 there would read as "you need certainty" instead of "this is impossible".
  */
+/**
+ * The Kelly-optimal fraction of bankroll, from an outcome distribution.
+ *
+ * ===========================================================================
+ * TAKES OUTCOMES, NOT PROBABILITIES, AND THAT IS THE WHOLE POINT
+ *
+ * `outcomes` is [{ probability, multiplier }] — exactly what evForSlip and
+ * evFromJoint already return in `byOutcome`. So the same function sizes an
+ * independent slip, a correlation-priced one, and a slip with push mass that
+ * re-prices at a smaller size, with no branch: whatever produced the
+ * distribution has already dealt with all of that.
+ *
+ * There IS another Kelly in this repo — kellyFraction() in bet-finder-size.js,
+ * private to the live board path. It takes probabilities and builds its own
+ * INDEPENDENT hit distribution internally, which is precisely the assumption
+ * slip-pricing.js exists to remove. It is left alone rather than refactored
+ * because it sits on the path that serves the board today, and a test pins the
+ * two to agree on the independent case so they cannot drift.
+ *
+ * ---------------------------------------------------------------------------
+ * SOLVED, NOT SCANNED
+ *
+ * Expected log growth is
+ *
+ *   G(f) = sum_k P_k * ln(1 - f + f * m_k)
+ *   G'(f) = sum_k P_k * (m_k - 1) / (1 - f + f * m_k)
+ *
+ * G is strictly concave on [0, 1), so G' is decreasing and has at most one
+ * root — found by bisection to machine precision. The existing implementation
+ * scans f in steps of 0.005, which cannot resolve a stake below half a percent
+ * of bankroll and quantises every recommendation to the grid.
+ *
+ * G'(0) = sum_k P_k * m_k - 1 = the EV per unit. So a non-positive edge gives
+ * f = 0 without any search, which is the correct answer and not a failure.
+ */
+export function kellyFraction(outcomes, { multiplier = 0.25, cap = 1, tol = 1e-12, maxIter = 200 } = {}) {
+  const rows = (outcomes || []).filter((o) => o.probability > 0);
+  if (!rows.length) return { fraction: 0, full: 0, reason: 'no outcomes' };
+
+  const gPrime = (f) => rows.reduce((s, o) => {
+    const ret = 1 - f + f * o.multiplier;
+    return ret <= 0 ? -Infinity : s + o.probability * (o.multiplier - 1) / ret;
+  }, 0);
+
+  const edge = gPrime(0);
+  if (!(edge > 0)) {
+    return { fraction: 0, full: 0, edge, reason: 'non-positive edge — the Kelly stake on a losing bet is zero' };
+  }
+
+  // The upper end of the search. Staking the whole bankroll is ruinous whenever
+  // any outcome pays 0, so the bracket stops just short of the point where the
+  // worst outcome would wipe it out.
+  const worst = Math.min(...rows.map((o) => o.multiplier));
+  let hi = worst >= 1 ? cap : Math.min(cap, 1 / (1 - worst) - 1e-9);
+  if (gPrime(hi) > 0) return finish(hi);
+
+  let lo = 0;
+  for (let i = 0; i < maxIter && hi - lo > tol; i++) {
+    const mid = (lo + hi) / 2;
+    if (gPrime(mid) > 0) lo = mid; else hi = mid;
+  }
+  return finish((lo + hi) / 2);
+
+  function finish(full) {
+    const growth = rows.reduce((s, o) => s + o.probability * Math.log(1 - full + full * o.multiplier), 0);
+    return {
+      // FRACTIONAL KELLY BY DEFAULT. Full Kelly is optimal only if the
+      // probabilities are exactly right, and the scoreboard says the model's
+      // are not yet distinguishable from miscalibrated. A quarter-Kelly stake
+      // gives up a quarter of the growth rate for a fraction of the drawdown,
+      // and it is the standard answer to "my edge estimate has error in it".
+      fraction: full * multiplier,
+      full,
+      kellyMultiplier: multiplier,
+      edge,
+      expectedLogGrowth: growth,
+    };
+  }
+}
+
+/** Kelly stake in currency, from a priced slip. */
+export function kellyStake(priced, { bankroll, multiplier = 0.25, maxStake = null, cap = 1 } = {}) {
+  const k = kellyFraction(priced?.byOutcome, { multiplier, cap });
+  let stake = k.fraction * bankroll;
+  if (maxStake != null) stake = Math.min(stake, maxStake);
+  return { ...k, bankroll, stake: Math.round(stake * 100) / 100 };
+}
+
 export function breakEven({ config, slipType, legCount, legs = null, tol = 1e-12 }) {
   const table = payoutTable(config, slipType, legCount);
   if (!table) return null;

@@ -153,6 +153,12 @@ export function priceSlip({
       distribution: sim.correctCount,
       joint: sim.anyPush ? sim.joint : null,
       probAnyPush: correlated.probAnyPush ?? 0,
+      // The payout-tier breakdown, carried through rather than rebuilt. It is
+      // what the Kelly solver needs — a probability beside the MULTIPLIER it
+      // pays, which only the payout engine knows — and reconstructing it
+      // anywhere else would be a second copy of the table lookup.
+      byOutcome: correlated.byOutcome,
+      probAnyPayout: correlated.probAnyPayout,
     },
     // THE DELTAS — requirement 4.
     delta: {
