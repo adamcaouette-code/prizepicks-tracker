@@ -46,6 +46,20 @@
 [functions."snapshot-cron"]
   schedule = "*/10 * * * *"
 
+# The stale-line monitor. Every 5 minutes, per the brief.
+#
+# IT SPENDS NO ODDS API QUOTA, which is the only reason this cadence is
+# affordable at all. The PrizePicks half is free and is fetched live; the book
+# half is read from the archive snapshot-cron already captured. A 5-minute
+# monitor that re-fetched book prices would cost ~26,000 credits a day on its
+# own — see THIS_FUNCTION_SPENDS_NO_ODDS_API_QUOTA in stale-lines-config.json.
+#
+# Twice the cadence of the snapshot on purpose: the PP line is what goes stale,
+# and seeing it move five minutes sooner is the whole product. Half the runs
+# read the same capture twice, which costs a blob read.
+[functions."stale-lines"]
+  schedule = "*/5 * * * *"
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"

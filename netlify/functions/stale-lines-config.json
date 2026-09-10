@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "id": "stale-lines-2026-09",
+  "effective_date": "2026-09-10",
+
+  "THIS_FUNCTION_SPENDS_NO_ODDS_API_QUOTA": "The PrizePicks side is fetched live because it is free and it is the side that goes stale. The book side is read from the line-snapshot archive that snapshot-cron already captured and paid for — ~90 credits every ten minutes. Re-fetching book prices here would double that spend to look at numbers already in the store. The cost of a run is asserted at zero in the tests.",
+
+  "persistence_min_gap": 0.02,
+  "persistence_half_saturation_min": 20,
+  "persistence_note": "A gap under 2pp does not start or continue a run — a run made of noise around zero would otherwise accumulate a '20 minute' history it never had. The saturation point is where persistence is worth half its maximum: 20 minutes matches the brief. It SATURATES rather than growing linearly because a gap that has not closed in six hours is more likely to be a name-mapping error than an edge, and a linear weight would rank the phantom above a live one.",
+
+  "velocity_window_minutes": 60,
+  "velocity_reference_per_hour": 0.10,
+  "velocity_weight": 1.0,
+  "velocity_note": "Fitted by least squares over the archived captures in the window — first-minus-last would let one stale quote at either end define the trend, and stale quotes are what this module is surrounded by. The reference is the movement that earns a full bonus: 10 probability points an hour is a market genuinely repricing. The bonus applies ONLY when the book is moving toward the gap; a book closing the gap earns nothing, and never a penalty, because a closing gap is already smaller.",
+
+  "alert_min_gap": 0.04,
+  "alert_min_held_minutes": 10,
+  "alert_min_books": 2,
+  "alert_cooldown_minutes": 10,
+  "alert_max_per_run": 5,
+  "alert_note": "CONFIDENCE HERE IS PERSISTENCE PLUS BOOK COUNT, not a model's self-report. One book quoting a number is a quote; two agreeing is a market. The cooldown is the brief's 10 minutes, per prop. alert_max_per_run is the second rate limit and it is the one that stops a whole volatile SLATE from spamming — a per-prop cooldown alone does nothing when forty different props all qualify at once.",
+
+  "convergence_horizon_minutes": 60,
+  "convergence_flat_band": 0.005,
+  "min_alerts_to_conclude": 30,
+  "convergence_note": "Alerts are scored on whether the BOOK kept moving the way the gap pointed, not on whether the prop won. A prop's result is one coin flip; market movement is a measurement with a real sample size, available in an hour instead of after grading. A move inside the flat band is neither converged nor reverted and is counted apart rather than rounded into a win."
+}
