@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "id": "projection-2026-09",
+  "effective_date": "2026-09-10",
+
+  "EVERY_NUMBER_HERE_IS_A_KNOB": "Nothing in projection.js is hardcoded. Half-lives, priors, shrinkage strength, opponent weight, home factor, exposure assumptions, confidence thresholds and the book blend all live here. They are STARTING VALUES chosen from convention, not fitted — the same posture as book-weights.json and market-models.json. The archive plus the results store is what would replace them with measurements.",
+
+  "recency": {
+    "half_life_days": 30,
+    "max_lookback_days": 400,
+    "note": "Weight on a game decays as 0.5^(age_days / half_life). 30 days is about a month of form: a game from four weeks ago counts half of last night's. NUMERATOR AND DENOMINATOR ARE BOTH WEIGHTED — the rate is sum(w*stat)/sum(w*exposure), not a weighted mean of per-game rates. Averaging per-game rates lets a 12-minute cameo where he happened to shoot once count as much as a full 90, which is precisely the volume/role conflation the rate model exists to avoid."
+  },
+
+  "shrinkage": {
+    "prior_exposure_units": {
+      "mlb_pitcher": 18.0,
+      "mlb_hitter": 60.0,
+      "soccer": 450.0
+    },
+    "note": "Expressed as PRIOR EXPOSURE, in the same units as the observed exposure, which is what makes the shrinkage scale with sample size automatically. The posterior rate is (sum(w*stat) + prior_rate*prior_exposure) / (sum(w*exposure) + prior_exposure) — a Gamma-Poisson posterior mean. 18 innings is about three starts; a pitcher with 30 innings logged is pulled roughly 40% toward the prior, one with 150 innings barely at all. 450 minutes is five full matches. No separate 'shrinkage weight' knob is needed or wanted: one number in exposure units does the whole job, and a second knob would let the two disagree."
+  },
+
+  "priors": {
+    "note": "Positional prior RATES, per unit of exposure. These are league-average-ish figures by role and are the least defensible numbers in the file — they are conventional, not measured. They matter most for a player with few games, which is exactly when they are hardest to check.",
+    "mlb": {
+      "strikeouts": { "per": "innings", "SP": 1.05, "RP": 1.15, "default": 1.05 },
+      "hits_allowed": { "per": "innings", "default": 0.92 },
+      "walks": { "per": "innings", "default": 0.32 },
+      "earnedRuns": { "per": "innings", "default": 0.45 },
+      "hits": { "per": "atBats", "default": 0.25 },
+      "totalBases": { "per": "atBats", "default": 0.40 },
+      "homeRuns": { "per": "atBats", "default": 0.035 }
+    },
+    "soccer": {
+      "shotsOnTarget": { "per": "minutes", "F": 0.0135, "M": 0.0075, "D": 0.0030, "default": 0.0080 },
+      "totalShots": { "per": "minutes", "F": 0.0320, "M": 0.0190, "D": 0.0090, "default": 0.0190 },
+      "totalGoals": { "per": "minutes", "F": 0.0045, "M": 0.0022, "D": 0.0009, "default": 0.0025 },
+      "foulsCommitted": { "per": "minutes", "default": 0.0130 },
+      "goalAssists": { "per": "minutes", "default": 0.0022 }
+    },
+    "prior_note": "Rates per minute look small because they are per minute: 0.0135 shots on target per minute is 1.22 per 90, which is a first-choice forward."
+  },
+
+  "opponent": {
+    "weight": 0.5,
+    "clamp": [0.7, 1.4],
+    "note": "Multiplicative: factor = (opponent_allowed_rate / league_average_rate) ^ weight. Weight 0 ignores the opponent entirely, 1 applies the full observed ratio. 0.5 is a deliberate half-measure — a single season of team-allowed rates is itself a small sample, and taking it at face value would double-count noise that is already in the player's own log. Clamped because an early-season outlier can otherwise produce a factor of 2."
+  },
+
+  "home_away": {
+    "home_factor": 1.02,
+    "away_factor": 0.98,
+    "note": "Small on purpose. Home advantage in team results is large and well established; home advantage in an INDIVIDUAL player's counting rate is much smaller and mostly flows through team performance, which the opponent term already touches. A 2% tilt is about the size of the real effect for shot volume; anything larger would be asserting more than is known."
+  },
+
+  "exposure": {
+    "half_life_days": 45,
+    "min_games": 3,
+    "note": "Exposure gets its own, LONGER half-life than the rate. Role changes slowly and is stickier than form — a player who has started six straight is likely to start again, while a player's shooting rate genuinely moves week to week. Using one half-life for both would force a compromise that suits neither.",
+    "dispersion_floor": {
+      "mlb_pitcher": 0.22,
+      "mlb_hitter": 0.15,
+      "soccer": 0.30
+    },
+    "dispersion_note": "A floor on the coefficient of variation of projected exposure, applied even when the observed history looks stable. Six straight 6-inning starts do not mean the seventh is certain — an early hook, a rain delay or a blowout are always live, and a model that projected exposure with near-zero variance would produce a confidently narrow distribution for the wrong reason. The floor is what stops observed stability from being read as certainty.",
+    "soccer_minutes_from_appearance": {
+      "started_finished": 90,
+      "started_subbed": 66,
+      "came_on": 23,
+      "unused": 0,
+      "sd": {
+        "started_finished": 4,
+        "started_subbed": 14,
+        "came_on": 12
+      },
+      "note": "ESPN's soccer game log HAS NO MINUTES COLUMN — labels are G, A, SHOT, SOG, FC, FA, OF, YC, RC and nothing else. The match summary adds starter / subbedIn / subbedOut as BOOLEANS, with no minute attached. So minutes for soccer are IMPUTED from appearance type, and these are the imputation. This is the largest single approximation in the whole model and it is confined to one place on purpose. The per-type sd is not decoration: a player who started and finished has near-certain minutes, one who came off the bench has very uncertain ones, and that difference propagates into the final distribution."
+    }
+  },
+
+  "confidence": {
+    "min_effective_games": {
+      "mlb_pitcher": 4.0,
+      "mlb_hitter": 8.0,
+      "soccer": 4.0,
+      "default": 5.0
+    },
+    "min_effective_games_note": "PER GROUP, because the threshold is not comparable across sports at a fixed half-life. Effective games saturates at 1/(1 - 0.5^(days_between_games / half_life)): a starting pitcher going every fifth day can never exceed 9.2 no matter how long the season, a footballer playing weekly tops out at 6.7, and a daily hitter reaches 44. A single number of 5 therefore reads as 'a healthy sample' for a hitter and 'most of a season' for a footballer, and it permanently flagged a pitcher with six recent starts \u2014 which is a good sample by any reading. These are set so that roughly six recent starts, or ten recent matches, clear the bar.",
+    "min_effective_exposure": {
+      "mlb_pitcher": 20.0,
+      "mlb_hitter": 60.0,
+      "soccer": 400.0
+    },
+    "note": "Effective games is the sum of recency weights, not a raw count: ten games all a year old is an effective sample of well under one. Below either threshold the output is flagged low_confidence with the reason, and the flag is a FIELD rather than a suppression — a thin projection is still worth seeing next to a book price, as long as nothing downstream can mistake it for a firm one."
+  },
+
+  "book_blend": {
+    "book_weight": 0.80,
+    "note": "DEFAULT HEAVILY TOWARD THE BOOK, as instructed, and the instruction is right. A market price aggregates injury news, lineup leaks, weather and the opinions of everyone willing to stake money on being correct; this model sees a game log and a few knobs set from convention. 0.80 is a starting point rather than a measured optimum. The blend is a LINEAR POOL of the two probabilities at the line, and both components are logged separately, unblended, so their relative accuracy can be scored against outcomes later and the weight replaced with a number instead of a belief.",
+    "min_book_weight_when_low_confidence": 0.92,
+    "low_confidence_note": "When the model flags itself low confidence, its share is cut further rather than being dropped. Dropping it entirely would lose the one case where it is most useful — a market the books do not price at all — and keeping it at full weight would let a three-game sample argue with a market."
+  },
+
+  "distribution": {
+    "family_by_market": {
+      "strikeouts": "negative_binomial",
+      "shotsOnTarget": "negative_binomial",
+      "totalShots": "poisson",
+      "totalGoals": "zero_inflated_poisson",
+      "hits": "poisson",
+      "totalBases": "poisson",
+      "homeRuns": "zero_inflated_poisson",
+      "foulsCommitted": "poisson",
+      "goalAssists": "zero_inflated_poisson"
+    },
+    "quadrature_nodes": 256,
+    "note": "The conditional family, GIVEN exposure. Compounding over the exposure distribution adds variance on top, so a Poisson conditional does not produce a Poisson marginal — it produces something overdispersed, which is the correct behaviour and is where most of the realism comes from. quadrature_nodes controls the exposure grid. Against the closed form \u2014 a Poisson mixed over a Gamma exposure IS exactly negative binomial \u2014 256 nodes reproduce the analytic PMF to ~3e-12 for a steady starter and the mean to ~1e-8 for a high-variance bench player, whose flatter, wider exposure density is what actually sets the node count. 96 was enough for the first case and off by 8e-6 on the second. The grid RANGE mattered far more than the node count: truncating the Gamma at +6sd left ~3e-6 of mass outside the grid and biased every mean downward, and no number of nodes inside a too-narrow range fixed it."
+  }
+}
