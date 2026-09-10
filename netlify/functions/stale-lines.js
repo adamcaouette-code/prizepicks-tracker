@@ -522,6 +522,10 @@ export async function followUp({ day = null, weights = {}, config = {} } = {}) {
 
 const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
 
+/** Same shape and same cap as SNAPSHOT_LEAGUES and CALIBRATION_LEAGUES. */
+export const leaguesFrom = (raw) => String(raw || 'mlb')
+  .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean).slice(0, 4);
+
 export const handler = async (event) => {
   const q = event?.queryStringParameters || {};
   try {
@@ -529,8 +533,53 @@ export const handler = async (event) => {
     if (q.followUp) {
       return { statusCode: 200, headers: HEADERS, body: JSON.stringify(await followUp({ day: q.day, weights, config }), null, 2) };
     }
-    const out = await run({ league: q.league || 'mlb', config, weights, models });
-    return { statusCode: 200, headers: HEADERS, body: JSON.stringify(out, null, 2) };
+    // EVERY LEAGUE THE ARCHIVE COVERS, not just MLB.
+    //
+    // This shipped monitoring `q.league || 'mlb'`, and the cron passes no query
+    // string — so the scheduled run watched MLB and nothing else, however many
+    // leagues SNAPSHOT_LEAGUES was capturing. A monitor silently blind to two
+    // thirds of the board is worse than no monitor, because the empty alert
+    // list reads as "no edges" rather than "not looking".
+    //
+    // Defaults to the SAME env var the archive uses, so the two cannot drift:
+    // there is no point monitoring a league nothing captures book prices for.
+    const leagues = q.league
+      ? [String(q.league).toLowerCase()]
+      : leaguesFrom(process.env.STALE_LINE_LEAGUES || process.env.SNAPSHOT_LEAGUES);
+
+    // EACH LEAGUE IS INDEPENDENT. PrizePicks does not post every league at every
+    // hour — there is no NFL board at 4am on a Tuesday, and fetchProps says so
+    // by throwing. One league being absent must not take the others down with
+    // it, which is exactly what a single try/catch around the loop would do:
+    // the run would 500, no MLB gap would be checked, and the cron log would
+    // show a failure rather than "NFL is not up yet".
+    const runs = [];
+    for (const league of leagues) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        runs.push(await run({ league, config, weights, models }));
+      } catch (e) {
+        // NOT `skipped` — a successful run() already returns a `skipped` field,
+        // a histogram of per-prop skip reasons, and `{}` is truthy. Overloading
+        // the name made every healthy league report itself as absent with an
+        // empty reason, which is the exact shape this repo bans: a refusal that
+        // carries no sentence. `failed` means the league did not run at all.
+        runs.push({ league, failed: String(e.message || e), oddsRequests: 0, alertCount: 0 });
+      }
+    }
+    return {
+      statusCode: 200,
+      headers: HEADERS,
+      body: JSON.stringify({
+        leagues,
+        // Still zero, summed across every league — the promise is per-run, not
+        // per-league, because none of them touch the Odds API at all.
+        oddsRequests: runs.reduce((a, r) => a + r.oddsRequests, 0),
+        alertCount: runs.reduce((a, r) => a + r.alertCount, 0),
+        skipped: runs.filter((r) => r.failed).map((r) => ({ league: r.league, why: r.failed })),
+        runs,
+      }, null, 2),
+    };
   } catch (err) {
     return { statusCode: 500, headers: HEADERS, body: JSON.stringify({ error: String(err.message || err) }) };
   }

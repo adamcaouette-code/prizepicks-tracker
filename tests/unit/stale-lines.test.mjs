@@ -356,7 +356,7 @@ export default async function ({ t }) {
     const body = JSON.parse(res.body);
     t.eq('...still spending no Odds API quota', body.oddsRequests, 0);
     t.ok('...and it read the REAL config file, not built-in defaults',
-      body.at != null && typeof body.compared === 'number', String(res.body).slice(0, 120));
+      Array.isArray(body.runs) && body.runs.length === 1, String(res.body).slice(0, 140));
   } finally { m3.restore(); }
 
   //   The config's own values are what the gates use — checked against a number
@@ -364,4 +364,97 @@ export default async function ({ t }) {
   t.eq('the alert cooldown comes from the config file', CONFIG.alert_cooldown_minutes, 10);
   t.ok('...and the config is a real object, not an empty one from a failed load',
     Object.keys(CONFIG).length > 8, String(Object.keys(CONFIG).length));
+
+  // =========================================================================
+  // 10. EVERY LEAGUE, NOT JUST MLB
+  //
+  // The scheduled handler shipped watching `q.league || 'mlb'`, and the cron
+  // passes no query string — so it monitored MLB and nothing else, however many
+  // leagues the archive was capturing. With football in season that is two
+  // thirds of the board unwatched, and the empty alert list would have read as
+  // "no edges" rather than "not looking".
+  //
+  // It now defaults to the SAME env var the archive uses, so the two cannot
+  // drift: there is no point monitoring a league nothing captures prices for.
+  // =========================================================================
+  t.eq('a single league parses', S.leaguesFrom('nfl'), ['nfl']);
+  t.eq('...several, trimmed and lowercased', S.leaguesFrom(' MLB , nfl ,CFB '), ['mlb', 'nfl', 'cfb']);
+  t.eq('...empty falls back to mlb, matching the archive default', S.leaguesFrom(''), ['mlb']);
+  t.eq('...and it is capped at four, like SNAPSHOT_LEAGUES and CALIBRATION_LEAGUES',
+    S.leaguesFrom('a,b,c,d,e,f').length, 4);
+
+  const prevEnv = process.env.SNAPSHOT_LEAGUES;
+  process.env.SNAPSHOT_LEAGUES = 'mlb,nfl';
+  reset();
+  seed('line-snapshots', `capture/${at}`, capture(at, [snapRow(-260)]));
+  const m4 = mockFetch([[/./, () => ({ data: [] })]]);
+  try {
+    const res = await S.handler({ queryStringParameters: {} });
+    const body = JSON.parse(res.body);
+    t.eq('the scheduled run covers every configured league', body.leagues, ['mlb', 'nfl']);
+    t.eq('...one run each', body.runs.length, 2);
+    t.eq('...and STILL spends no Odds API quota across all of them', body.oddsRequests, 0);
+    //   A league that RAN is not a league that was skipped. run() returns its
+    //   own `skipped` field — a histogram of per-prop reasons — and `{}` is
+    //   truthy, so filtering on it listed every healthy league as absent with an
+    //   empty `why`. This assertion is the one that catches that.
+    t.eq('a league that ran is not reported as skipped',
+      body.skipped.filter((x) => x.league === 'mlb').length, 0);
+  } finally {
+    m4.restore();
+    if (prevEnv === undefined) delete process.env.SNAPSHOT_LEAGUES; else process.env.SNAPSHOT_LEAGUES = prevEnv;
+  }
+
+  //   An explicit ?league= still narrows it, for a one-off check.
+  //
+  //   And the league here is one PrizePicks is NOT posting, which is the case
+  //   that matters with football in season: there is no NFL board at 4am on a
+  //   Tuesday. A single try/catch around the whole loop would 500 the run, skip
+  //   the MLB check entirely, and log a failure rather than "not up yet".
+  const m5 = mockFetch([[/./, () => ({ data: [] })]]);
+  try {
+    const res5 = await S.handler({ queryStringParameters: { league: 'cfb' } });
+    t.eq('a league PrizePicks is not posting does NOT 500 the run', res5.statusCode, 200);
+    const one = JSON.parse(res5.body);
+    t.eq('an explicit league overrides the env', one.leagues, ['cfb']);
+    t.eq('...and the absence is reported as a skip, with the reason', one.skipped.length, 1);
+    //   The reason must be a SENTENCE, not a truthy object. `!!{}` is true, and
+    //   an assertion that only checks truthiness passes on an empty reason.
+    t.eq('...and the reason is a string, not an empty object',
+      typeof one.skipped[0].why, 'string');
+    t.ok('...naming the league', /cfb/.test(one.skipped[0].why), one.skipped[0].why);
+  } finally { m5.restore(); }
+
+  //   The case that actually matters: one league is up, one is not, and the one
+  //   that is up must still run.
+  //
+  //   The league that is down here is `cfb` rather than `nfl`, because `nfl` is
+  //   in the hardcoded PP_LEAGUE_IDS map and therefore ALWAYS resolves — an
+  //   earlier draft of this test used it and neither league ever failed, so the
+  //   test proved nothing while passing.
+  const prev2 = process.env.SNAPSHOT_LEAGUES;
+  process.env.SNAPSHOT_LEAGUES = 'mlb,cfb';
+  reset();
+  seed('line-snapshots', `capture/${at}`, capture(at, [snapRow(-260)]));
+  const m6 = mockFetch([[/./, () => ({ data: [] })]]);
+  try {
+    const mixed = JSON.parse((await S.handler({ queryStringParameters: {} })).body);
+    t.eq('with one league up and one down, both are attempted', mixed.runs.length, 2);
+    //   THE POINT OF THE WHOLE SECTION: the league that is up still produces a
+    //   real run. Asserting only on the skip list lets a version where BOTH
+    //   leagues died pass, which is what the first draft of this test did.
+    const mlbRun = mixed.runs.find((r) => r.league === 'mlb');
+    t.ok('...the league that is up produced a real run', !!mlbRun && !mlbRun.failed,
+      JSON.stringify(mlbRun && mlbRun.failed));
+    t.ok('...having actually read the archive, not died before reaching it',
+      mlbRun.archive != null && mlbRun.archive.captures >= 1, JSON.stringify(mlbRun.archive));
+    t.eq('...and only the league that is down appears in the skip list',
+      mixed.skipped.map((x) => x.league), ['cfb']);
+    t.ok('...with a sentence saying why', typeof mixed.skipped[0].why === 'string'
+      && mixed.skipped[0].why.length > 0, JSON.stringify(mixed.skipped[0]));
+    t.eq('...and the whole run still spends no quota', mixed.oddsRequests, 0);
+  } finally {
+    m6.restore();
+    if (prev2 === undefined) delete process.env.SNAPSHOT_LEAGUES; else process.env.SNAPSHOT_LEAGUES = prev2;
+  }
 }

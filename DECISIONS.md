@@ -234,3 +234,41 @@ used the static form all along and works.
 **How it was missed.** Every test exercised the pure functions; nothing invoked
 the handler. Both suites now call `handler()` and assert a 200 — a handler that
 500s is not a pure-function bug and cannot be caught by pure-function tests.
+
+---
+
+## 2026-09-10 — The stale-line monitor watches every captured league, and one dead league cannot kill the run
+
+**Decision.** `stale-lines.js` reads its league list from
+`STALE_LINE_LEAGUES || SNAPSHOT_LEAGUES` (comma-separated, capped at 4, default
+`mlb`) and runs each league inside its own `try`. A league that throws is
+reported in a `skipped` array; the others still run.
+
+**Why.** The handler shipped with `q.league || 'mlb'` and the cron passes no
+query string, so the scheduled run watched MLB and nothing else — however many
+leagues `SNAPSHOT_LEAGUES` was capturing. With football in season that is two
+thirds of the board unwatched, and the failure is silent in the worst way: an
+empty alert list reads as "no edges today" rather than "not looking."
+
+The per-league `try` exists because absence is normal, not exceptional.
+PrizePicks returns a 500 for `?league=cfb` out of season, and one out-of-season
+league 500-ing the whole scheduled run would take the in-season ones down with
+it.
+
+The per-league failure field is named `failed`, not `skipped`. `run()` already
+returns a `skipped` field — a histogram of per-prop skip reasons — and `{}` is
+truthy, so the first draft's `runs.filter((r) => r.skipped)` listed every
+*healthy* league as absent with an empty reason. That is a refusal carrying no
+sentence, which this repo bans.
+
+**Evidence.** Observed live: `?league=cfb` returns
+`{"error":"PrizePicks isn't posting a league called 'cfb' right now"}` while
+`?league=mlb` returns a normal run. The test that matters pins the mixed case —
+MLB up, CFB down, both attempted, MLB still reads the archive, only CFB in the
+skip list with a real sentence, quota still zero. (It pins CFB and not NFL
+because `nfl` is in the hardcoded `PP_LEAGUE_IDS` map and always resolves, so an
+NFL fixture never actually failed.)
+
+**How to overturn it.** Nothing to overturn; the cap of 4 is the only knob, and
+it exists to bound the free-endpoint fan-out, not the paid one — this function
+deliberately spends zero Odds API credits.
