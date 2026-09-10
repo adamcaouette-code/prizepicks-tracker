@@ -38,6 +38,8 @@ import {
 } from './bet-finder-background.js';
 import { marketFor } from './odds-markets.js';
 import { appendCapture, hasClosing, AppendOnlyViolation } from './ledger-store.js';
+import { fairForRows } from './fair-odds.js';
+import BOOK_WEIGHTS from './book-weights.json' with { type: 'json' };
 
 // Per-capture credit ceiling: markets x events actually requested.
 const DEFAULT_BUDGET = Number(process.env.SNAPSHOT_ODDS_BUDGET ?? 60);
@@ -219,14 +221,31 @@ export async function capture({
     for (const r of rows) r.book_status = why;
   }
 
+  // FAIR PROBABILITY, COMPUTED AT CAPTURE TIME.
+  //
+  // It goes in the row rather than into a derived store beside it, because the
+  // archive is append-only: a capture written now can never be amended later,
+  // so anything that belongs to this instant has to be here when it is written.
+  //
+  // This is a CACHE of a pure function, not the source of truth. The raw book
+  // prices are archived on the same row, so any other de-vig method — or a
+  // corrected book-weight table — can be re-run against this exact instant
+  // afterwards and will get an answer that is just as real. That is what makes
+  // the computation reconstructible; the stored number only makes it fast.
+  const priced = fairForRows(rows, { config: BOOK_WEIGHTS, side: 'over' });
+
   const meta = {
     league,
+    fair_method: BOOK_WEIGHTS.default_method,
+    fair_config_id: BOOK_WEIGHTS.id,
+    fair_priced: priced.filter((r) => r.fair.prob != null).length,
+    fair_disagreements: priced.filter((r) => r.fair.disagrees).length,
     odds_credits_spent: spent,
     odds_budget: spendCap,
     odds_quota_remaining: quota.remaining,
     priced: rows.filter((r) => r.books.length).length,
   };
-  return appendCapture({ capturedAt, isClosing: closing, eventId, rows, meta });
+  return appendCapture({ capturedAt, isClosing: closing, eventId, rows: priced, meta });
 }
 
 /**

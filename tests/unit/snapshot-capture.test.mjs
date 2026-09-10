@@ -103,6 +103,37 @@ export default async function ({ t }) {
   t.eq('the row carries the capture time it belongs to', out.rows[0].captured_at, out.captured_at);
   t.eq('a routine capture is not a closing one', out.is_closing, false);
 
+  // ---- fair probability, embedded at capture time -------------------------
+  // It has to be IN the row: the archive is append-only, so a capture written
+  // now can never be amended, and anything belonging to this instant must be
+  // present when it is written.
+  //
+  // -160/+130 and -155/+125, de-vigged and weighted, lands a little over 58%.
+  t.ok('the archived row carries a fair probability',
+    out.rows[0].fair.prob > 0.55 && out.rows[0].fair.prob < 0.62, String(out.rows[0].fair.prob));
+  t.eq('...at the line the books were on', out.rows[0].fair.line, 0.5);
+  t.eq('...counting both books', out.rows[0].fair.book_count, 2);
+  t.ok('...with the raw hold recorded before removal', out.rows[0].fair.hold > 0, String(out.rows[0].fair.hold));
+  t.eq('...and the method and weight table that produced it',
+    [out.rows[0].fair.method, out.rows[0].fair.config_id], ['shin', 'default-sharpness-2026-09']);
+  t.eq('the capture summarises how much of it got priced', out.meta.fair_priced, 1);
+
+  // The stored number is a CACHE of a pure function. What makes the
+  // computation reconstructible is that the raw prices are archived beside it,
+  // so a different method — or a corrected weight table — can be re-run against
+  // this exact instant afterwards.
+  const F = await loadFn('fair-odds.js');
+  const archived = read('line-snapshots', `capture/${out.captured_at}`).rows[0];
+  t.eq('the raw book prices survive in the archive', archived.books.length, 2);
+  const weights = JSON.parse(
+    (await import('node:fs')).readFileSync('netlify/functions/book-weights.json', 'utf8'),
+  );
+  t.ok('...so recomputing from the archive reproduces the stored number',
+    Math.abs(F.fairFromBooks(archived.books, { config: weights }).fairProb - archived.fair.prob) < 1e-12, '');
+  t.ok('...and another method against the same instant is a real, different answer',
+    Math.abs(F.fairFromBooks(archived.books, { config: weights, method: 'multiplicative' }).fairProb
+      - archived.fair.prob) > 1e-6, '');
+
   // ---- the budget, which is what keeps this affordable --------------------
   // The PrizePicks half is free; the book half is metered per market per event.
   // At 144 captures a day the uncapped bill is ~390k credits a month, so the
@@ -121,6 +152,8 @@ export default async function ({ t }) {
   t.eq('...carrying its line', broke.rows[0].pp_line, 0.5);
   t.eq('...with no book data and a reason', [broke.rows[0].books.length, broke.rows[0].book_status],
     [0, 'odds budget is 0']);
+  t.eq('...and a null fair probability rather than a fabricated one',
+    [broke.rows[0].fair.prob, broke.rows[0].fair.unpriced], [null, 'no book posted a two-way price']);
   t.eq('...and the capture reports what it spent', broke.meta.odds_credits_spent, 0);
 
   // ---- closing captures ---------------------------------------------------

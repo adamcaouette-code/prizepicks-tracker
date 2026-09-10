@@ -28,18 +28,17 @@
 // excess is the book's margin, not information about the game.
 
 import { allBets, snapshotRow, listCaptures, getCapture } from './ledger-store.js';
+import { americanToProb, devig } from './fair-odds.js';
 
 const HEADERS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
 // ---------------------------------------------------------------------------
 // Odds maths
 
-/** American odds -> implied probability, vig included. */
-export function americanToProb(odds) {
-  const n = Number(odds);
-  if (!isFinite(n) || n === 0) return null;
-  return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
-}
+// Odds arithmetic lives in fair-odds.js (imported above). This file had its own
+// copy, and bet-finder-background.js had a third that disagreed with both on the
+// missing-price case. Re-exported so existing callers and tests are unchanged.
+export { americanToProb };
 
 /**
  * Strip the vig from a two-way market by proportional (multiplicative) scaling.
@@ -55,13 +54,13 @@ export function americanToProb(odds) {
  * flatters a CLV number is worse than none. Proportional is the standard, it is
  * transparent, and it is stated here so a later reader knows it was a choice.
  */
-export function noVig(overOdds, underOdds) {
+export function noVig(overOdds, underOdds, method = 'multiplicative') {
   const o = americanToProb(overOdds);
   const u = americanToProb(underOdds);
   if (o == null || u == null) return null;
-  const total = o + u;
-  if (!(total > 0)) return null;
-  return { over: o / total, under: u / total, vig: total - 1 };
+  const d = devig([o, u], method);
+  if (!d) return null;
+  return { over: d.probs[0], under: d.probs[1], vig: d.hold, method: d.method };
 }
 
 /**

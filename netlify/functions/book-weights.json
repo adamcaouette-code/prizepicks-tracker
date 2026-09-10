@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "id": "default-sharpness-2026-09",
+  "effective_date": "2026-09-09",
+  "default_method": "shin",
+  "disagreement_threshold": 0.04,
+  "line_disagreement_threshold": 0.5,
+
+  "PROVENANCE": "EVERY WEIGHT BELOW IS AN ASSUMPTION, NOT A MEASUREMENT. They encode the conventional view that a book which takes large sharp action and moves on it prices closer to true than one that caters to recreational money and shades toward public sides. Nothing in this repository has tested that on player props, which is the only market this app touches, and the conventional view is drawn mostly from sides and totals. Treat the ORDER as a plausible prior and the SPACING as arbitrary — the gap between 1.0 and 0.55 is a guess about relative accuracy, not a measured ratio.",
+
+  "HOW_TO_CALIBRATE": "The line-snapshot archive already records every book's line and price at capture, and the results store records outcomes. That is everything needed to replace these guesses with numbers: for each book, score its de-vigged closing probability against realised outcomes (Brier, or log loss), then set weights from measured accuracy rather than reputation. Until that is run these weights should be regarded as a tie-breaker, not as knowledge. Doing it properly needs a preregistered window — see docs/prereg-demon-auc.md for the shape of that.",
+
+  "weights": {
+    "pinnacle": 1.0,
+    "circa": 0.9,
+    "betonlineag": 0.7,
+    "bookmaker": 0.7,
+    "draftkings": 0.55,
+    "fanduel": 0.55,
+    "betmgm": 0.5,
+    "caesars": 0.5,
+    "pointsbetus": 0.45,
+    "betrivers": 0.45,
+    "espnbet": 0.4,
+    "williamhill_us": 0.4,
+    "hardrockbet": 0.35,
+    "fanatics": 0.35,
+    "prizepicks": 0.0
+  },
+
+  "weight_notes": {
+    "pinnacle": "Highest by convention: low margin, high limits, welcomes sharp action and moves on it rather than limiting it. Rarely carries US player props, so on this app's markets it is usually absent — the weighting scheme has to work without it, which is why nothing here requires its presence.",
+    "circa": "Same posture as Pinnacle for US markets; thin player-prop coverage.",
+    "draftkings": "The two books this app actually captures. Recreational-facing, wider margins, but they are the market for US player props and are present on almost every prop.",
+    "fanduel": "See draftkings.",
+    "prizepicks": "ZERO ON PURPOSE, and load-bearing. PrizePicks does not post a two-way price, so there is no vig to remove and no fair probability to extract — and it is the thing being evaluated. Including the subject of the measurement in the consensus it is measured against would fold the answer into the question."
+  },
+
+  "unknown_book_weight": 0.3,
+  "unknown_book_note": "A book not in this table still counts, at a deliberately low weight. Dropping it would silently narrow the consensus every time a new book appears in the feed; weighting it as a peer would give an unknown the same standing as DraftKings. Low-but-present is the honest middle, and the book key is reported in the output so an unrecognised name is visible rather than absorbed."
+}

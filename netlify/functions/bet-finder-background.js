@@ -28,6 +28,8 @@ import { latestByPick, isCombo, clearedCount } from './top-picks.js';
 // never drift: a stat this says is unmapped here is the same stat grade-audit
 // would report as "stat name not in the mapping table" tomorrow.
 import { statResolves } from './grade-audit.js';
+// Canonical odds arithmetic — see the note where the local copy used to be.
+import { americanToProb } from './fair-odds.js';
 
 // VILIFIANT is the default judge model.
 //
@@ -759,11 +761,14 @@ const ODDS_SPORT_KEYS = {
   college_basketball: 'basketball_ncaab',
 };
 
-function americanToProb(price) {
-  const n = Number(price);
-  if (!isFinite(n) || n === 0) return 0;
-  return n > 0 ? 100 / (n + 100) : (-n) / ((-n) + 100);
-}
+// The third copy of this arithmetic in the repo, now deleted. It differed from
+// the other two in one place that mattered: it returned 0 for a missing price
+// where they returned null. Those are different claims — 0 says "cannot
+// happen", null says "no quote" — and a 0 flowing into a win-probability sum is
+// a silent certainty of losing. The canonical version returns null; the ONE
+// call site below turns that back into 0 explicitly, so this function's old
+// behaviour is preserved where it is actually relied on rather than everywhere.
+// See fair-odds.js.
 
 // Returns { status, message, remaining, used, teamWinProbs }.
 // status is one of: ok | capped | error | skipped. NEVER throws — the run goes on.
@@ -830,7 +835,9 @@ async function fetchWinProbs(leagueTag, rows) {
     const book = (g.bookmakers || [])[0];
     const h2h = book && (book.markets || []).find((m) => m.key === 'h2h');
     if (!h2h) continue;
-    const implied = (h2h.outcomes || []).map((o) => ({ name: o.name, p: americanToProb(o.price) }));
+    // ?? 0 deliberately: this loop normalises by the sum, and a book that omits
+    // a side should contribute nothing to it rather than abort the whole map.
+    const implied = (h2h.outcomes || []).map((o) => ({ name: o.name, p: americanToProb(o.price) ?? 0 }));
     const sum = implied.reduce((s, o) => s + o.p, 0) || 1;
     for (const o of implied) {
       if (o.name && o.name.toLowerCase() !== 'draw') oddsMap[o.name.toLowerCase()] = o.p / sum;

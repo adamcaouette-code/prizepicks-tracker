@@ -191,6 +191,66 @@ snapshot we happen to hold would compare a bet to a different day and produce a
 CLV number that looks real. A visible hole is worth more than a plausible
 fiction.
 
+## Fair probability
+
+Every snapshot row carries a `fair` block computed at capture time — the archive
+is append-only, so anything belonging to an instant has to be written with it.
+
+```
+fair: { prob, line, american, hold, book_count, book_count_other_lines,
+        method, side, disagrees, disagreement, config_id, unpriced }
+```
+
+The stored number is a **cache of a pure function**. What makes the computation
+reconstructible is that the raw book prices are archived on the same row, so a
+different de-vig method — or a corrected weight table — can be re-run against
+that exact instant and get an answer just as real. Both directions are tested.
+
+**Three de-vig methods**, configurable, default Shin: multiplicative
+(proportional), additive (equal absolute margin), and Shin's insider-trading
+model solved by bisection.
+
+**A result worth knowing before choosing one.** On a two-outcome market Shin and
+additive are not close — they are *the same number*. Shin's condition rearranges
+to `p² + z·p(1−p) = π²/Π`; writing the additive solution as `p = π − d` with
+`d = (Π−1)/2`, and using `1−a+d = b−d`, subtracting the two conditions leaves
+`(a−b) = (a−b)·Π/Π`, an identity for any z. The remaining equation fixes z.
+Verified to 2.5e-16 across a price sweep and pinned in the tests.
+
+Every player prop is two-way, so **on the only markets this app touches,
+choosing Shin over additive changes nothing.** They diverge on three-way markets
+(~3e-3 on a soccer 1X2), which is why all three are implemented.
+
+The real choice on player props is multiplicative against the other two.
+Multiplicative scales both sides by the same factor and leaves favourite-longshot
+bias where it found it; Shin/additive take the same *absolute* margin off each
+side, which shades a longshot down much harder in relative terms — on
+-2000/+1200 the longshot goes to 6.2% under Shin against 7.5% under
+multiplicative. That is the correction, and the reason for the default.
+
+**Consensus is grouped by line.** Two books quoting 1.5 and 2.5 are pricing
+different questions; averaging their probabilities answers neither. Each line
+gets its own consensus, the heaviest-weighted line is the headline, and the
+others are reported beside it rather than blended in or dropped. Books are
+de-vigged individually and *then* averaged.
+
+**Book weights** live in `book-weights.json` and are **assumptions, not
+measurements** — the file says so at length. They encode the conventional view
+that a low-margin, high-limit book prices closer to true. Nothing here has
+tested that on player props. The archive already holds everything needed to
+replace them with measured accuracy: every book's price at capture, and
+outcomes in the results store.
+
+PrizePicks is weighted **0 on purpose**: it posts no two-way price, and it is
+the thing being evaluated. Including it in the consensus it is measured against
+would fold the answer into the question.
+
+**Disagreement is surfaced, never smoothed.** A book several points off the rest
+is either a stale quote or a book that knows something, and those need opposite
+responses — so the flag reports which books, by how much, and against which
+threshold, and leaves the judgement alone. Line disagreement is flagged
+separately from probability disagreement.
+
 ## What was found while building this
 
 - **The stat → book-market table was a private copy** inside
@@ -204,3 +264,9 @@ fiction.
   was a pre-existing gap in the DK line attachment, not new.
 - Stats where the name states the role now beat the position lookup — the name
   is a fact, the position is a lookup that can be missing or wrong.
+- **A third `americanToProb`.** `clv.js` and `bet-finder-background.js` each had
+  their own, and they had already drifted: one returned `null` for a missing
+  price, the other `0`. Those are different claims — "no quote" against "cannot
+  happen" — and a 0 flowing into a win-probability sum is a silent certainty of
+  losing. One definition now, in `fair-odds.js`; the one call site that actually
+  relied on the 0 turns it back into 0 explicitly.
