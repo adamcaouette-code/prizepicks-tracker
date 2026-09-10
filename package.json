@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node tests/run.mjs",
-    "scoreboard": "node scripts/scoreboard.mjs"
+    "scoreboard": "node scripts/scoreboard.mjs",
+    "correlations": "node scripts/build-correlations.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^10.7.9",

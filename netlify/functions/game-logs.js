@@ -211,6 +211,14 @@ export function parseGameLog(json, { slug, seasonTypes = null } = {}) {
             ? { id: m.opponent.id, abbreviation: m.opponent.abbreviation, name: m.opponent.displayName }
             : null,
           team: m.team ? { id: m.team.id, abbreviation: m.team.abbreviation } : null,
+          // The COMBINED score of the game, kept because it is the single best
+          // observable proxy for pace and game script — the common factor that
+          // makes two players in the same game move together at all. Without it
+          // there is nothing to estimate a same-game-total effect against, and
+          // the correlation model would have to assert one. See correlation.js.
+          gameTotal: (num(m.homeTeamScore) != null && num(m.awayTeamScore) != null)
+            ? num(m.homeTeamScore) + num(m.awayTeamScore) : null,
+          teamScore: m.team && m.homeTeamId === m.team.id ? num(m.homeTeamScore) : num(m.awayTeamScore),
           raw: stats,
           stats: numeric,
           exposure: exposureFrom(numeric, slug),

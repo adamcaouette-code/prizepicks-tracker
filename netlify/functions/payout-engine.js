@@ -21,24 +21,31 @@
 //   POWER  is UNDERSTATED on positively-correlated legs. All-hit is a joint
 //          event, and positive correlation makes joint outcomes more likely
 //          than the product of the marginals.
-//   FLEX   is OVERSTATED. Its middle tiers (4-of-6, 5-of-6) are paid for
-//          precisely the scattered outcomes that correlation makes RARER.
-//          Correlation pushes mass to the ends of the distribution, and the
-//          ends are where Flex pays least per unit of probability.
+//   FLEX   is ALSO understated, which is NOT what this note originally claimed.
+//          The claim was that Flex is overstated because its middle tiers are
+//          paid for the scattered outcomes correlation makes rarer. The premise
+//          holds — correlation does drain the middle — but the conclusion does
+//          not, for the tables in payout-tables.json: a 6-leg Flex pays 25x for
+//          six and 2x for five, so the perfect tier dominates Flex's EV too.
+//          Measured across both configs, leg counts 3-6 and leg probabilities
+//          0.3-0.7, positive correlation raises Flex EV in every case.
 //
-// So this engine's ranking of Power against Flex is biased in a known
-// direction, and the bias is largest exactly where slips are built — several
-// legs from one slate, often one game.
+// So this engine's ranking of Power against Flex IS biased in a known direction
+// — it understates Power MORE than Flex in every one of those cells, and so
+// under-ranks Power — but not for the reason first written here. The bias is
+// largest exactly where slips are built: several legs from one slate, one game.
 //
-// The fix is a joint model, not a fudge factor: correctCountDistribution() is
-// the seam. It currently convolves independent Bernoullis; it needs to take a
-// correlation structure (a per-pair rho, or a shared latent game factor) and
-// produce the Poisson-binomial's dependent equivalent. Everything downstream —
-// evForSlip, breakEven, rankSlips — already routes through it and would need no
-// changes. Nothing else in this file needs to know.
+// RESOLVED, and the seam turned out to be exactly where this note predicted.
+// correctCountDistribution() convolves independent Bernoullis; slip-pricing.js
+// replaces that one distribution with a Gaussian-copula simulation of the same
+// object and passes it in through `distribution` below. Nothing else in this
+// file changed, and the payout tables stayed the single source of truth.
 //
-// Until then, treat cross-slip EV comparisons as directional and same-game
-// slips as the least trustworthy case.
+// This function is STILL the independent version and is still correct as such —
+// it is the naive baseline the correlated price is reported against. What
+// changed is that it is no longer the only option, and every result says which
+// one it is (`assumesIndependence`). A caller that passes no distribution gets
+// independence, and gets told so.
 // ===========================================================================
 
 export const SLIP_TYPES = ['power', 'flex'];
@@ -147,8 +154,9 @@ export function legalSlips(config, legCount) {
  * that middle of the distribution, so the shortcut misprices the product it is
  * most often used on.
  *
- * TODO(correlation): this is the seam. See the header — a dependent version
- * replaces this function and nothing else changes.
+ * THIS IS THE INDEPENDENT VERSION, and it is the naive baseline the correlated
+ * price is measured against — see slip-pricing.js, which produces the dependent
+ * equivalent by Gaussian copula and hands it to evForSlip as `distribution`.
  */
 export function correctCountDistribution(probs) {
   let dist = [1];
@@ -192,14 +200,17 @@ export function legMultiplier(config, legs) {
  * compared between a $5 and a $50 slip and that comparison is the entire point
  * of rankSlips().
  */
-export function evForSlip({ config, slipType, probs, legs, stake = 1 }) {
+export function evForSlip({ config, slipType, probs, legs, stake = 1, distribution = null }) {
   const p = probs || (legs || []).map((l) => l.prob);
-  const n = p.length;
+  const n = distribution ? distribution.length - 1 : p.length;
   const table = payoutTable(config, slipType, n);
   if (!table) {
     throw new Error(`${config?.id || 'config'} does not offer a ${n}-leg ${slipType} slip`);
   }
-  const dist = correctCountDistribution(p);
+  // A caller may supply the correct-count distribution instead of letting it be
+  // convolved from independent legs — that is how correlation enters, and it
+  // enters HERE rather than by anyone else learning the payout tables.
+  const dist = distribution || correctCountDistribution(p);
   const mult = legMultiplier(config, legs);
 
   let gross = 0;
@@ -228,8 +239,67 @@ export function evForSlip({ config, slipType, probs, legs, stake = 1 }) {
     probAnyPayout: byOutcome.reduce((s, o) => s + (o.multiplier > 0 ? o.probability : 0), 0),
     legMultiplier: mult,
     byOutcome,
-    // Never silently absent — every EV in this module rests on it.
-    assumesIndependence: true,
+    // Never silently absent — every EV in this module rests on it, and now it
+    // is a fact about the call rather than about the module.
+    assumesIndependence: !distribution,
+  };
+}
+
+/**
+ * EV over a JOINT distribution of (pushes, correct), which is what a copula
+ * simulation produces once any leg can push.
+ *
+ * A PUSH IS NOT A LOSS. PrizePicks voids the leg and re-prices the slip at the
+ * smaller size — a 6-pick Power with one push becomes a 5-pick Power, on the
+ * 5-pick table. Folding pushes into losses would misprice every whole-number
+ * line in the book, and because the payout tables are STEP FUNCTIONS the error
+ * does not average out: it moves the slip across a tier boundary or it does
+ * not.
+ *
+ * When the reduced size has no table at all — a 2-pick that loses a leg — the
+ * stake is returned, which is what the operator does and what a multiplier of
+ * exactly 1.0 means here.
+ *
+ * `joint[pushes][correct]`. Row 0 alone is the ordinary case, and when no leg
+ * can push this agrees with evForSlip to the last bit.
+ */
+export function evFromJoint({ config, slipType, joint, legs, stake = 1 }) {
+  const n = joint.length - 1;
+  const mult = legMultiplier(config, legs);
+  let gross = 0;
+  const byOutcome = [];
+  for (let pushes = 0; pushes <= n; pushes++) {
+    const size = n - pushes;
+    const table = payoutTable(config, slipType, size);
+    for (let k = 0; k <= size; k++) {
+      const prob = joint[pushes][k];
+      if (!(prob > 0)) continue;
+      // No table at this size means the slip cannot stand: stake returned.
+      const payout = table ? (table[String(k)] || 0) * mult : 1;
+      gross += prob * payout;
+      byOutcome.push({
+        pushes, correct: k, effectiveLegs: size, probability: prob,
+        multiplier: payout, contribution: prob * payout,
+        refunded: !table,
+      });
+    }
+  }
+  byOutcome.sort((a, b) => b.contribution - a.contribution);
+  const topTable = payoutTable(config, slipType, n);
+  return {
+    slipType,
+    legCount: n,
+    stake,
+    returnPerUnit: gross,
+    evPerUnit: gross - 1,
+    ev: (gross - 1) * stake,
+    probAllHit: joint[0][n],
+    probAnyPayout: byOutcome.reduce((s, o) => s + (o.multiplier > 0 ? o.probability : 0), 0),
+    probAnyPush: 1 - joint[0].reduce((s, v) => s + v, 0),
+    legMultiplier: mult,
+    byOutcome,
+    topTable,
+    assumesIndependence: false,
   };
 }
 

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "id": "correlation-2026-09",
+  "effective_date": "2026-09-10",
+
+  "THE_ONE_THING_TO_UNDERSTAND": "The observed correlation between two COUNTS is not the parameter the copula needs. Two Bernoulli(0.5) legs with a latent correlation of 0.5 show an observed correlation of 2*asin(0.5)/pi = 1/3. Feeding the observed number straight in understates the dependence by a third, and on a Power play — which pays only for going perfect — understating dependence understates the whole slip. correlation.js inverts the map exactly (impliedPearson / latentRho) rather than approximating it.",
+
+  "prior_sd_fisher_z": 0.35,
+  "prior_note": "Shrinkage toward INDEPENDENCE, on Fisher's z where the sampling variance is exactly 1/(n-3). A normal prior at zero with this standard deviation gives posterior weight tau^2/(tau^2 + 1/(n-3)) — a plain signal-to-noise ratio, with no second 'confidence' knob that could disagree with it. 0.35 says: before seeing anything, a correlation of 0.35 in absolute value is about a one-sigma surprise. Nine overlapping games then carry weight ~0.42, thirty carry ~0.77, and a hundred carry ~0.92. Those are the numbers to argue with, and they are the whole of the shrinkage policy.",
+
+  "min_pairs": 5,
+  "min_pairs_note": "Below five overlapping games an estimate is not recorded at all, rather than recorded and shrunk. The Fisher-z variance is undefined at n<=3 and enormous at 4, and an entry in the table reads as evidence in a way an absent one does not.",
+
+  "use_game_total_factor": true,
+  "opposing_factor_sign": -1,
+  "factor_note": "When two legs in the same game have no direct pair estimate, the correlation is induced through a one-factor model: each market's measured loading on the GAME TOTAL, multiplied. This is a structural claim and it is stated as one — `source: 'factor'` on every entry that uses it. For OPPOSING players the product is negated: both sides' volume rises with the total, but they are also competing for the same possessions, and a blowout inflates one side's counting stats while suppressing the other's. The sign is an assumption; its magnitude is measured. It is deliberately NOT applied within a single player, where two markets share far more than the game total — how long he was on the field, above all — and a game-total product would understate them badly. Understating is not the safe direction on a Power play.",
+
+  "confidence": {
+    "high_direct_share": 0.8,
+    "high_shrink_weight": 0.7,
+    "low_direct_share": 0.3,
+    "note": "A slip's correlation confidence is about the STRUCTURE, not about the legs. 'high' means most leg pairs were measured directly on a decent sample; 'low' means most pairs have no estimate at all and are being priced as independent — which is the old behaviour, and the report says so rather than presenting it as a correlated price."
+  },
+
+  "simulation": {
+    "paths": 100000,
+    "seed": 20260910,
+    "note": "100k paths puts the Monte Carlo standard error on P(all hit) at about 0.0015 near 0.5 and well under 0.001 at the small probabilities that actually matter for a Power play. The seed is fixed so a price is reproducible: two runs of the same slip must not disagree in the third decimal for reasons that have nothing to do with the slip. Every result carries the EV's own standard error, and a delta smaller than twice it is marked as inside the noise and ranked below every significant one."
+  },
+
+  "markets_note": "The estimator reads whatever stat columns the ESPN game logs contain; there is no whitelist here. A market pair with no overlapping games simply produces no entry, and correlationFor() then reports 'none' by name rather than defaulting to a number nobody chose."
+}
