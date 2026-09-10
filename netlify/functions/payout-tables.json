@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "note": "Payout structures as DATA. The engine (payout-engine.js) holds no numbers of its own — it takes one of these as an argument. Add a new entry rather than editing an old one: a table that changes is a NEW table with a later effective_date, and the old one still has to price the slips that were placed under it.",
+  "configs": [
+    {
+      "id": "pp-classic",
+      "label": "PrizePicks classic",
+      "effective_date": "2024-01-01",
+      "end_date": null,
+      "jurisdiction": "default",
+      "source": "Break-evens supplied as the spec for this module and verified numerically: 3-Power 58.48%, 6-Power 54.66%, 3-Flex 59.09%, 6-Flex 54.21%.",
+      "leg_multipliers": {
+        "standard": 1.0,
+        "goblin": 0.75,
+        "demon": 1.362
+      },
+      "leg_multiplier_note": "PER-LEG multipliers on the whole slip payout, and the least certain numbers in this file. They are DERIVED, not observed: bet-finder-size.js records real pure-tier 3-pick payouts of 2.0x goblin and 12.0x demon against 4.75x standard, and the cube roots of those ratios are 0.75 and 1.362. Real PrizePicks prints an exact multiplier on every goblin/demon card, which is what the line-snapshot archive captures as pp_multiplier — pass that per leg and these defaults are never consulted.",
+      "slip_types": {
+        "power": {
+          "2": { "2": 3.0 },
+          "3": { "3": 5.0 },
+          "4": { "4": 10.0 },
+          "5": { "5": 20.0 },
+          "6": { "6": 37.5 }
+        },
+        "flex": {
+          "3": { "3": 2.25, "2": 1.25 },
+          "4": { "4": 5.0, "3": 1.5 },
+          "5": { "5": 10.0, "4": 2.0, "3": 0.4 },
+          "6": { "6": 25.0, "5": 2.0, "4": 0.4 }
+        }
+      }
+    },
+    {
+      "id": "repo-observed-2026-08",
+      "label": "Whatever bet-finder-size.js is pricing against today",
+      "effective_date": "2026-08-01",
+      "end_date": null,
+      "jurisdiction": "unknown",
+      "source": "Transcribed from POWER_PURE.standard / FLEX_PURE.standard in bet-finder-size.js, which describes itself as 'Real PrizePicks payouts, captured per tier'. Kept here so the disagreement with pp-classic is visible and testable instead of being two tables nobody compared.",
+      "warning": "This table and pp-classic DISAGREE, and not by rounding: a 6-pick Power is 16.0x here against 37.5x there, which moves the break-even from 54.66% to 63.00%. One of them is wrong, or they are different jurisdictions/eras. Until that is settled, whichever one you price against is a decision, not a detail.",
+      "leg_multipliers": {
+        "standard": 1.0,
+        "goblin": 0.75,
+        "demon": 1.362
+      },
+      "slip_types": {
+        "power": {
+          "2": { "2": 3.0 },
+          "3": { "3": 4.75 },
+          "4": { "4": 7.0 },
+          "5": { "5": 10.0 },
+          "6": { "6": 16.0 }
+        },
+        "flex": {
+          "3": { "3": 2.5, "2": 1.0 },
+          "4": { "4": 4.0, "3": 1.0 },
+          "5": { "5": 6.0, "4": 1.5, "3": 0.4 },
+          "6": { "6": 8.0, "5": 2.0, "4": 0.4 }
+        }
+      }
+    }
+  ]
+}
