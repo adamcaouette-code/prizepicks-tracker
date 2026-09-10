@@ -19,7 +19,7 @@ const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || 
 // Re-running the engine on a day appends the same picks again, so the log holds
 // duplicates. Collapse by projectionId (falling back to a content key), preferring
 // the graded copy, so each distinct pick is counted exactly once.
-function dedupe(picks) {
+export function dedupe(picks) {
   const m = new Map();
   for (const p of picks) {
     // Source AND judge config are part of the identity: the same projection can
