@@ -1,198 +1,124 @@
-# CLAUDE.md
+# AtomBets / PrizePicks Tracker
 
-## What this is
+Live prop lines from PrizePicks with ESPN season averages, DraftKings line
+comparison, Kalshi odds, a judge that rates each prop, and a slip builder.
+React + Vite front end, Netlify serverless functions, Netlify Blobs for storage.
 
-A PrizePicks prop judge whose goal is **measurable positive EV**, not features.
-Every module exists to move one of two numbers: how accurate the probabilities
-are, or how well the slips built from them are priced — and if a change cannot
-be tied to one of those, it should not be built.
-
-## Push back on me
-
-**If I ask for a feature that does not improve EV or measurement, say so before
-building it.** Not after, and not by building it with a caveat attached. The
-right response is one or two sentences naming what the feature would and would
-not move, then a question or a recommendation.
-
-This is not a licence to refuse work. If I hear the objection and say do it
-anyway, do it properly and completely. But the app already has more surface than
-it has evidence, and the failure mode here is a beautiful feature resting on a
-probability nobody has scored.
-
-Say so too when I ask for something already built, or when a smaller change gets
-most of the benefit.
+Deployed at https://atombets.netlify.app
 
 ---
 
-## Architecture
+## Read this before changing anything that touches the judge
 
-### Data flow
+`docs/judge-measurement.md` is the standing record of what has been measured and
+what has been decided. It is not background reading — it contains binding
+constraints, and several of them forbid changes that would otherwise look
+obviously correct.
 
-```
-PrizePicks board ─┐
-                  ├─► bet-finder-background ──► judge (LLM) ──► pick-log
-ESPN game logs ───┤        (context: form, injuries, lineups)      │
-The Odds API ─────┘                                                │
-      │                                                            ▼
-      ├──► snapshot-background ──► line-snapshots ────────► grade-picks
-      │      (every 10 min, metered)      │                        │
-      │                                   ▼                        ▼
-      │                          fair-odds ──► alt-line       bet-results
-      │                          (de-vig)      (translate)          │
-      │                                   │                        │
-      ▼                                   ▼                        ▼
-  stale-lines                      slip-pricing ◄── correlation ── scoreboard
-  (5 min, free)                          │           (ESPN logs)   (calibration)
-                                          ▼                        │
-                                   slip-optimizer ──► bankroll ◄────┘
-                                          │           (Kelly, ruin)
-                                          ▼
-                                    proposed slips
-```
+**Two things in it are in force right now:**
 
-### What each module owns
+1. **Standing constraints.** Prompt text, model, search budget, payload
+   contents, selection logic and the shrinkage default are all variables in
+   experiments in flight. None may be changed as a side effect of other work.
 
-| module | owns |
-|---|---|
-| `bet-finder-background.js` | The board pipeline: fetch props, attach context, call the judge, write the pick log. **The one place a probability is created.** |
-| `judge-prompts.js` | The prompt, versioned. A prompt change is a new forecaster — bump the version or calibration mixes two models. |
-| `grade-picks.js` / `espn-grade.js` / `mlb-grade.js` | Outcomes. `settle()` is the single push rule. |
-| `snapshot-background.js` | The archive: PP board + DK/FD prices, every 10 min. **Metered — see the budget before raising cadence.** |
-| `ledger-store.js` | Append-only bets, results, snapshots. `onlyIfNew` is the guarantee. |
-| `payout-engine.js` | Payout tables (as data), exact EV, break-even, Kelly. **No payout constant lives in code.** |
-| `fair-odds.js` | De-vig book prices to a fair probability. |
-| `alt-line.js` | Move a book probability onto PrizePicks' line. |
-| `projection.js` / `game-logs.js` | Model markets the books do not price. |
-| `correlation.js` / `copula.js` | The dependence between legs. |
-| `slip-pricing.js` | Naive vs correlated EV for a slip. |
-| `slip-optimizer.js` | Search the board for the best legal slips. |
-| `bankroll.js` | How much to stake, and whether to stake at all. |
-| `scoreboard.js` | **The primary scoreboard.** Grades probabilities, not results. |
-| `backtest.js` / `point-in-time.js` | Walk-forward simulation that cannot read the future. |
-| `leak-report.js` | Where the money actually went. |
-| `stale-lines.js` | 5-minute monitor for lines the market has left behind. |
+2. **A pre-registered hypothesis** on demon-tier AUC, registered 2026-08-25.
+   Until it resolves, do not change selection, sizing, tier weighting or any
+   prompt in response to demon-tier results. The first out-of-sample check ran
+   2026-09-09 and came back inconclusive; the registered instruction on that
+   branch is to extend the window, not to act.
 
-### Pure modules (no imports beyond siblings, no I/O, no clock, no randomness)
-
-`payout-engine` · `projection` · `copula` · `correlation` · `scoreboard` ·
-`point-in-time` · `alt-line` · `fair-odds` · `slip-optimizer`
-
-Keep them that way. Every clock or fetch added to one of these is a test that
-has to be rewritten and a number that stops being reproducible. Time comes in as
-an argument (`asOf`, `now`); randomness comes in as a seed.
+If a request seems to require breaking one of these, say so and stop rather than
+working around it.
 
 ---
 
-## Hard rules
+## The thing this project is actually for
 
-### 1. Never invent a statistic. Return `null` with a reason.
+This is measurement infrastructure that happens to have a betting UI. Its value
+is that it catches its own errors — it has found scheduled functions that never
+fired for two months, unders being graded on the over's outcome, and a
+recommendation stream losing 45 cents on the dollar. Changes that make the app
+feel better while making the measurement weaker are regressions.
 
-Missing data is not zero, and it is not the league average. `Number(null)` is
-`0` and `isFinite(0)` is `true` — that exact trap has produced real bugs in this
-repo three times (a prop with no line counting every result as a clear; a row
-with no prediction scoring as a confident 0%; "no book price" becoming "the book
-said 0%").
+**Every tier is currently below break-even.** Break-even per leg on a 3-pick
+Power is 79.4% goblin / 59.5% standard / 43.7% demon, set by the payout
+multipliers. The judge is roughly level with a three-row tier lookup table.
+Nothing here is a profitable system, and no prompt change will make it one.
+Do not build features whose premise is that it is.
 
-Every refusal carries a sentence saying what was missing. `{ prob: null, reason:
-'no book posted a two-way price' }`, never `{ prob: 0 }`.
-
-### 2. No payout table or model parameter in code.
-
-`payout-tables.json`, `book-weights.json`, `market-models.json`,
-`projection-config.json`, `correlation-config.json`, `optimizer-config.json`,
-`stale-lines-config.json`. A table that changes is a **new entry with a later
-`effective_date`**, never an edit — old slips have to keep pricing under the
-table they were placed under.
-
-Two copies of a constant is the bug that produced the worst error this app has
-made (see `tests/unit/one-source-of-truth.test.mjs`). If a number must appear
-twice, add a test pinning the copies to each other.
-
-### 3. Every probability output carries a confidence flag.
-
-A probability with no confidence is a probability that will be sized as though
-it were firm. The flag is a **field, not a suppression** — a thin estimate is
-still worth seeing next to a book price, so long as nothing downstream can
-mistake it for a measured one.
-
-`low_confidence` + `confidence_reasons` (projection), `disagrees` (fair-odds),
-`shape_sensitivity` (alt-line), `confidence.level` (correlation).
-
-### 4. Every module that touches money has tests.
-
-Money means: a probability, a payout, a stake, an EV, or a slip. Not the probes,
-not the status endpoints.
+**The edge guardrail (`edgeVerdictFor`, bet-finder-background.js) refuses any
+leg whose probability is below its tier's break-even.** It refuses about 90% of
+volume, and the refused bucket measures at −43 cents per dollar at 14σ. Do not
+weaken, bypass, or add an override to it. "Find a slip anyway" is not a feature
+request that can be honoured.
 
 ---
 
-## Definition of done
+## Conventions that other code depends on
 
-1. **Tests written and passing** — `npm test` green, full suite, not just the
-   new file.
-2. **No untyped escape hatches.** This is plain JavaScript with no `tsconfig`,
-   so "no `any`" cannot be enforced by a compiler. What it means here: no
-   function that accepts an arbitrary shape and hopes; validate at the boundary
-   and refuse with a reason. JSDoc the arguments of anything exported.
-3. **Config documented** — every knob in a `*-config.json` has a `note` saying
-   what it does, why that value, and what would change it.
-4. **A note appended to `DECISIONS.md`** explaining any modelling assumption
-   made, with the date.
-5. **Version bumped** in `netlify/functions/version.js` AND `public/index.html`
-   (a test pins them together).
-
----
-
-## Testing standards
-
-- **Hand-computed expected values, in comments.** A test whose expected value
-  came from running the code proves only that the code is deterministic. Show
-  the arithmetic:
-
-  ```js
-  //   p=0.8 y=1 -> (0.8-1)^2 = 0.04
-  //   ...
-  //                  sum      0.90  /4 = 0.225
-  t.ok('Brier is the mean squared error', near(brier(rows), 0.225), '');
-  ```
-
-- **Better still, a closed form.** Where one exists, use it: `Φ₂(0,0;ρ) = ¼ +
-  asin(ρ)/2π`, the tetrachoric relation, Poisson-mixed-over-Gamma being exactly
-  negative binomial. Those catch errors no plausible-looking assertion would.
-
-- **No network calls, ever.** `mockFetch` in `tests/helpers/fn.mjs`. Fixtures
-  are real captured API responses, trimmed — a hand-written fixture gives itself
-  the shape it expects and hides the thing that will actually break.
-
-- **Tolerances tight enough to fail.** A 1e-6 tolerance on a check that can hit
-  1e-12 hid a real bias in the copula quadrature for a whole session.
-
-- **Test the refusals.** "No bet today", "not enough data to say", a `null` with
-  a reason — those are the outputs that matter most and the ones nobody writes
-  tests for.
+- `prob` means **P(over)** and `hit` means **the over cleared**, everywhere in
+  the pick log and calibration. This convention is load-bearing and must not
+  change. Unders are scored by deriving from it, not by flipping it.
+- Never score a bucket against a break-even it does not have. PrizePicks prices
+  the over only; derive the bar from the edge (`needed = sideProb − edge`) so it
+  is null exactly when the price is unknown.
+- A raw win rate is meaningless across tiers. Every number reported must state
+  what it needed beside what it got.
+- **Do not optimize pooled Brier.** The tier baseline has zero within-tier
+  resolution by construction, so a judge that merely reproduces tier base rates
+  beats it on Brier while adding no betting value. The objective is within-tier
+  **discrimination** (AUC, and realized hit rate of the top-N a run would
+  actually select). Brier and calibration are diagnostics reported alongside.
 
 ---
 
-## Commands
+## Standing engineering rules, learned the hard way
 
-```
-npm test                  the whole suite
-node tests/run.mjs NAME   one suite
-npm run scoreboard        the primary scoreboard — probabilities, not results
-npm run leaks             where the money went
-npm run correlations      rebuild the correlation table from ESPN logs
+- **A behaviour change that can't be scored isn't finished.** If the measurement
+  needs data the change itself will take months to produce, look for a
+  reconstruction first — the quantity is often already in the log.
+- **A paired comparison is worth a field.** When two estimates of the same thing
+  exist at different times, log both. Comparing groups instead of pairs costs an
+  order of magnitude in sample size and imports every selection effect that
+  chose the groups.
+- Netlify **schedules only take effect in `netlify.toml`**. In-code
+  `export const config = { schedule }` is a v2-functions feature and is silently
+  ignored on the v1 `export const handler` functions in this repo. Both cron
+  functions carried exactly that for months and neither ever fired. Verify with
+  a non-empty `function_schedules` in the deploy API — invoking the function
+  over HTTP tests the function, not the schedule.
+
+---
+
+## Working in this repo
+
+```bash
+npm install
+npm test                 # node tests/run.mjs — ~2 min, 57 suites
+netlify dev              # NOT npm run dev; functions won't load otherwise
 ```
 
----
+- Tests live in `tests/unit/` and `tests/ui/`, auto-discovered by filename
+  (`*.test.mjs`). `tests/helpers/blobs.mjs` is an in-memory stand-in for
+  Netlify Blobs that serializes on read and write exactly as production does.
+- Test names are sentences describing the behaviour, not the function
+  (`"the cutoff day is excluded whole, not split at midnight"`). Match that.
+- There are four known failures in `empty-board-message` and `stale-read`,
+  date-related, pre-existing. Don't treat them as caused by your change, and
+  don't paper over them.
 
-## Things to know before changing anything
+## Versioning
 
-- **Schedules only register from `netlify.toml`.** In-code `export const config
-  = { schedule }` is inert on a v1 `export const handler` function. Two cron
-  functions carried exactly that for months and neither ever fired.
-- **`public/index.html` is a single-file bundler export.** The whole app is
-  JSON-escaped inside `<script type="__bundler/template">`. Decode → edit →
-  re-encode, and verify a byte-exact round trip.
-- **The Odds API quota is the binding constraint.** The archive spends ~90
-  credits per 10-minute capture. `stale-lines` deliberately spends zero.
-- **Node's `fetch` is blocked by the agent proxy in this environment; `curl`
-  works.**
+`vMAJOR.MINOR.PATCH`. MAJOR for a new subsystem, MINOR for refinement and
+tuning, PATCH for bug fixes. It lives in **two places that must match**:
+`netlify/functions/version.js` (`VERSION`) and `public/index.html` (the footer,
+`id="appVer"`). `tests/unit/version.test.mjs` fails if they drift. Check a
+deploy landed with `/api/version`.
+
+## Commits
+
+One-line summary with the version in parentheses, then prose explaining what was
+wrong and why this is the fix — not a list of files touched. Name the regression
+cover at the end.
+
+Example: `Filter calibration by grade date, not log date (v4.39.0)`
