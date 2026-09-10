@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "id": "market-models-2026-09",
+  "effective_date": "2026-09-10",
+  "THE_CENTRAL_LIMITATION": "One probability observation can identify exactly ONE parameter. Every two-parameter family below therefore has its shape parameter FIXED from outside \u2014 dispersion, coefficient of variation, zero-inflation \u2014 and only the mean is solved for. Those fixed numbers are assumptions, and they do real work: the further the PrizePicks line sits from the book line, the more of the answer comes from the assumed shape and the less from the observed price. That is the whole reason for the refusal threshold, and for the shape_sensitivity number in every result.",
+  "HOW_TO_CALIBRATE": "Same route as book-weights.json. The snapshot archive records book lines and prices; the results store records outcomes. Fit each market's dispersion / cv / zero-inflation to realised counts instead of to convention, then set these from measurement. Until then, read shape_sensitivity as the honest error bar.",
+  "defaults": {
+    "max_sigma": 2.0,
+    "max_shape_disagreement": 0.06,
+    "pp_tie_rule": "push"
+  },
+  "defaults_note": "max_sigma: refuse when the PrizePicks line is further than this many standard deviations from the book line. 2.0 is deliberately permissive \u2014 on a low-count market like shots on target a single step is already ~0.9 sd, so a tighter bound would refuse ordinary one-step translations. max_shape_disagreement: refuse when two plausible families fitted to the SAME book price disagree by more than this at the PrizePicks line, which is the direct measure of 'the answer is coming from my assumption rather than from the market'. pp_tie_rule: PrizePicks refunds a result landing exactly on a whole-number line \u2014 see settle() in grade-picks.js, which already encodes this.",
+  "families": {
+    "poisson": "One parameter. Mean = variance. The right default for a count with no obvious extra source of variance.",
+    "negative_binomial": "Mean plus a fixed dispersion phi = variance/mean > 1. For counts whose opportunity varies \u2014 a pitcher's strikeouts depend on how long he is left in, a forward's shots on how long he plays \u2014 which adds variance Poisson cannot express.",
+    "discrete_normal": "Mean plus a fixed coefficient of variation or absolute sd. For stats with enough granularity that integer structure stops mattering.",
+    "zero_inflated_poisson": "A fixed extra mass at zero, plus a Poisson. For stats where not-playing and not-scoring are different reasons for a zero and both are common."
+  },
+  "markets": [
+    {
+      "match": [
+        "pitcher strikeouts",
+        "hitter strikeouts",
+        "strikeouts"
+      ],
+      "family": "negative_binomial",
+      "dispersion": 1.25,
+      "rationale": "OVERDISPERSED relative to Poisson because the opportunity is not fixed: a starter's strikeout count is (innings pitched) x (rate), and innings pitched swings from 3 to 7 on the same expected rate. That extra variance is real and Poisson cannot represent it. 1.25 is the conventional figure and is an ASSUMPTION \u2014 the Poisson fit is what shape_sensitivity compares against, and on a two-step translation the two differ by a couple of points."
+    },
+    {
+      "match": [
+        "shots on target",
+        "shots on goal",
+        "sog"
+      ],
+      "family": "negative_binomial",
+      "dispersion": 1.2,
+      "rationale": "Same structure as strikeouts, one level down: shots on target = minutes x involvement x accuracy, and minutes vary (subbed at 60', or brought on at 70'). Mildly overdispersed. At these low counts the choice matters less in absolute probability but more in relative terms, since the tails are thin."
+    },
+    {
+      "match": [
+        "shots",
+        "tackles",
+        "fouls",
+        "passes attempted",
+        "hits",
+        "total bases",
+        "rebounds",
+        "assists",
+        "receptions",
+        "goalie saves",
+        "saves",
+        "rush attempts",
+        "pass completions",
+        "pass attempts",
+        "plate appearances",
+        "walks",
+        "stolen bases",
+        "blocks",
+        "steals",
+        "turnovers"
+      ],
+      "family": "poisson",
+      "rationale": "Counts with a broadly fixed opportunity within a game, and no strong second source of variance. Poisson is the honest default: it has one parameter, which is exactly what one observed probability can identify, so nothing has to be assumed."
+    },
+    {
+      "match": [
+        "goals",
+        "home runs",
+        "hr",
+        "rec tds",
+        "rush tds",
+        "pass tds",
+        "player touchdowns",
+        "receiving tds",
+        "rushing tds",
+        "passing tds",
+        "goal + assist",
+        "goal plus assist"
+      ],
+      "family": "zero_inflated_poisson",
+      "zero_inflation": 0.12,
+      "rationale": "ZEROS ARE OVERREPRESENTED for two different reasons that a plain Poisson folds into one. A player can fail to score, or can barely play \u2014 an early substitution, a pinch-hit appearance, a blowout \u2014 and the second produces a zero that carries no information about scoring rate. 0.12 is an assumption. It matters most exactly where these props live: almost every line is 0.5, so P(over) IS 1 - P(0), and the whole translation to 1.5 turns on how much of the zero mass is structural."
+    },
+    {
+      "match": [
+        "pass yards",
+        "passing yards",
+        "rush yards",
+        "rushing yards",
+        "receiving yards",
+        "rec yards",
+        "pitches thrown",
+        "pitches seen",
+        "longest reception",
+        "longest rush",
+        "rush+rec yds",
+        "pass+rush yds"
+      ],
+      "family": "discrete_normal",
+      "cv": 0.32,
+      "rationale": "Continuous enough that integer structure is irrelevant, and roughly symmetric around the mean. cv rather than an absolute sd because the spread scales with the volume: a 300-yard passer and a 180-yard passer do not have the same standard deviation. 0.32 is conventional for yardage."
+    },
+    {
+      "match": [
+        "minutes"
+      ],
+      "family": "discrete_normal",
+      "sd": 7.0,
+      "rationale": "An ABSOLUTE sd, not a cv, and the difference matters. Minutes are bounded above by the length of the game, so the spread does NOT scale with the mean \u2014 a 34-minute starter is not three times as variable as a 12-minute reserve. Roughly 7 minutes covers the ordinary rotation and foul-trouble variation."
+    }
+  ],
+  "unmatched_note": "A market with no entry here is REFUSED rather than defaulted to Poisson. Guessing a shape for an unrecognised stat is exactly the silently-wrong number this module exists to avoid, and a refusal names the market so the gap is visible.",
+  "MATCHING": "EXACT normalized keys only \u2014 lowercase, alphanumerics, no substring. This started as substring matching and 'Quarters With 5+ Rush Yards' silently matched the rush-yards model, because it contains 'rush yards'. A period prop is not a yardage prop, and a wrong distribution is exactly the silently-wrong number this module exists to refuse. Same rule, and the same reason, as marketFor() in odds-markets.js. An unlisted stat is refused by name so the gap is visible."
+}
