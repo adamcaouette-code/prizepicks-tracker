@@ -268,14 +268,24 @@ export function shrinkProb(prob, tier, rates = TIER_MEASURED_RATE, iccByTier = T
 // Shared PrizePicks fetch with real throttle handling. The old inline retry used a
 // fixed 1s/2s/3s/4s ladder and ignored Retry-After, which is why paging MLB's 13
 // pages could still 429 out mid-slate.
-async function ppFetch(url, headers, maxRetries = 5) {
+// Env-configurable (not just a constant) for the same reason sweep-background's
+// knobs are: a sweep runs many of these concurrently across leagues, so a test
+// or an operator needs to be able to shrink the backoff without touching code.
+// `|| d` would treat an explicit 0 the same as "unset" (0 is falsy) and silently
+// fall back to the default — wrong for PP_FETCH_MAX_RETRIES=0, a real, useful
+// value ("don't retry at all") a test needs to isolate other retry logic.
+const envInt = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+const PP_FETCH_MAX_RETRIES = Math.max(0, Math.round(envInt(process.env.PP_FETCH_MAX_RETRIES, 5)));
+const PP_FETCH_BACKOFF_BASE_MS = Math.max(1, Math.round(envInt(process.env.PP_FETCH_BACKOFF_BASE_MS, 600)));
+const PP_FETCH_BACKOFF_CAP_MS = Math.max(1, Math.round(envInt(process.env.PP_FETCH_BACKOFF_CAP_MS, 9000)));
+async function ppFetch(url, headers, maxRetries = PP_FETCH_MAX_RETRIES) {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url, { headers });
     if (res.status !== 429 || attempt >= maxRetries) return res;
     const retryAfter = Number(res.headers?.get?.('retry-after'));
     const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
       ? Math.min(15000, retryAfter * 1000)
-      : Math.min(9000, 600 * 2 ** attempt) + Math.floor(Math.random() * 400); // jitter: avoid lockstep retries
+      : Math.min(PP_FETCH_BACKOFF_CAP_MS, PP_FETCH_BACKOFF_BASE_MS * 2 ** attempt) + Math.floor(Math.random() * 400); // jitter: avoid lockstep retries
     await new Promise((r) => setTimeout(r, waitMs));
   }
 }
@@ -2167,12 +2177,15 @@ export const handler = async (event) => {
       .map((r) => ({ player: r.player, stat: r.stat, line: r.line, position: r.position, matchup: r.matchup }));
     if (!candidates.length) {
       let why;
+      let emptyReason;
       if (params.fromLedger) {
+        emptyReason = 'no-ledger';
         why = 'Nothing to re-judge — today\u2019s ledger is empty for this league, or its props are off the board.';
       } else {
         const rawRows = await rawRowsP;
         if (!rawRows.length) {
           why = 'No candidates — props not posted yet.';
+          emptyReason = 'not-posted';
         } else if (!rows.length) {
           // The board is real, it just has nothing dated today — routine for a
           // league that doesn't play daily. Point at the actual next slate
@@ -2185,12 +2198,37 @@ export const handler = async (event) => {
             ? `No ${params.league.toUpperCase()} games today — the next posted slate is ${nextDate}. This league doesn't play daily like MLB.`
             : `No ${params.league.toUpperCase()} games today, and no future slate is posted yet either.`;
           nextSlateDate = nextDate;
+          emptyReason = 'no-slate-today';
         } else {
-          why = `${rows.length} ${params.league.toUpperCase()} prop(s) today, but none matched the selected tiers or prop filter. Try widening tiers or props.`;
+          // "None matched the selected tiers or prop filter. Try widening
+          // tiers or props." used to fire for three different causes, and one
+          // of them isn't fixable by widening anything: a league whose stat
+          // types have no grading mapping at all (statResolves) can never
+          // produce a candidate no matter what tiers or prop filter get
+          // picked. Telling the user to widen filters there is a false claim
+          // that the problem is solvable from the UI — see
+          // docs/judge-measurement.md, "No candidates was one message for
+          // three different causes".
+          const allow = new Set(params.tiers && params.tiers.length ? params.tiers : ['goblin', 'standard']);
+          const inTier = rows.filter((r) => allow.has(r.oddsType));
+          const gradeable = inTier.filter((r) => statResolves(r.league, r.stat));
+          if (!inTier.length) {
+            why = `${rows.length} ${params.league.toUpperCase()} prop(s) today, but none are in the tiers you selected. Try widening tiers.`;
+            emptyReason = 'tier-mismatch';
+          } else if (!gradeable.length) {
+            why = `${inTier.length} ${params.league.toUpperCase()} prop(s) today in the tiers you selected, but none of their stat types are mapped for grading yet. This league isn't supported for scoring — no tier or prop-filter change will fix that.`;
+            emptyReason = 'not-gradeable';
+          } else if (params.statFilter) {
+            why = `${gradeable.length} ${params.league.toUpperCase()} prop(s) today could be graded, but none matched "${params.statFilter}". Try widening the prop filter.`;
+            emptyReason = 'prop-filter';
+          } else {
+            why = `${gradeable.length} ${params.league.toUpperCase()} prop(s) today matched the tiers and have a grading mapping, but none reached the board.`;
+            emptyReason = 'no-candidates-other';
+          }
         }
       }
       await store.setJSON(jobId, { status: 'done', result: {
-        board: [], parlay: { error: why }, params, emptyMessage: why,
+        board: [], parlay: { error: why }, params, emptyMessage: why, emptyReason,
         // What the page needs to offer "scan it anyway" instead of "come back
         // Friday": the date, and whether asking again would actually change
         // anything (it would not if nothing at all is posted).

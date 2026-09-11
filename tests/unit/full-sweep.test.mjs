@@ -33,7 +33,7 @@ const proj = (rows) => ({
     attributes: {
       stat_type: r.stat, stat_display_name: r.stat, line_score: r.line,
       odds_type: r.tier || 'standard', description: r.opp || 'OPP',
-      allowed_wager_types: 'over',
+      allowed_wager_types: r.wagerTypes || 'over',
       start_time: `${TODAY}T20:00:00.000-04:00`, today: true,
     },
     relationships: { new_player: { data: { id: `np-${r.id || i}` } } },
@@ -124,6 +124,59 @@ async function betFinderRun({ mlb, probs, body }) {
   } finally { mock.restore(); }
   return { result: read('bet-jobs', 'bf')?.result || {}, log: read('pick-log', TODAY) || [] };
 }
+
+// A bet-finder-background run for a league of its own (not MLB/WNBA), so the
+// zero-candidates messaging can be tested against a league that genuinely has
+// no grading mapping (statResolves always false) — cs2/nbaszn/ufc/tt on the
+// first live sweep. Its own one-league catalog, since resolveLeagueId falls
+// back to fetchLeagueCatalog for anything not in PP_LEAGUE_IDS.
+async function emptyBoardRun({ league, rows, tiers, statFilter }) {
+  reset();
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  const oneLeagueCatalog = { data: [{ id: '55', type: 'league', attributes: { name: league.toUpperCase(), projections_count: rows.length, active: true } }] };
+  const mock = mockFetch([
+    ['partner-api.prizepicks.com/leagues', async () => oneLeagueCatalog],
+    ['partner-api.prizepicks.com/projections', async () => proj(rows)],
+    [/statsapi|espn|the-odds-api|\/history/, async () => ({})],
+    ['api.anthropic.com', async (_u, init) => answerWith({})(init)],
+  ]);
+  try {
+    const { handler } = await loadFn('bet-finder-background.js');
+    await handler({ httpMethod: 'POST', body: JSON.stringify({
+      jobId: 'eb', league, legs: 3, today: true,
+      tiers: tiers || ['goblin', 'standard', 'demon'], sides: 'both', statFilter,
+    }) });
+  } finally { mock.restore(); }
+  return (read('bet-jobs', 'eb') || {}).result || {};
+}
+
+// Env knobs sweep-background/bet-finder-background read at module load, so a
+// fresh loadFn() (which re-parses the source per call) is what actually picks
+// up an override — see fn.mjs. Always restored, even on failure, since these
+// vars are process-wide and would otherwise leak into unrelated suites/tests.
+async function withEnv(vars, fn) {
+  const prev = {};
+  for (const k of Object.keys(vars)) prev[k] = process.env[k];
+  Object.assign(process.env, vars);
+  try { return await fn(); } finally {
+    for (const k of Object.keys(vars)) {
+      if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k];
+    }
+  }
+}
+
+// Fast, deterministic knobs for the retry/stagger tests below: real ones page
+// through several seconds of backoff on purpose, which is correct for talking
+// to the actual PrizePicks API and wrong for a test suite with a ~2 minute
+// budget across 67 suites.
+const FAST_RETRY_ENV = {
+  SWEEP_STAGGER_MS: '1',
+  SWEEP_LEAGUE_BACKOFF_BASE_MS: '1',
+  SWEEP_LEAGUE_BACKOFF_CAP_MS: '2',
+  PP_FETCH_MAX_RETRIES: '0',        // isolates the league-level retry under test
+  PP_FETCH_BACKOFF_BASE_MS: '1',
+  PP_FETCH_BACKOFF_CAP_MS: '1',
+};
 
 export default async function ({ t }) {
   // ---- 1. the no-result path still returns a full coverage report --------
@@ -288,5 +341,166 @@ export default async function ({ t }) {
     // sweep:true changes logging, nothing about the judged result.
     t.ok('sweep:true still returns a normal board (only logging changed)',
       (asSweep.result.board || []).length > 0, JSON.stringify(asSweep.result.board));
+  }
+
+  // ---- 5. the summary's count is the table's count, not a different one -----
+  // First live run: the summary read "13 cleared edge >= 0" while the table's
+  // own "cleared edge >= 0" row said 8 and its "cleared the gate (play/lean)"
+  // row said 13 — the summary was printing the GATE count under the EDGE
+  // label. Constructed here with a leg whose gate clears but whose edge is
+  // unknown (a goblin/demon under — attachSides marks its payout unverified,
+  // so `edge` is null and it can never enter the priced edge>=0 count) to
+  // force the two numbers apart, rather than trust a scenario where they
+  // happen to agree by coincidence.
+  {
+    const mk = (id, player, team, opp) => ({ id, player, stat: 'Hits', line: 1.5, tier: 'standard', team, opp });
+    const mlb = [
+      mk('m1', 'Al', 'CIN', 'PIT'), mk('m2', 'Bo', 'LAD', 'SFG'), mk('m3', 'Cy', 'NYY', 'BOS'),
+      // Goblin, under available, low P(over) -> the bet taken is the UNDER,
+      // whose payout attachSides refuses to price (sidePriceUnverified). Its
+      // sideVerdict still clears the gate; its edge stays null.
+      { id: 'g1', player: 'Di', stat: 'Hits', line: 1.5, tier: 'goblin', team: 'SEA', opp: 'HOU', wagerTypes: 'under_or_over' },
+    ];
+    const probs = { Al: 0.70, Bo: 0.70, Cy: 0.70, Di: 0.25 };
+    const { job } = await sweep({ mlb, wnba: [], probs });
+    const r = job.result || {};
+
+    t.ok('a slip was built', !!r.parlay && (r.parlayLegs || []).length >= 3, JSON.stringify(r.parlayNote));
+    t.eq('the unpriced-but-gated goblin under clears the gate', r.cleared.gate, 4);
+    t.eq('...but is excluded from "cleared edge >= 0" (its edge is null, not >= 0)', r.cleared.edgeGE0, 3);
+    t.ok('the two counts actually differ in this scenario (otherwise this test proves nothing)',
+      r.cleared.gate !== r.cleared.edgeGE0, JSON.stringify(r.cleared));
+
+    const n = /(\d+) cleared the gate/.exec(r.summary || '');
+    t.ok('the summary states a "cleared the gate" count', !!n, r.summary);
+    t.eq('...and it is the TABLE\'s gate count', Number(n && n[1]), r.cleared.gate);
+    t.ok('...never the edge>=0 count under the gate label',
+      !new RegExp(`${r.cleared.edgeGE0} cleared the gate`).test(r.summary || '') || r.cleared.edgeGE0 === r.cleared.gate,
+      r.summary);
+  }
+
+  // ---- 6. a league retries a bounded number of times on 429, then recovers --
+  {
+    let attempts = 0;
+    const mlb = [{ id: 'm1', player: 'Al', stat: 'Hits', line: 1.5, tier: 'standard', team: 'CIN', opp: 'PIT' }];
+    const r = await withEnv({ ...FAST_RETRY_ENV, SWEEP_LEAGUE_MAX_ATTEMPTS: '3' }, async () => {
+      reset();
+      process.env.ANTHROPIC_API_KEY = 'test-key';
+      const mock = mockFetch([
+        ['partner-api.prizepicks.com/projections', async () => {
+          attempts++;
+          // Throttled twice, then PrizePicks answers — recovers inside the
+          // 3 attempts the sweep is allowed.
+          if (attempts <= 2) return { status: 429, headers: {} };
+          return proj(mlb);
+        }],
+        [/statsapi|espn|the-odds-api|\/history/, async () => ({})],
+        ['api.anthropic.com', async (_u, init) => answerWith({ Al: 0.7 })(init)],
+      ]);
+      try {
+        const { handler } = await loadFn('sweep-background.js');
+        await handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'swretry', legs: 3, leagues: ['mlb'] }) });
+      } finally { mock.restore(); }
+      return (read('bet-jobs', 'swretry') || {}).result || {};
+    });
+
+    t.ok('it took more than one attempt to get through', attempts >= 2, String(attempts));
+    const mlbSlate = (r.coverage?.slates || []).find((s) => s.league === 'mlb');
+    t.eq('a league throttled at first still ends up covered once it gets through', mlbSlate && mlbSlate.status, 'covered');
+    t.eq('...with its real props, not an empty/error placeholder', mlbSlate && mlbSlate.props, 1);
+  }
+
+  // ---- 7. ...but the retry is bounded, not infinite ------------------------
+  {
+    let attempts = 0;
+    const r = await withEnv({ ...FAST_RETRY_ENV, SWEEP_LEAGUE_MAX_ATTEMPTS: '3' }, async () => {
+      reset();
+      process.env.ANTHROPIC_API_KEY = 'test-key';
+      const mock = mockFetch([
+        ['partner-api.prizepicks.com/projections', async () => { attempts++; return { status: 429, headers: {} }; }],
+        [/statsapi|espn|the-odds-api|\/history/, async () => ({})],
+        ['api.anthropic.com', async (_u, init) => answerWith({})(init)],
+      ]);
+      try {
+        const { handler } = await loadFn('sweep-background.js');
+        await handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'swgiveup', legs: 3, leagues: ['mlb'] }) });
+      } finally { mock.restore(); }
+      return (read('bet-jobs', 'swgiveup') || {}).result || {};
+    });
+
+    t.eq('a league still throttled after every attempt is retried exactly the configured number of times, not forever',
+      attempts, 3);
+    const mlbSlate = (r.coverage?.slates || []).find((s) => s.league === 'mlb');
+    t.eq('...and is reported as a real gap in coverage, not folded into "empty"', mlbSlate && mlbSlate.status, 'fetch-failed');
+    t.ok('...worded as a fetch failure with the real reason, not "error:"',
+      (mlbSlate?.note || '').startsWith('fetch failed:') && /429|rate limit/i.test(mlbSlate.note),
+      JSON.stringify(mlbSlate));
+  }
+
+  // ---- 8. "no slate" and "fetch failed" are different facts, reported differently ----
+  {
+    const r = await withEnv({ ...FAST_RETRY_ENV, SWEEP_LEAGUE_MAX_ATTEMPTS: '2' }, async () => {
+      reset();
+      process.env.ANTHROPIC_API_KEY = 'test-key';
+      const mock = mockFetch([
+        ['partner-api.prizepicks.com/projections', async (url) => {
+          const id = new URL(url).searchParams.get('league_id');
+          if (id === '3') return { status: 429, headers: {} }; // WNBA: never actually answers
+          return proj([]);                                      // MLB: answers fine, nothing posted
+        }],
+        [/statsapi|espn|the-odds-api|\/history/, async () => ({})],
+        ['api.anthropic.com', async (_u, init) => answerWith({})(init)],
+      ]);
+      try {
+        const { handler } = await loadFn('sweep-background.js');
+        await handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'swsep', legs: 3, leagues: ['mlb', 'wnba'] }) });
+      } finally { mock.restore(); }
+      return (read('bet-jobs', 'swsep') || {}).result || {};
+    });
+
+    const byLeague = Object.fromEntries((r.coverage?.slates || []).map((s) => [s.league, s]));
+    t.eq('a league PrizePicks genuinely answered with nothing on it is "no-slate"', byLeague.mlb?.status, 'no-slate');
+    t.eq('a league PrizePicks never actually answered for is "fetch-failed", a different fact',
+      byLeague.wnba?.status, 'fetch-failed');
+    t.ok('...worded distinctly, not the same "0 props" both used to render as',
+      byLeague.wnba?.note !== byLeague.mlb?.note && byLeague.wnba?.note.startsWith('fetch failed:'),
+      JSON.stringify([byLeague.mlb, byLeague.wnba]));
+  }
+
+  // ---- 9. a league with no grading mapping gets an honest empty message -----
+  // cs2/nbaszn/ufc/tt on the first live sweep: real props, all three tiers
+  // requested, zero candidates — but not because of the tiers or a prop
+  // filter. statResolves has no mapping for this league at all, so nothing
+  // any UI control does can ever produce a candidate here. The old message
+  // ("Try widening tiers or props") told the user to do something that cannot
+  // solve it — see docs/judge-measurement.md.
+  {
+    const rows = [
+      { id: 'c1', player: 'Player One', stat: 'Kills', line: 15.5, tier: 'standard', team: 'A', opp: 'B' },
+      { id: 'c2', player: 'Player Two', stat: 'Headshots', line: 4.5, tier: 'goblin', team: 'A', opp: 'B' },
+    ];
+    const out = await emptyBoardRun({ league: 'cs2', rows });
+
+    t.eq('reported as not-gradeable, a distinct cause from a tier or filter mismatch', out.emptyReason, 'not-gradeable');
+    t.ok('...and the message says so plainly, not "try widening tiers or props"',
+      !/try widening tiers or props/i.test(out.emptyMessage || ''), out.emptyMessage);
+    t.ok('...naming the real, unfixable-from-the-UI reason',
+      /not.*mapped for grading|no grading mapping|isn'?t supported for scoring/i.test(out.emptyMessage || ''),
+      out.emptyMessage);
+  }
+
+  // ---- 10. the other two empty-board causes still point at something fixable ----
+  {
+    // Real props, but none are in the tiers the caller asked for — widening
+    // tiers really would help here, unlike case 9.
+    const rows = [{ id: 'm1', player: 'Al', stat: 'Hits', line: 1.5, tier: 'demon', team: 'CIN', opp: 'PIT' }];
+    const tierMiss = await emptyBoardRun({ league: 'mlb', rows: [], tiers: ['goblin'] });
+    // No rows at all today -> the existing "no games today" path, unaffected.
+    t.eq('no props posted at all is still its own reason', tierMiss.emptyReason, 'not-posted');
+
+    const wrongTier = await emptyBoardRun({ league: 'mlb', rows, tiers: ['goblin'] });
+    t.eq('a real tier mismatch is tagged distinctly from "not gradeable"', wrongTier.emptyReason, 'tier-mismatch');
+    t.ok('...and stays a "try widening tiers" message, because that would actually work',
+      /widening tiers/i.test(wrongTier.emptyMessage || ''), wrongTier.emptyMessage);
   }
 }

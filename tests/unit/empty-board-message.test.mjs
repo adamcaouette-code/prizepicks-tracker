@@ -72,6 +72,8 @@ export default async function ({ t }) {
     /doesn't play daily/.test(r1?.result?.emptyMessage || ''));
   t.eq('parlay.error carries the same message, so nothing reading the old field breaks',
     r1?.result?.parlay?.error, r1?.result?.emptyMessage);
+  t.eq('...tagged with a stable reason code, not just prose to pattern-match on',
+    r1?.result?.emptyReason, 'no-slate-today');
 
   // ---- cause 2: genuinely nothing posted at all -----------------------------
   reset();
@@ -85,8 +87,11 @@ export default async function ({ t }) {
   const r2 = read('bet-jobs', 'empty2');
   t.eq('a truly empty board keeps the original generic message',
     r2?.result?.emptyMessage, 'No candidates — props not posted yet.');
+  t.eq('...tagged not-posted', r2?.result?.emptyReason, 'not-posted');
 
   // ---- cause 3: today's board is real, but nothing matches the tier filter --
+  // Widening tiers really would surface this prop, so the message still points
+  // at that — unlike cause 4 below, where no filter can ever help.
   reset();
   const filteredMock = mockFetch([
     ['partner-api.prizepicks.com/leagues', async () => leagues()],
@@ -99,6 +104,33 @@ export default async function ({ t }) {
     await handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'empty3', league: 'nfl', legs: 3, today: true, tiers: ['demon'] }) });
   } finally { filteredMock.restore(); }
   const r3 = read('bet-jobs', 'empty3');
-  t.ok('says props exist today but none matched the filter, not that nothing was posted',
-    /1 NFL prop\(s\) today, but none matched/.test(r3?.result?.emptyMessage || ''), r3?.result?.emptyMessage);
+  t.ok('says props exist today but none are in the tiers picked, not that nothing was posted',
+    /1 NFL prop\(s\) today, but none are in the tiers you selected/.test(r3?.result?.emptyMessage || ''), r3?.result?.emptyMessage);
+  t.ok('...and still points at something that would actually fix it',
+    /widening tiers/i.test(r3?.result?.emptyMessage || ''), r3?.result?.emptyMessage);
+  t.eq('...tagged tier-mismatch', r3?.result?.emptyReason, 'tier-mismatch');
+
+  // ---- cause 4: today's board is real and in the right tiers, but this
+  // league has no grading mapping at all — no tier or filter fixes that -------
+  // Reported live: cs2/nbaszn/ufc/tt all hit exactly this on the first sweep,
+  // and got told "Try widening tiers or props" — a real claim for cause 3, a
+  // false one here. See docs/judge-measurement.md.
+  reset();
+  const cs2Leagues = () => ({ data: [{ id: '55', type: 'league', attributes: { name: 'CS2', projections_count: 1 } }] });
+  const ungradeableMock = mockFetch([
+    ['partner-api.prizepicks.com/leagues', async () => cs2Leagues()],
+    ['partner-api.prizepicks.com/projections', async () => proj([
+      { player: 'Pro Gamer', stat: 'Kills', line: 15.5, tier: 'standard', today: true, start: new Date().toISOString() },
+    ])],
+  ]);
+  try {
+    await handler({ httpMethod: 'POST', body: JSON.stringify({ jobId: 'empty4', league: 'cs2', legs: 3, today: true, tiers: ['goblin', 'standard', 'demon'] }) });
+  } finally { ungradeableMock.restore(); }
+  const r4 = read('bet-jobs', 'empty4');
+  t.ok('does not tell the user to try widening tiers or props — that cannot fix this',
+    !/try widening tiers or props/i.test(r4?.result?.emptyMessage || ''), r4?.result?.emptyMessage);
+  t.ok('states the real, unfixable-from-the-UI reason instead',
+    /not.*mapped for grading|isn'?t supported for scoring/i.test(r4?.result?.emptyMessage || ''), r4?.result?.emptyMessage);
+  t.eq('...tagged not-gradeable, distinctly from a tier or prop-filter mismatch',
+    r4?.result?.emptyReason, 'not-gradeable');
 }
