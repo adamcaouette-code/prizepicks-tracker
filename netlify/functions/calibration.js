@@ -883,6 +883,35 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     .sort((a, b) => a.lo - b.lo)
     .map((b) => ({ band: `${b.lo}-${b.lo + 10}%`, n: b.n, predicted: b.predSum / b.n, actual: b.hits / b.n }));
 
+  // Raw prob() OUTPUT distribution per tier, from every LOGGED pick in this
+  // window — graded or still pending. byTier/bands above answer "was the judge
+  // right"; this answers "what does the judge currently say for this tier",
+  // which is the question when checking whether an anchor documented in
+  // judge-measurement.md (e.g. demons written up at 0.15-0.25) has drifted.
+  // Waiting for grading would silently exclude the newest, most relevant rows.
+  out.probDistByTier = {};
+  for (const p of picks) {
+    const prob = Number(p.prob);
+    if (!Number.isFinite(prob)) continue;
+    ((out.probDistByTier[p.oddsType || 'unknown'] ||= [])).push(prob);
+  }
+  for (const [tier, probs] of Object.entries(out.probDistByTier)) {
+    probs.sort((a, b) => a - b);
+    const n = probs.length;
+    const at = (q) => probs[Math.min(n - 1, Math.max(0, Math.round(q * (n - 1))))];
+    const buckets = {};
+    for (const v of probs) {
+      const lo = Math.min(0.95, Math.max(0, Math.floor(v * 20) / 20));
+      const key = `${lo.toFixed(2)}-${(lo + 0.05).toFixed(2)}`;
+      buckets[key] = (buckets[key] || 0) + 1;
+    }
+    out.probDistByTier[tier] = {
+      n, min: probs[0], p25: at(0.25), median: at(0.5), p75: at(0.75), max: probs[n - 1],
+      mean: Math.round((probs.reduce((s, v) => s + v, 0) / n) * 1000) / 1000,
+      buckets,
+    };
+  }
+
   // A FULL, independent calibration per league — its own Brier, bands, record
   // and coverage, not just a hit count. Pooling them hides the thing you most
   // want to know: a rater can be sharp on baseball and hopeless on tennis, and
