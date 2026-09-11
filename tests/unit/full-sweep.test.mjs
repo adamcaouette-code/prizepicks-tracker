@@ -7,12 +7,18 @@
 // statement about the whole opportunity space — reported with evidence whether
 // or not anything cleared.
 //
-// Three things this suite pins:
+// Four things this suite pins:
 //   1. the no-result path still returns a FULL coverage report;
 //   2. sweptN (props evaluated to produce a slip) propagates onto the slip,
 //      its legs, its pick-log rows, and the report;
 //   3. a sweep applies the IDENTICAL edge gate a normal run applies — it
-//      widens what gets evaluated, never what passes.
+//      widens what gets evaluated, never what passes;
+//   4. `sweep: true` is a property of the SWEEP sub-run, not of the pipeline —
+//      a normal Find Bets run (no `sweep` key, or an explicit `sweep: false`)
+//      must still write its pick-log rows. If that flag ever leaked onto an
+//      ordinary run, board picks would stop reaching the log with nothing
+//      visibly wrong on screen — the measurement record going silently thin
+//      is the worst failure mode this project has.
 
 import { loadFn, mockFetch } from '../helpers/fn.mjs';
 import { reset, read } from '../helpers/blobs.mjs';
@@ -97,6 +103,26 @@ async function normalRun({ mlb, probs }) {
     }) });
   } finally { mock.restore(); }
   return { result: read('bet-jobs', 'nr')?.result || {}, log: read('pick-log', TODAY) || [] };
+}
+
+// Run bet-finder-background directly with whatever body is handed in.
+async function betFinderRun({ mlb, probs, body }) {
+  reset();
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  const mock = mockFetch([
+    ['partner-api.prizepicks.com/leagues', async () => CATALOG],
+    ['partner-api.prizepicks.com/projections', async () => proj(mlb)],
+    [/statsapi|espn|the-odds-api|\/history/, async () => ({})],
+    ['api.anthropic.com', async (_u, init) => answerWith(probs)(init)],
+  ]);
+  try {
+    const { handler } = await loadFn('bet-finder-background.js');
+    await handler({ httpMethod: 'POST', body: JSON.stringify({
+      jobId: 'bf', league: 'mlb', legs: 3, today: true,
+      tiers: ['goblin', 'standard', 'demon'], sides: 'both', ...body,
+    }) });
+  } finally { mock.restore(); }
+  return { result: read('bet-jobs', 'bf')?.result || {}, log: read('pick-log', TODAY) || [] };
 }
 
 export default async function ({ t }) {
@@ -230,5 +256,37 @@ export default async function ({ t }) {
     t.ok('...while a normal run keeps it in the log with edgeVerdict pass, unchanged',
       (normalLog.find((p) => p.player === 'Doomed Goblin' && !p.source) || {}).edgeVerdict === 'pass',
       JSON.stringify(normalLog.filter((p) => p.player === 'Doomed Goblin')));
+  }
+
+  // ---- 4. sweep:true must never leak onto a normal Find Bets run ---------
+  // bet-finder-background is a normal, single-league run everywhere EXCEPT
+  // inside a sweep's own sub-runs, which pass sweep:true so the ORCHESTRATOR
+  // can own logging (source:'sweep' + sweptN aren't known until every league
+  // is judged). Nothing else may ever set that flag. If it did, board picks
+  // would stop reaching the pick log with nothing visibly wrong on screen —
+  // the run still "succeeds", it just stops leaving a measurement record.
+  {
+    const mlb = [{ id: 'p1', player: 'Ordinary Player', stat: 'Hits', line: 1.5, tier: 'standard', team: 'CIN', opp: 'PIT' }];
+    const probs = { 'Ordinary Player': 0.6 };
+
+    // No sweep key at all — the ordinary shape every real caller uses.
+    const bare = await betFinderRun({ mlb, probs, body: {} });
+    t.ok('a normal run with no sweep key writes pick-log rows', bare.log.length > 0, JSON.stringify(bare.log));
+    t.ok('...carrying no source (an ordinary board row)', bare.log.every((p) => !p.source), JSON.stringify(bare.log.map((p) => p.source)));
+
+    // Explicit sweep:false — the value a sweep sub-run's own params never take,
+    // but worth pinning: falsy must behave exactly like absent.
+    const explicitFalse = await betFinderRun({ mlb, probs, body: { sweep: false } });
+    t.ok('...and so does sweep:false, explicitly', explicitFalse.log.length > 0, JSON.stringify(explicitFalse.log));
+
+    // Only sweep:true — the one shape sweep-background.js actually sends —
+    // suppresses the write. Same props, same probs, only the flag differs.
+    const asSweep = await betFinderRun({ mlb, probs, body: { sweep: true } });
+    t.eq('only an explicit sweep:true suppresses the pick-log write', asSweep.log.length, 0);
+
+    // And the run itself still succeeded and produced a board either way —
+    // sweep:true changes logging, nothing about the judged result.
+    t.ok('sweep:true still returns a normal board (only logging changed)',
+      (asSweep.result.board || []).length > 0, JSON.stringify(asSweep.result.board));
   }
 }
