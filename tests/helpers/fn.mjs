@@ -10,12 +10,20 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const FN_DIR = path.resolve(HERE, '../../netlify/functions');
-const BLOBS = path.join(HERE, 'blobs.mjs');
+// Forward slashes throughout. path.resolve/join hand back backslashes on Windows,
+// and the sibling-import rewrite below matches FN_DIR with a literal "/" — so on
+// Windows the redirect silently missed and every rewritten module pulled the
+// REAL @netlify/blobs. Normalising here keeps the whole harness on one separator.
+const FN_DIR = path.resolve(HERE, '../../netlify/functions').replace(/\\/g, '/');
+const BLOBS = path.join(HERE, 'blobs.mjs').replace(/\\/g, '/');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'atombets-fn-'));
+
+// A path a rewritten module's `from '...'` / `import('...')` can actually load.
+// Node's ESM loader rejects a bare `C:\...` specifier — it must be a file:// URL.
+const asImportUrl = (p) => (/^[a-z]+:\/\//i.test(p) ? p : pathToFileURL(p).href);
 
 let seq = 0;
 
@@ -47,29 +55,40 @@ export async function loadFn(name, opts = {}) {
   // suite put it.
   const rewrite = (fnName) => {
     if (written.has(fnName)) return written.get(fnName);
-    const file = path.join(TMP, `${gen}-${fnName.replace(/[^\w.]/g, '_')}.mjs`);
-    written.set(fnName, file);                       // set before recursing: cycles
+    const file = `${TMP.replace(/\\/g, '/')}/${gen}-${fnName.replace(/[^\w.]/g, '_')}.mjs`;
+    const url = asImportUrl(file);
+    written.set(fnName, url);                        // set before recursing: cycles
 
     let src = fs.readFileSync(path.join(FN_DIR, fnName), 'utf8');
-    src = src.replace(/from ['"]@netlify\/blobs['"]/g, `from '${BLOBS}'`);
-    src = src.replace(/from ['"]\.\/([^'"]+)['"]/g, (_m, rel) => `from '${path.join(FN_DIR, rel)}'`);
+    src = src.replace(/from ['"]@netlify\/blobs['"]/g, `from '${asImportUrl(BLOBS)}'`);
+    src = src.replace(/from ['"]\.\/([^'"]+)['"]/g, (_m, rel) => `from '${FN_DIR}/${rel}'`);
     for (const [from, to] of opts.replace || []) src = src.replace(from, to);
 
     src = src.replace(new RegExp(`from '${FN_DIR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/([^']+)'`, 'g'),
       (m, rel) => {
         const target = /\.(m?js)$/.test(rel) ? rel : `${rel}.js`;
         if (!fs.existsSync(path.join(FN_DIR, target))) return m;
-        return `from '${rewrite(target)}'`;
+        return `from '${rewrite(target)}'`;          // a file:// URL — see asImportUrl
       });
 
+    // Anything still left as a bare absolute path — a suite's own stub file
+    // passed through opts.replace, or a sibling `./x.json` import attribute that
+    // was resolved to FN_DIR but not to a rewritten copy. Node's loader needs a
+    // file:// URL for all of them on Windows.
+    src = src.replace(
+      /(\bfrom\s*['"]|\bimport\(\s*['"])((?:[A-Za-z]:[\\/]|\/)[^'"]+\.(?:[mc]?js|json))(['"])/g,
+      (_m, a, p, b) => `${a}${asImportUrl(p.replace(/\\/g, '/'))}${b}`,
+    );
+
     fs.writeFileSync(file, src);
-    return file;
+    return url;
   };
   return import(rewrite(name));
 }
 
-/** Absolute path to a function file, for building `replace` rules. */
-export const fnPath = (name) => path.join(FN_DIR, name);
+/** Absolute path to a function file, for building `replace` rules. Forward
+ *  slashes, matching how the sibling-import rewrite writes them into source. */
+export const fnPath = (name) => `${FN_DIR}/${name}`;
 
 /**
  * Swaps globalThis.fetch for a router keyed by URL substring. Each route is

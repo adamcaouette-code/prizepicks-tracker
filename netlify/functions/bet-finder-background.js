@@ -2001,6 +2001,13 @@ export const handler = async (event) => {
       // The two-stage run: after the normal scan, individually re-judge the
       // top DEEP_DIVE_MAX picks by edge, each with its own dedicated search.
       deepDive: body.deepDive === true,
+      // A full-sweep sub-run. The sweep orchestrator (sweep-background.js) runs
+      // this same pipeline over every league/tier/side and owns the pick log
+      // for the sweep — it stamps source:'sweep' and the sweptN
+      // (selection-intensity) count, neither of which is known until every
+      // league has been judged. So a sub-run judges and returns its board
+      // exactly as normal but writes nothing to the pick log itself.
+      sweep: body.sweep === true,
     };
 
     // ---- Run timer: timestamped phase log + typical-duration ETA ----------
@@ -2449,7 +2456,10 @@ export const handler = async (event) => {
     // Log every pick for later auto-grading + calibration. Keyed by date so each
     // day is one record. Stores what we need to grade: projection id, line, the
     // probability Claude gave, verdict, tier — plus graded:null to fill in later.
-    try {
+    //
+    // A sweep sub-run skips this entirely: the sweep orchestrator logs the
+    // whole sweep's picks together with source:'sweep' and the sweptN count.
+    if (!params.sweep) try {
       const logStore = getStore({ name: 'pick-log', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_BLOBS_TOKEN });
       // The date of the GAMES, not of the run. These are the same thing on every
       // ordinary scan and different exactly when a next-slate scan reached

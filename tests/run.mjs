@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { makeAsserter } from './helpers/assert.mjs';
 import { serveApp, getChromium, launchOptions } from './helpers/browser.mjs';
 
@@ -57,7 +57,7 @@ for (const suite of suites) {
   console.log(`\n[1m${suite.kind}/${suite.name}[0m`);
   const t = makeAsserter(suite.name, results);
   try {
-    const mod = await import(suite.file);
+    const mod = await import(pathToFileURL(suite.file).href);
     await mod.default({ t, url: server.url, browser, chromium });
   } catch (err) {
     crashed.push({ suite: suite.name, err });

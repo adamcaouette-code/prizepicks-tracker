@@ -67,6 +67,10 @@ function normalizeLeg(l = {}) {
     matchup: clean(l.matchup, 60) || null,
     start: l.start || null,
     prob: isFinite(Number(l.prob)) ? Number(l.prob) : null,   // the engine's read AT SAVE TIME
+    // How many props a full sweep evaluated to surface this leg — null for an
+    // ordinary board leg. A leg that cleared out of 1200 is a weaker claim than
+    // one that cleared out of 40, and a saved slip has to keep that distinction.
+    sweptN: Number.isFinite(Number(l.sweptN)) ? Number(l.sweptN) : null,
     mlbId: Number.isInteger(l.mlbId) ? l.mlbId : null,        // for the MLB fallback grader
     image: typeof l.image === 'string' && /^https?:\/\//.test(l.image) ? l.image : null,
     // filled by grade-slips.js once the game settles
@@ -144,6 +148,10 @@ export const handler = async (event) => {
       league: clean(body.league, 20) || null,
       entry: String(body.entry || '').toLowerCase() === 'flex' ? 'flex' : 'power',
       stake: isFinite(stake) ? stake : 10,
+      // Sweep selection intensity, carried at slip level too (the per-leg value
+      // is the same number). null for a slip built off a normal board run.
+      sweptN: Number.isFinite(Number(body.sweptN)) ? Number(body.sweptN)
+        : (legs.find((l) => Number.isFinite(l.sweptN))?.sweptN ?? null),
       legs,
       sizing: body.sizing && typeof body.sizing === 'object' ? body.sizing : null,  // multipliers as shown at save time
       status: 'pending',    // pending | won | lost | partial (flex) | ungradeable
