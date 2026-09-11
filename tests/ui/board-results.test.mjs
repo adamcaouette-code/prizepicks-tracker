@@ -89,6 +89,18 @@ export default async function ({ t, url, browser }) {
   t.eq('board-mode "pass" is styled as fade, not left bare', pct[await rowAt('Corbin Carroll')], 'pct fade');
   t.ok('probabilities render as percentages', /68%/.test(await page.textContent('#searchResults')));
 
+  // ---- tier badge + break-even, so a fade above a play isn't a mystery ----
+  // Elly is a 68% goblin (needs 79.4%) sorted BELOW two 60% standards (need
+  // only 59.5%) — the right call, but unreadable without the tier and the bar
+  // it has to clear sitting right next to the number.
+  const tierBadges = await page.$$eval('#searchResults .leg .tierbadge', els => els.map(e => e.textContent.trim()));
+  t.eq('every row carries a tier badge', tierBadges[await rowAt('Elly De La Cruz')], 'GOBLIN');
+  t.eq('...naming standard too', tierBadges[await rowAt('Corbin Carroll')], 'STANDARD');
+  const pctText = await page.$$eval('#searchResults .pct', els => els.map(e => e.textContent.trim()));
+  t.eq('the goblin shows what IT needs, not a flat cutoff',
+    pctText[await rowAt('Elly De La Cruz')], '68% (needs 79.4%)');
+  t.eq('a standard needs a different, lower bar', pctText[await rowAt('No Extras Guy')], '60% (needs 59.5%)');
+
   // ---- deep dive badge: only on a pick the deep dive actually re-judged ---
   // Lives next to the matchup line, not inside the player's own name — a row
   // above is addressed by exact name text (line 77), which already proves a
