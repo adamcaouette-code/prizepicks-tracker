@@ -49,6 +49,22 @@ const SWEEP_EST_PER_LEAGUE_USD = num(process.env.SWEEP_EST_PER_LEAGUE_USD, 0.15)
 const SWEEP_CONCURRENCY = Math.max(1, Math.round(num(process.env.SWEEP_CONCURRENCY, 3)));
 const SWEEP_PER_LEAGUE_MAX_PICKS = Math.max(3, Math.min(60, Math.round(num(process.env.SWEEP_PER_LEAGUE_MAX_PICKS, 60))));
 const SWEEP_MAX_LEAGUES = Math.max(1, Math.round(num(process.env.SWEEP_MAX_LEAGUES, 16)));
+// Every league's PrizePicks fetch (first attempt AND every retry) claims a slot
+// at least this far after the previous one, sweep-wide — see claimStaggerSlot
+// below. Without it, SWEEP_CONCURRENCY workers each starting a fresh league the
+// instant they're free means N leagues' page-1 (and page-1's own internal wave
+// of 4) all land on PrizePicks in the same instant; that burst is what put 7 of
+// 16 leagues into a 429 on the first live run even though the per-page retry in
+// ppFetch already backs off. Staggering the START smooths the burst out instead
+// of just retrying after it happens.
+const SWEEP_STAGGER_MS = Math.max(0, Math.round(num(process.env.SWEEP_STAGGER_MS, 600)));
+// A league that still fails after ppFetch's own page-level retries is usually
+// one that got caught in a burst, not one PrizePicks has permanently blocked —
+// worth trying again, a bounded number of times, only when the failure looks
+// like throttling.
+const SWEEP_LEAGUE_MAX_ATTEMPTS = Math.max(1, Math.round(num(process.env.SWEEP_LEAGUE_MAX_ATTEMPTS, 3)));
+const SWEEP_LEAGUE_BACKOFF_BASE_MS = Math.max(0, Math.round(num(process.env.SWEEP_LEAGUE_BACKOFF_BASE_MS, 2000)));
+const SWEEP_LEAGUE_BACKOFF_CAP_MS = Math.max(0, Math.round(num(process.env.SWEEP_LEAGUE_BACKOFF_CAP_MS, 20000)));
 // Leave headroom under Netlify's 15-min background budget so a slow sweep
 // writes the partial coverage report it has rather than being killed with none.
 const SWEEP_DEADLINE_MS = num(process.env.SWEEP_DEADLINE_MS, 12 * 60 * 1000);
@@ -153,27 +169,52 @@ export const handler = async (event) => {
     let costCappedEarly = false;
     let cursor = 0;
 
+    // Shared clock all workers claim a slot from, so leagues start
+    // SWEEP_STAGGER_MS apart no matter how many workers are free at once.
+    let nextStaggerSlot = started;
+    const claimStaggerSlot = () => {
+      const slot = Math.max(Date.now(), nextStaggerSlot);
+      nextStaggerSlot = slot + SWEEP_STAGGER_MS;
+      return slot;
+    };
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const looksRateLimited = (msg) => /429|rate limit/i.test(String(msg || ''));
+
     const runLeague = async (league) => {
       const subId = `${jobId}__${league}`;
-      try {
-        await betFinder({ httpMethod: 'POST', body: JSON.stringify({
-          ...base,
-          jobId: subId,
-          league,
-          today: true,
-          slate: 'next',
-          tiers: ['goblin', 'standard', 'demon'],
-          sides: 'both',
-          balance: true,                 // even tier sampling — see findCandidates
-          maxPicks: perLeagueMaxPicks,
-          sweep: true,                   // this orchestrator owns the pick log
-        }) });
-        const job = await store.get(subId, { type: 'json' });
-        if (job && job.status === 'done') subResults.push({ league, result: job.result || {} });
-        else subResults.push({ league, error: (job && job.message) || 'sub-run produced no result' });
-      } catch (e) {
-        subResults.push({ league, error: String(e.message || e) });
+      let lastErr = null;
+      let done = false;
+      for (let attempt = 0; attempt < SWEEP_LEAGUE_MAX_ATTEMPTS; attempt++) {
+        // Stagger every attempt, not just the first — a retry landing on the
+        // same instant as the next league in line just recreates the burst.
+        const wait = claimStaggerSlot() - Date.now();
+        if (wait > 0) await sleep(wait);
+        try {
+          await betFinder({ httpMethod: 'POST', body: JSON.stringify({
+            ...base,
+            jobId: subId,
+            league,
+            today: true,
+            slate: 'next',
+            tiers: ['goblin', 'standard', 'demon'],
+            sides: 'both',
+            balance: true,                 // even tier sampling — see findCandidates
+            maxPicks: perLeagueMaxPicks,
+            sweep: true,                   // this orchestrator owns the pick log
+          }) });
+          const job = await store.get(subId, { type: 'json' });
+          if (job && job.status === 'done') { subResults.push({ league, result: job.result || {} }); done = true; break; }
+          lastErr = (job && job.message) || 'sub-run produced no result';
+        } catch (e) {
+          lastErr = String(e.message || e);
+        }
+        const retriesLeft = attempt < SWEEP_LEAGUE_MAX_ATTEMPTS - 1;
+        if (!looksRateLimited(lastErr) || !retriesLeft) break;
+        // Backs off on top of the stagger slot above — PrizePicks needs real
+        // wall-clock time to stop throttling, not just a reordered queue.
+        await sleep(Math.min(SWEEP_LEAGUE_BACKOFF_CAP_MS, SWEEP_LEAGUE_BACKOFF_BASE_MS * 2 ** attempt) + Math.floor(Math.random() * 500));
       }
+      if (!done) subResults.push({ league, error: lastErr || 'sub-run produced no result' });
       await tick(`swept ${subResults.length}/${leagues.length} leagues`, { leaguesDone: subResults.length });
     };
 
@@ -215,17 +256,29 @@ export const handler = async (event) => {
       propsEvaluated += Number(result?.timing?.candidates) || picks.length;
       const sd = result?.slate?.date || null;
       slateDateByLeague[league] = sd || day;
+      const emptyReason = result?.emptyReason || null;
       slates.push({
         league,
         date: sd,
         usedNext: !!result?.slate?.usedNext,
         props: picks.length,
         empty: !picks.length,
-        note: picks.length ? null : (result?.emptyMessage || null),
+        // 'no-slate': fetched fine, there was nothing there to find.
+        // 'no-match': fetched fine, props existed but none were gradeable /
+        // matched the tiers or filter — see bet-finder-background.js's
+        // emptyReason. Neither is a fetch-failed below.
+        status: picks.length ? 'covered' : (emptyReason === 'no-slate-today' || emptyReason === 'not-posted' ? 'no-slate' : 'no-match'),
+        note: picks.length ? null : (result?.emptyMessage || 'no slate'),
       });
     }
+    // A league PrizePicks never actually answered for is a different fact
+    // from one that answered with nothing on it: one means this sweep isn't
+    // really exhaustive (the whole point of the feature), the other means
+    // there was genuinely nothing to find. Both used to render as the same
+    // "0 props, empty" row — this is what hid 7/16 leagues' rate-limit
+    // failures as if they were unremarkable empty boards on the first live run.
     for (const { league, error } of subResults.filter((r) => r.error)) {
-      slates.push({ league, date: null, usedNext: false, props: 0, empty: true, note: `error: ${error}` });
+      slates.push({ league, date: null, usedNext: false, props: 0, empty: true, status: 'fetch-failed', note: `fetch failed: ${error}` });
     }
 
     // The count that goes on every slip and every logged row this sweep produces.
@@ -353,8 +406,14 @@ export const handler = async (event) => {
 
     let summary;
     if (parlay && chosen.length >= 3) {
+      // clearedGate, not clearedEdgeGE0 — this is selectLegs' own pool (play/
+      // lean), the count that actually determined whether a slip got built.
+      // The two numbers differ (edge >= 0 is a wider, weaker bar than the
+      // verdict gate) and printing one under the other's label reported 13
+      // when the edge distribution said 8. Same value the table's "cleared
+      // the gate (play/lean)" row shows, so the two can never drift apart again.
       summary = `Swept ${sweptN} props across ${leaguesCovered} leagues, ${slatesCovered} slates. `
-        + `${clearedGate} cleared edge ≥ 0 — built a ${chosen.length}-leg slip.`;
+        + `${clearedGate} cleared the gate — built a ${chosen.length}-leg slip.`;
     } else {
       summary = `Swept ${sweptN} props across ${leaguesCovered} leagues, ${slatesCovered} slates. `
         + `Best edge ${fmtEdge(edgeReport.max)}. `
