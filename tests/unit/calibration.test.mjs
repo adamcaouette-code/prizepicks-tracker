@@ -740,4 +740,39 @@ export default async function ({ t }) {
   // still be on the page.
   t.ok('the falsified "perfect compliance" claim is gone', !/perfect compliance/.test(html14));
   t.ok('...replaced with the run-to-run finding', /unreliable run to run/.test(html14));
+
+  // ---- probDistByTier: what the judge is CURRENTLY outputting, not whether
+  // it was right — needed to check a documented anchor (e.g. demons written up
+  // at 0.15-0.25 in judge-measurement.md) for drift without waiting on grading.
+  {
+    reset();
+    const demonRow = (prob, i, graded) => ({
+      date: DAY, loggedAt: DAY + 'T18:00:00Z', league: 'nfl', source: 'board',
+      projectionId: `demon-${i}`, player: `D${i}`, stat: 'Pass Yards', line: 239.5,
+      prob, verdict: prob >= 0.54 ? 'play' : 'pass', oddsType: 'demon',
+      ...(graded ? { result: prob >= 0.5 ? 1 : 0, hit: prob >= 0.5, gradedAt: DAY + 'T23:00:00Z' } : { hit: null, gradedAt: null }),
+    });
+    const rows = [
+      demonRow(0.15, 0, true), demonRow(0.18, 1, true), demonRow(0.20, 2, false),
+      // Still pending — must still count. byTier (graded-only) would drop this.
+      demonRow(0.24, 3, false),
+      // Today's outlier, still pending.
+      demonRow(0.54, 4, false),
+    ];
+    seed('pick-log', DAY, rows);
+    const calD = await loadFn('calibration.js');
+    const resD = JSON.parse((await calD.handler({ queryStringParameters: { format: 'json' } })).body);
+    const dist = resD.probDistByTier?.demon;
+
+    t.eq('every logged demon counts, pending or graded', dist?.n, 5);
+    t.ok('...even though only 2 of them are graded', resD.byTier?.demon?.n, 2);
+    t.eq('min is the lowest logged prob', dist.min, 0.15);
+    t.eq('max is the outlier, not smoothed away', dist.max, 0.54);
+    t.eq('median lands on the middle value', dist.median, 0.20);
+    t.ok('mean sits between min and max', dist.mean > dist.min && dist.mean < dist.max, dist.mean);
+    const bucketTotal = Object.values(dist.buckets).reduce((s, v) => s + v, 0);
+    t.eq('every prob lands in exactly one bucket', bucketTotal, dist.n);
+    t.eq('the 0.15-0.20 bucket holds the two picks actually in it', dist.buckets['0.15-0.20'], 2);
+    t.eq('the outlier sits alone in its own bucket', dist.buckets['0.50-0.55'], 1);
+  }
 }
