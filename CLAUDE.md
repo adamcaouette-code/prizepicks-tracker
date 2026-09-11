@@ -94,7 +94,7 @@ request that can be honoured.
 
 ```bash
 npm install
-npm test                 # node tests/run.mjs — ~2 min, 57 suites
+npm test                 # node tests/run.mjs — ~2 min, 67 suites
 netlify dev              # NOT npm run dev; functions won't load otherwise
 ```
 
@@ -103,9 +103,11 @@ netlify dev              # NOT npm run dev; functions won't load otherwise
   Netlify Blobs that serializes on read and write exactly as production does.
 - Test names are sentences describing the behaviour, not the function
   (`"the cutoff day is excluded whole, not split at midnight"`). Match that.
-- There are four known failures in `empty-board-message` and `stale-read`,
-  date-related, pre-existing. Don't treat them as caused by your change, and
-  don't paper over them.
+- The suite is 67/67 green. There is no standing exemption — a failure is a
+  real failure. (`empty-board-message` and `stale-read` used to carry hardcoded
+  future dates that the wall clock eventually caught up to; fixed in v4.39.0 by
+  making the fixtures relative to `Date.now()`. If either starts failing again
+  it is a new bug, not that old one recurring.)
 
 ## Versioning
 
@@ -122,3 +124,40 @@ wrong and why this is the fix — not a list of files touched. Name the regressi
 cover at the end.
 
 Example: `Filter calibration by grade date, not log date (v4.39.0)`
+
+---
+
+## How work ships here
+
+Do all of this without asking for confirmation at each step. Ask only when a
+decision is genuinely ambiguous or when something below says to stop.
+
+1. Work on a branch named `claude/<short-description>`.
+2. Make the change. Bump the version in **both** places if app behaviour
+   changed (`netlify/functions/version.js` and the `id="appVer"` footer in
+   `public/index.html`).
+3. Run `npm test`. It takes about two minutes. The suite is 67/67 green with no
+   standing exemption — any failure is yours to fix before continuing.
+4. Commit in the style described above, and push the branch.
+5. Open a PR with `gh pr create`, summarising what was wrong and why this fixes
+   it.
+6. If the suite is green, merge it: `gh pr merge --squash --delete-branch`.
+7. Netlify builds from `master` automatically. Wait for the deploy, then check
+   `https://atombets.netlify.app/api/version` and confirm the version matches
+   what you just shipped. An older version means the build failed and Netlify
+   kept the previous deploy live — read the build log and say so. Do not report
+   success without this check.
+8. Report what shipped in two or three sentences: what changed, what the tests
+   said, and the confirmed live version.
+
+### Stop and ask instead of merging when
+
+- The change touches selection, sizing, tier weighting, thresholds, or any
+  prompt — see the standing constraints above. These are frozen.
+- Tests fail beyond the four known ones and the fix isn't obvious.
+- The change would weaken, bypass, or add an override to the edge guardrail.
+- A migration or anything that rewrites the pick log is involved. Blob data is
+  the measurement record and there is no backup.
+
+In those cases: push the branch, open the PR, explain the concern, and leave it
+unmerged.
