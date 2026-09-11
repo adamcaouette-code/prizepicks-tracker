@@ -113,6 +113,30 @@ export default async function ({ t, url, browser }) {
     rec[rec.length - 2], 'Shiny Goblin');
   t.eq('the best edge leads', rec[0], 'Edge Std');
 
+  // ---- the edge itself is on the row, and a negative one is greyed ---------
+  // Both C Hitter (standard, 41%, needs 59.5%) and Shiny Goblin (goblin, 78%,
+  // needs 79.4%) rank last precisely BECAUSE their edge is negative — but
+  // until now the row showed only a plain green percentage and a live + button,
+  // identical to every winning row beside it. Only the pp figure said otherwise,
+  // and it wasn't shown here at all.
+  const recRows = await page.$$eval('#ledgerRec .recline', els => els.map(e => ({
+    name: e.querySelector('.rl-name').textContent.trim(),
+    edge: e.querySelector('.rl-edge').textContent.trim(),
+    greyed: e.classList.contains('negedge'),
+  })));
+  const rowFor = (name) => recRows.find(r => r.name === name);
+  t.ok('every row states its edge in pp, not just its percentage',
+    recRows.every(r => /pp$/.test(r.edge)), recRows.map(r => r.edge).join(' | '));
+  t.eq('the negative-edge fade shows its real, negative number', rowFor('C Hitter').edge, '-18.5pp');
+  t.eq('...and is visually greyed, not styled like a winning row', rowFor('C Hitter').greyed, true);
+  t.eq('the negative-edge goblin shows its real number too', rowFor('Shiny Goblin').edge, '-1.4pp');
+  t.eq('...also greyed', rowFor('Shiny Goblin').greyed, true);
+  t.eq('a genuine positive edge is shown with a leading +', rowFor('Edge Std').edge, '+8.5pp');
+  t.eq('...and is NOT greyed', rowFor('Edge Std').greyed, false);
+  t.ok('only the two negative-edge rows are greyed, nothing else',
+    recRows.filter(r => r.greyed).map(r => r.name).sort().join(',') === 'C Hitter,Shiny Goblin',
+    JSON.stringify(recRows));
+
   // A duplicate LINE of the same prop still collapses to one row (the nesting
   // rule), even though the per-player cap that used to apply alongside it is gone.
   const recLines = await page.$$eval('#ledgerRec .recline .rl-stat', els => els.map(e => e.textContent.trim()));
