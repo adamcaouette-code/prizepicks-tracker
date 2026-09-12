@@ -1,7 +1,8 @@
-// Per-pick "ask" chat on the board. A user asks a follow-up question about one
-// specific prop; the answer comes back from /api/ask (Haiku), and if the model's
-// own view genuinely moves it can hand back a revised probability — shown next
-// to the board's own number, never silently replacing it.
+// Per-pick "ask" chat, now living inside the board's "why" panel. A user asks
+// a follow-up question about one specific prop; the answer comes back from
+// /api/ask (Haiku), and if the model's own view genuinely moves it can hand
+// back a revised probability — shown next to the board's own number, never
+// silently replacing it.
 //
 // What has to hold: the panel opens per-card without cross-talk between rows,
 // the running thread is actually sent back on a follow-up (not just the latest
@@ -48,6 +49,17 @@ async function nameOrder(page) {
   return page.$$eval('#searchResults .leg .name', (els) => els.map((e) => e.textContent.trim()));
 }
 
+// Opens the "why" panel for the leg at index `at` (the ask thread now lives at
+// the bottom of it, below the audit strip / pass compare / provenance) and
+// returns a Locator scoped to that one panel.
+async function openWhy(page, at) {
+  const btn = page.locator('#searchResults .whybtn[data-panel="why"]').nth(at);
+  const panel = page.locator('#searchResults .why[data-panel="why"]').nth(at);
+  await btn.click();
+  await panel.waitFor({ state: 'visible' });
+  return { btn, panel };
+}
+
 export default async function ({ t, url, browser }) {
   // ---- basic round trip, one card ------------------------------------------
   const asked = [];
@@ -57,25 +69,26 @@ export default async function ({ t, url, browser }) {
       answer: 'Confirmed in tonight’s lineup, batting second.', revisedProb: null, usedSearch: true }) });
   });
 
-  t.eq('every pick gets an ask button', await page.locator('#searchResults .whybtn[data-panel="ask"]').count(), 2);
+  // Every pick gets a why button now — the audit strip and provenance are
+  // always available, and the ask thread lives inside it, so this is the one
+  // place a pick's own follow-up chat is always reachable (UI-CONTRACT §6:
+  // "ask is available everywhere a pick appears").
+  t.eq('every pick gets a why button', await page.locator('#searchResults .whybtn[data-panel="why"]').count(), 2);
   t.eq('panels start collapsed',
-    await page.$$eval('#searchResults .why[data-panel="ask"]', (w) => w.map((x) => x.hidden)), [true, true]);
+    await page.$$eval('#searchResults .why[data-panel="why"]', (w) => w.map((x) => x.hidden)), [true, true]);
 
   const ellyAt = (await nameOrder(page)).indexOf('Elly De La Cruz');
-  const ellyBtn = page.locator('#searchResults .whybtn[data-panel="ask"]').nth(ellyAt);
-  const ellyPanel = page.locator('#searchResults .why[data-panel="ask"]').nth(ellyAt);
+  const { btn: ellyBtn, panel: ellyPanel } = await openWhy(page, ellyAt);
   const ellyInput = ellyPanel.locator('.askinput');
 
-  await ellyBtn.click();
-  await ellyPanel.waitFor({ state: 'visible' });
-  t.eq('button flips open', (await ellyBtn.textContent()).trim(), 'ask ↑');
+  t.eq('button flips open', (await ellyBtn.textContent()).trim(), 'why ↑');
   t.ok('an empty thread prompts rather than showing nothing',
     /Ask about lineup news/.test(await ellyPanel.innerText()));
 
   await ellyInput.fill('is he in the lineup tonight');
   await ellyInput.press('Enter');
   await page.waitForFunction(
-    (i) => /Confirmed in tonight/.test(document.querySelectorAll('#searchResults .why[data-panel="ask"]')[i].innerText),
+    (i) => /Confirmed in tonight/.test(document.querySelectorAll('#searchResults .why[data-panel="why"]')[i].innerText),
     ellyAt);
 
   const text1 = await ellyPanel.innerText();
@@ -92,7 +105,7 @@ export default async function ({ t, url, browser }) {
 
   // ---- the OTHER card's panel is untouched ---------------------------------
   const carrollAt = (await nameOrder(page)).indexOf('Corbin Carroll');
-  const carrollPanel = page.locator('#searchResults .why[data-panel="ask"]').nth(carrollAt);
+  const carrollPanel = page.locator('#searchResults .why[data-panel="why"]').nth(carrollAt);
   t.ok('a card nobody asked about stays empty', /Ask about lineup news/.test(await carrollPanel.innerText()));
   t.eq('...and stays closed', await carrollPanel.isHidden(), true);
 
@@ -118,12 +131,11 @@ export default async function ({ t, url, browser }) {
   }));
   const at2 = (await nameOrder(page2)).indexOf('Elly De La Cruz');
   const pctBefore = (await page2.$$eval('#searchResults .pct', (els) => els.map((e) => e.textContent.trim())))[at2];
-  const panel2 = page2.locator('#searchResults .why[data-panel="ask"]').nth(at2);
-  await page2.locator('#searchResults .whybtn[data-panel="ask"]').nth(at2).click();
+  const { panel: panel2 } = await openWhy(page2, at2);
   await panel2.locator('.askinput').fill('any injury news');
   await panel2.locator('.askinput').press('Enter');
   await page2.waitForFunction(
-    (i) => /Revised read/.test(document.querySelectorAll('#searchResults .why[data-panel="ask"]')[i].innerText),
+    (i) => /Revised read/.test(document.querySelectorAll('#searchResults .why[data-panel="why"]')[i].innerText),
     at2);
   const text2 = await panel2.innerText();
   t.ok('the revised probability is shown', /Revised read from this chat.*15%/.test(text2.replace(/\n/g, ' ')));
@@ -135,12 +147,11 @@ export default async function ({ t, url, browser }) {
   const { page: page3, errors: errors3 } = await renderBoard(browser, url, (route) => route.fulfill({
     status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'ANTHROPIC_API_KEY not set' }),
   }));
-  const panel3 = page3.locator('#searchResults .why[data-panel="ask"]').first();
-  await page3.locator('#searchResults .whybtn[data-panel="ask"]').first().click();
+  const { panel: panel3 } = await openWhy(page3, 0);
   await panel3.locator('.askinput').fill('any news');
   await panel3.locator('.askinput').press('Enter');
   await page3.waitForFunction(
-    () => /Could not reach/.test(document.querySelector('#searchResults .why[data-panel="ask"]').innerText));
+    () => /Could not reach/.test(document.querySelector('#searchResults .why[data-panel="why"]').innerText));
   t.ok('a server error surfaces inline, in the chat', /Could not reach the assistant/.test(await panel3.innerText()));
   t.eq('...and no JS error was thrown handling it', errors3, []);
   await page3.close();

@@ -1471,6 +1471,12 @@ async function judge(candidates, teamRecords = {}, winProbs = {}, league = 'mlb'
     p.verdict = verdictFor(Number(p.prob));
     p.promptVersion = V.name;    // so calibration can score the versions apart
     p.judgeModel = model;        // ...and the models apart, for the same reason
+    // Display-only provenance for the board's "why" panel — the search budget
+    // this call actually ran with and when the response came back. Neither
+    // value feeds selection, sizing, or the prompt; they only let a bad number
+    // be traced to a version, model, and moment instead of argued about.
+    p.maxSearches = maxSearches;
+    p.judgedAt = new Date().toISOString();
   }
   return attachSource(picks, candidates);
 }
