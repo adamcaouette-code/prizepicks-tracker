@@ -230,8 +230,10 @@ export default async function ({ t }) {
 
   // ---- 5. the page says all of it out loud -------------------------------
   t.ok('the page shows the guardrail split', html.includes('The edge guardrail'), '');
+  // The guardrail is drawn with the same edge meter as the board row (v4.53.0)
+  // — a track, a break-even tick, and a "needs X%" label — not a table column.
   t.ok('...states what the picks needed, not just what they hit',
-    html.includes('<th>needed</th>'), '');
+    /class="needs">needs \d/.test(html), '');
   t.ok('...and names it a counterfactual rather than a measurement',
     /counterfactual/i.test(html), '');
   t.ok('the deep dive section leads with Brier, not win rate',

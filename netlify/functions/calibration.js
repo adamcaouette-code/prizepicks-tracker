@@ -959,6 +959,68 @@ async function mapLimit(items, limit, fn) {
 
 const pct = (x) => (x == null ? '—' : `${(x * 100).toFixed(1)}%`);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const fmt = (x) => (x == null ? '—' : x.toLocaleString());
+
+// ---- THE EDGE METER — identical to the board row's, on purpose --------------
+//
+// Same classes, same track/tick/fill shape as edgeMeterHtml/.emeter in
+// public/index.html, so a user who reads one screen already knows how to read
+// the other. A bucket carries a state the board never needs: sigma-inconclusive
+// (amber) sits between clears (green) and short (red), because a single pick
+// has no sample-size uncertainty to show, and a bucket of n picks does.
+//
+// ratePct/needPct are already percentages (0-100), matching the board's own
+// `pc`/`bePct`. sigma is optional; omit it (or pass null) to fall back to a
+// plain two-state read.
+// `dim` forces the neutral/grey state regardless of over-short-close — the
+// guardrail table this replaces greyed any bucket under 50 rows for the same
+// reason a thin cell in the tier-lift table is greyed rather than coloured:
+// a verdict on n=12 is a claim the sample can't support.
+function edgeMeter(ratePct, needPct, sigma, dim = false) {
+  if (needPct == null) {
+    return `<div class="emeter"><div class="etrack"><i class="efill" style="width:${ratePct ?? 0}%"></i></div>
+      <div class="enums"><span class="pct unpriced">${ratePct == null ? '—' : ratePct.toFixed(1) + '%'}</span><span class="needs">price unknown</span></div></div>`;
+  }
+  const inconclusive = sigma != null && Math.abs(sigma) < 2;
+  const cls = dim ? 'dim' : ratePct >= needPct ? 'over' : (inconclusive ? 'close' : 'short');
+  return `<div class="emeter"><div class="etrack">` +
+    `<i class="etick" style="left:${needPct.toFixed(1)}%"></i>` +
+    `<i class="efill ${cls}" style="width:${Math.max(0, Math.min(100, ratePct ?? 0))}%"></i></div>` +
+    `<div class="enums"><span class="pct ${cls}">hits ${ratePct.toFixed(1)}%</span><span class="needs">needs ${needPct.toFixed(1)}%</span></div></div>`;
+}
+
+// A labelled block built around one edge meter — used for tier meters, the
+// guardrail buckets, the live edge-verdict split and the deep-dive stages:
+// every place a rate has to clear a bar gets the identical shape.
+function meterRow({ icon = '', label, sub = '', n, ratePct, needPct, sigma, note = '', dim = false }) {
+  if (!n) return `<div class="mrow"><div class="mrow-top"><div class="mrow-label">${icon}${esc(label)}</div><span class="mut">none yet</span></div></div>`;
+  const gap = needPct == null ? null : ratePct - needPct;
+  const inconclusive = gap != null && sigma != null && Math.abs(sigma) < 2;
+  const gapCls = gap == null ? '' : dim ? 'dim' : gap >= 0 ? 'over' : inconclusive ? 'close' : 'short';
+  return `<div class="mrow">
+    <div class="mrow-top">
+      <div class="mrow-label">${icon}<span>${esc(label)}</span>${sub ? ` <span class="mut">${sub}</span>` : ''}</div>
+      ${gap == null ? '' : `<div class="mrow-gap ${gapCls}">${gap >= 0 ? '+' : ''}${gap.toFixed(1)}</div>`}
+    </div>
+    ${edgeMeter(ratePct, needPct, sigma, dim)}
+    ${note ? `<div class="mut" style="margin-top:8px;font-size:10px;line-height:1.6">${note}</div>` : ''}
+  </div>`;
+}
+
+const TIER_ICON = {
+  goblin: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="margin-right:6px;vertical-align:-2px"><path d="M5.5 8 L4 3.6 L8 6.2" stroke="#7fb88f" stroke-width="1.6" stroke-linejoin="round"/><path d="M18.5 8 L20 3.6 L16 6.2" stroke="#7fb88f" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="7.4" stroke="#7fb88f" stroke-width="1.6"/><path d="M9.2 12.4 v1 M14.8 12.4 v1" stroke="#7fb88f" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  standard: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="margin-right:6px;vertical-align:-2px"><circle cx="12" cy="12" r="8.2" stroke="#c9a86a" stroke-width="1.6"/><path d="M8.6 14.2 Q12 17.4 15.4 14.2" stroke="#c9a86a" stroke-width="1.6" stroke-linecap="round"/><path d="M9 9.4 v1.2 M15 9.4 v1.2" stroke="#c9a86a" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  demon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="margin-right:6px;vertical-align:-2px"><path d="M4 9 L6 4 L9.5 7" stroke="#c97b72" stroke-width="1.6" stroke-linejoin="round"/><path d="M20 9 L18 4 L14.5 7" stroke="#c97b72" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="14" r="7.2" stroke="#c97b72" stroke-width="1.6"/><path d="M9.4 13.2 L10.6 14.4 M14.6 13.2 L13.4 14.4" stroke="#c97b72" stroke-width="1.6" stroke-linecap="round"/></svg>',
+};
+
+// The break-even null distribution, same formula scoreBucket already uses
+// elsewhere on this page — reused here so a tier meter's amber/red split is
+// computed the identical way the guardrail's already-computed sigma is.
+function tierSigma(rate, need, n) {
+  if (need == null || !n) return null;
+  const se = Math.sqrt((need * (1 - need)) / n);
+  return se ? (rate - need) / se : null;
+}
 
 function renderHTML(a) {
   const n = a.graded;
@@ -976,10 +1038,6 @@ function renderHTML(a) {
       <td style="color:${diffColor(diff)}">${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="5" class="mut">No graded picks yet.</td></tr>';
-
-  const breakdown = (obj) => Object.entries(obj).map(([k, v]) =>
-    `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${pct(v.hits / v.n)}</td></tr>`).join('') ||
-    '<tr><td colspan="3" class="mut">—</td></tr>';
 
   // Per-league, each with its own Brier and its own small-sample warning. Sorted
   // by sample size so the league you actually have data on leads.
@@ -1133,34 +1191,31 @@ function renderHTML(a) {
     `<tr><td>${d}${i === 0 ? ' <span class="mut">(newest — usually tonight, games not final)</span>' : ''}</td><td>${c}</td></tr>`).join('')
     || '<tr><td colspan="2" class="mut">none — everything gradeable is graded</td></tr>';
 
-  // Guardrail / edge-verdict / deep-dive rows. One shape for all three, since
-  // all three ask the same question: did this group of picks clear its own bar?
-  const evRow = (label, v, note = '') => {
-    if (!v || !v.n) return `<tr><td>${esc(label)}</td><td colspan="6" class="mut">none yet</td></tr>`;
-    // Grey below 50 rows: a coloured verdict on n=12 is a claim the sample
-    // cannot support, and this table exists to stop exactly that kind of claim.
-    const cls = v.deltaPP == null ? ''
-      : ` style="color:${v.n < 50 ? 'var(--dim)' : v.deltaPP >= 0 ? 'var(--grn)' : 'var(--red)'}"`;
-    return `<tr><td>${esc(label)}${note ? ` <span class="mut">${note}</span>` : ''}</td>
-      <td>${v.n}</td><td>${pct(v.rate)}</td><td>${pct(v.needed)}</td>
-      <td${cls}>${v.deltaPP == null ? '—' : `${v.deltaPP >= 0 ? '+' : ''}${v.deltaPP.toFixed(1)}pts`}</td>
-      <td>${v.sigma == null ? '—' : `${v.sigma.toFixed(1)}σ`}</td>
-      <td${cls}>${v.ev == null ? '—' : `${v.ev >= 0 ? '+' : ''}${(v.ev * 100).toFixed(0)}%`}</td></tr>`;
-  };
+  // Guardrail / edge-verdict / deep-dive meters. One shape for all three,
+  // since all three ask the same question a tier meter asks: did this group of
+  // picks clear its own bar? scoreBucket() already computes {rate, needed,
+  // sigma} for every one of these — the meter just draws what was already there.
+  const bucketMeter = (label, v, note = '') => meterRow({
+    label, n: v?.n, ratePct: v?.rate == null ? null : v.rate * 100,
+    needPct: v?.needed == null ? null : v.needed * 100, sigma: v?.sigma,
+    dim: (v?.n ?? 0) < 50,
+    note: v?.n ? `${note}${note ? ' — ' : ''}${v.sigma == null ? '' : `${v.sigma.toFixed(1)}σ from break-even`}${v.ev == null ? '' : `, 3-leg slip EV ${v.ev >= 0 ? '+' : ''}${(v.ev * 100).toFixed(0)}%`}` : note,
+  });
   const g = a.guardrail || {};
-  const guardRows = [
-    evRow('kept — edge ≥ 0', g.kept),
-    evRow('refused — edge < 0', g.refused),
-    evRow('unpriced side', g.unpriced, '(payout unknown)'),
+  const guardMeters = [
+    bucketMeter('Kept — edge ≥ 0', g.kept),
+    bucketMeter('Refused — edge < 0', g.refused),
+    bucketMeter('Unpriced side', g.unpriced, 'payout unknown'),
   ].join('');
-  const edgeVerdictRows = ['play', 'lean', 'pass', 'untagged']
-    .filter((k) => a.byEdgeVerdict?.[k]?.n)
-    .map((k) => evRow(k, a.byEdgeVerdict[k], k === 'untagged' ? '(logged before v4.34.0)' : ''))
-    .join('') || '<tr><td colspan="7" class="mut">no rows carry an edge verdict yet</td></tr>';
+  const edgeVerdictOrder = ['play', 'lean', 'pass', 'untagged'];
+  const edgeVerdictMeters = edgeVerdictOrder.filter((k) => a.byEdgeVerdict?.[k]?.n).length
+    ? edgeVerdictOrder.filter((k) => a.byEdgeVerdict?.[k]?.n)
+      .map((k) => bucketMeter(k, a.byEdgeVerdict[k], k === 'untagged' ? 'logged before v4.34.0' : '')).join('')
+    : '<div class="mut">no rows carry an edge verdict yet</div>';
   const dd = a.byDeepDive || {};
-  const deepRows = [
-    evRow('stage 1 — batch screen', dd.shallow),
-    evRow('stage 2 — deep dive', dd.deep),
+  const deepMeters = [
+    bucketMeter('Stage 1 — batch screen', dd.shallow),
+    bucketMeter('Stage 2 — deep dive', dd.deep),
   ].join('');
 
   const plWin = a.playsLeans.n ? a.playsLeans.hits / a.playsLeans.n : null;
@@ -1206,19 +1261,138 @@ function renderHTML(a) {
       </div>
       <div class="wrap" style="margin-top:12px"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th></tr></thead><tbody>${lgModelRows}</tbody></table></div>`;
 
+  // ==========================================================================
+  // THE THREE QUESTIONS — each section answers itself before it is opened.
+  // ==========================================================================
+
+  // ---- 1. Are its numbers honest? -----------------------------------------
+  // Overall predicted rate, pooled from the bands (weighted by n) rather than
+  // stored separately — this is the same "diff" every band row already shows,
+  // just rolled up once for the headline.
+  const bandN = (a.bands || []).reduce((s, b) => s + b.n, 0);
+  const predOverall = bandN ? a.bands.reduce((s, b) => s + b.predicted * b.n, 0) / bandN : null;
+  const honestyGapPts = predOverall != null ? (predOverall - a.overall) * 100 : null; // >0 = overstating
+  const honestyState = honestyGapPts == null ? null : Math.abs(honestyGapPts) <= 4 ? 'good' : Math.abs(honestyGapPts) <= 10 ? 'mid' : 'bad';
+  const honestyAnswer = !n ? 'no data yet' : honestyState == null ? '—' : honestyState === 'good' ? 'close' : honestyState === 'mid' ? 'a bit off' : 'overstated';
+  const honestySub = !n
+    ? 'The grader runs every morning and fills in results once games settle.'
+    : `Says ${pct(predOverall)}, hits ${pct(a.overall)}. ${
+        honestyGapPts >= 0
+          ? (Math.abs(honestyGapPts) <= 4 ? 'Within a point — it is not lying to you about its confidence.' : `Overstating by ${Math.abs(honestyGapPts).toFixed(1)} points.`)
+          : `Understating by ${Math.abs(honestyGapPts).toFixed(1)} points.`
+      }`;
+
+  // ---- 2. Does it make money? ----------------------------------------------
+  const tierOrder = ['goblin', 'standard', 'demon'];
+  const tierMoney = tierOrder.filter((t) => a.byTier?.[t]?.n).map((t) => {
+    const b = a.byTier[t]; const rate = b.hits / b.n; const need = BREAK_EVEN[t];
+    return { tier: t, n: b.n, ratePct: rate * 100, needPct: need * 100, gapPts: (rate - need) * 100, sigma: tierSigma(rate, need, b.n) };
+  });
+  const anyTierClears = tierMoney.some((t) => t.gapPts >= 0);
+  const allTiersClear = tierMoney.length > 0 && tierMoney.every((t) => t.gapPts >= 0);
+  const worstTier = tierMoney.length ? tierMoney.reduce((x, y) => (x.gapPts < y.gapPts ? x : y)) : null;
+  const moneyAnswer = !tierMoney.length ? 'no data yet' : allTiersClear ? 'yes' : anyTierClears ? 'partially' : 'no';
+  const moneySub = !tierMoney.length
+    ? 'Not enough graded picks in any tier yet.'
+    : allTiersClear
+      ? 'Every priced tier clears its own break-even.'
+      : anyTierClears
+        ? `Some tiers clear their break-even, some don't.${worstTier ? ` The widest gap is ${worstTier.tier}, ${Math.abs(worstTier.gapPts).toFixed(1)} points under.` : ''}`
+        : `Every tier lands short of what its payout needs.${worstTier ? ` The widest gap is ${worstTier.tier}, ${Math.abs(worstTier.gapPts).toFixed(1)} points under.` : ''}`;
+
+  const tierMeters = tierOrder.map((t) => {
+    const row = tierMoney.find((x) => x.tier === t);
+    return meterRow({
+      icon: TIER_ICON[t], label: t[0].toUpperCase() + t.slice(1), sub: `n=${fmt(row?.n)}`,
+      n: row?.n, ratePct: row?.ratePct, needPct: row?.needPct, sigma: row?.sigma,
+    });
+  }).join('');
+
+  // ---- 3. Is it getting better? --------------------------------------------
+  // Pulled from exactly the AUC values the tables below already compute — the
+  // one that sits furthest from a coin flip, in standard errors, is the one
+  // worth naming in the answer line.
+  const aucCandidates = [];
+  for (const [tier, v] of Object.entries(a.skill || {})) {
+    if (v.auc != null && v.aucSE) aucCandidates.push({ label: tier, auc: v.auc, se: v.aucSE });
+  }
+  for (const bucket of ['has-form', 'no-form']) {
+    const sk = a.byFormCoverage?.[bucket]?.skill || {};
+    for (const [tier, v] of Object.entries(sk)) {
+      if (v.auc != null && v.aucSE) aucCandidates.push({ label: `${tier} · ${bucket}`, auc: v.auc, se: v.aucSE });
+    }
+  }
+  aucCandidates.sort((x, y) => Math.abs(y.auc - 0.5) / y.se - Math.abs(x.auc - 0.5) / x.se);
+  const bestAuc = aucCandidates[0] || null;
+  const bestAucZ = bestAuc ? Math.abs(bestAuc.auc - 0.5) / bestAuc.se : null;
+  const gettingBetterAnswer = !bestAuc ? 'no data yet' : bestAucZ >= 2 ? `yes, on ${bestAuc.label}` : 'not yet clear';
+  const gettingBetterSub = !bestAuc
+    ? 'Not enough graded picks in any tier yet.'
+    : `Best measured discrimination: ${bestAuc.label} AUC ${bestAuc.auc.toFixed(3)} (±${bestAuc.se.toFixed(3)})${
+        bestAucZ >= 2 ? ', clearing 2 standard errors from a coin flip.' : ', not yet distinguishable from a coin flip.'
+      }`;
+
+  const honestyCls = honestyState === 'good' ? 'good' : honestyState === 'mid' ? 'mid' : honestyState === 'bad' ? 'bad' : 'dim';
+  const moneyCls = moneyAnswer === 'yes' ? 'good' : moneyAnswer === 'partially' ? 'mid' : moneyAnswer === 'no' ? 'bad' : 'dim';
+  const gbCls = gettingBetterAnswer.startsWith('yes') ? 'good' : gettingBetterAnswer === 'not yet clear' ? 'mid' : 'dim';
+
+  // ---- Housekeeping ---------------------------------------------------------
+  const housekeepingAnswer = `$${(a.spend?.month ?? 0).toFixed(2)} / 30d`;
+
+  // ---- THE VERDICT — a two-marker axis, never a fill meter -----------------
+  // Lower Brier is better, so a fill-past-the-tick bar would read backwards
+  // here: the worse score would draw the longer bar. Two markers on a shared
+  // axis with the gap shaded between them reads correctly regardless of which
+  // side is ahead.
+  const verdictBlock = (() => {
+    if (a.baseline == null || a.brier == null) {
+      return `<div class="callout">Not enough graded picks yet to compare against the tier-only baseline.</div>`;
+    }
+    const behind = a.beatsBaseline === false;
+    const pad = 0.35;
+    const lo = Math.min(a.baseline, a.brier), hi = Math.max(a.baseline, a.brier);
+    const range = (hi - lo) || 0.01;
+    const axisMin = lo - range * pad, axisMax = hi + range * pad;
+    const posOf = (v) => ((v - axisMin) / (axisMax - axisMin)) * 100;
+    const baselinePos = posOf(a.baseline), judgePos = posOf(a.brier);
+    const cls = behind ? 'short' : 'over';
+    return `<div class="verdict${behind ? ' behind' : ''}">
+      <div class="vlabel">The one that matters</div>
+      <div class="vheadline">The judge is ${behind ? 'behind' : 'ahead of'} a lookup table.</div>
+      <div class="vsub">A three-row <b>tier-only baseline</b> that knows only the tier scores <b>${a.baseline.toFixed(4)}</b>.
+        The judge scores <b>${a.brier.toFixed(4)}</b>. Lower is better, so that's
+        <span class="${cls}">${behind ? 'judge BEHIND by' : 'judge ahead by'} ${Math.abs(a.baselineDelta).toFixed(4)}</span>.</div>
+      <div class="baxis">
+        <div class="baxis-line"></div>
+        <div class="bgap ${cls}" style="left:${Math.min(baselinePos, judgePos)}%;width:${Math.abs(judgePos - baselinePos)}%"></div>
+        <div class="bmark base" style="left:${baselinePos}%"></div>
+        <div class="bmark judge ${cls}" style="left:${judgePos}%"></div>
+      </div>
+      <div class="baxis-labels">
+        <div class="baxis-label">${a.baseline.toFixed(4)}<br><span class="mut">lookup table</span></div>
+        <div class="baxis-label right ${cls}">${a.brier.toFixed(4)}<br><span class="mut">the judge</span></div>
+      </div>
+      <div class="vfoot">The table is fitted on the same rows it is scored against, which hands it hindsight and makes it
+        <i>harder</i> to beat. That is deliberate — a bar should be generous to itself.</div>
+    </div>`;
+  })();
+
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#000000"><link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>AtomBets · Calibration</title><style>
   :root{color-scheme:dark;--bg:#000;--ink:#fff;--dim:#8f8f8f;--faint:#4a4a4a;--line:#1c1c1c;
-    --grn:#7ee2a8;--amb:#e2c97e;--red:#e28c7e;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+    --grn:#7fb88f;--amb:#c9a86a;--red:#c97b72;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
   *{box-sizing:border-box}
   body{font:13px/1.6 var(--mono);background:var(--bg);color:var(--ink);margin:0;padding:26px 18px 60px;max-width:720px;margin-inline:auto}
   h1{font:800 22px/1.2 -apple-system,'Helvetica Neue',sans-serif;letter-spacing:-.02em;margin:0}
   h1 span{color:var(--dim);font-weight:600}
   .sub{color:var(--dim);font-size:11px;margin:6px 0 22px}
+  .sub a{color:var(--dim)}
   h2{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);font-weight:600;
     margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:baseline}
   h2 a{color:var(--faint);text-decoration:none;letter-spacing:.04em;margin-left:auto}
+  h3{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:600;margin:24px 0 10px}
+  h3:first-child{margin-top:4px}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px}
   .card{border:1px solid var(--line);border-radius:6px;padding:13px 14px}
   .card .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -1232,269 +1406,256 @@ function renderHTML(a) {
   tr:last-child td{border-bottom:none}
   .mut{color:var(--faint)}
   .wrap{overflow-x:auto}
+  .over{color:var(--grn)} .short{color:var(--red)} .close{color:var(--amb)}
+  .qdef{font-size:10px;color:var(--faint);line-height:1.6;margin:0 0 16px}
+
+  /* ---- THE EDGE METER — identical to the board row's (public/index.html) ---- */
+  .emeter{margin-top:9px}
+  .etrack{height:4px;background:rgba(255,255,255,.10);border-radius:2px;position:relative}
+  .etick{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--ink);opacity:.85}
+  .efill{position:absolute;top:0;bottom:0;left:0;border-radius:2px;background:var(--faint)}
+  .efill.over{background:var(--grn)} .efill.short{background:var(--red)} .efill.close{background:var(--amb)} .efill.dim{background:var(--faint)}
+  .enums{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:6px;font-size:11px}
+  .pct.over{color:var(--grn)} .pct.short{color:var(--red)} .pct.close{color:var(--amb)} .pct.unpriced{color:var(--faint)} .pct.dim{color:var(--dim)}
+  .needs{color:var(--faint)}
+
+  /* ---- money rows: label, big gap number, the meter, a note ---- */
+  .mrow{border-top:1px solid var(--line);padding:14px 0 15px}
+  .mrow:first-child{border-top:none}
+  .mrow-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+  .mrow-label{font-size:14px;font-weight:600;font-family:-apple-system,'Helvetica Neue',sans-serif}
+  .mrow-label .mut{font-size:10px;font-weight:400;margin-left:3px;font-family:var(--mono)}
+  .mrow-gap{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;flex:none}
+  .mrow-gap.over{color:var(--grn)} .mrow-gap.short{color:var(--red)} .mrow-gap.close{color:var(--amb)} .mrow-gap.dim{color:var(--dim)}
+
+  /* ---- the verdict: two markers on a shared axis, NEVER a fill meter — a
+     lower-is-better score would draw the fill backwards. ---- */
+  .verdict{border:1px solid rgba(201,123,114,.45);border-radius:6px;padding:17px 15px 18px;margin:18px 0}
+  .verdict:not(.behind){border-color:rgba(127,184,143,.4)}
+  .vlabel{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--red)}
+  .verdict:not(.behind) .vlabel{color:var(--grn)}
+  .vheadline{font-size:22px;font-weight:600;line-height:1.25;margin-top:9px;font-family:-apple-system,'Helvetica Neue',sans-serif}
+  .vsub{font-size:11px;color:var(--dim);line-height:1.65;margin-top:9px}
+  .baxis{margin-top:18px;position:relative;height:24px}
+  .baxis-line{position:absolute;left:0;right:0;top:11px;height:2px;background:rgba(255,255,255,.10)}
+  .bmark{position:absolute;top:5px;width:2px;height:14px;background:var(--dim)}
+  .bmark.judge{top:1px;height:22px}
+  .bmark.judge.over{background:var(--grn)} .bmark.judge.short{background:var(--red)}
+  .bgap{position:absolute;top:5px;height:14px}
+  .bgap.over{background:rgba(127,184,143,.16)} .bgap.short{background:rgba(201,123,114,.16)}
+  .baxis-labels{position:relative;height:30px;margin-top:2px}
+  .baxis-label{position:absolute;left:0;font-size:9px;color:var(--dim);line-height:1.4}
+  .baxis-label.right{left:auto;right:0;text-align:right}
+  .baxis-label.over{color:var(--grn)} .baxis-label.short{color:var(--red)}
+  .vfoot{font-size:10px;color:var(--faint);line-height:1.65;margin-top:12px;border-top:1px solid rgba(255,255,255,.10);padding-top:12px}
+
+  /* ---- the three questions (plus Housekeeping): collapsible, the answer
+     line lives INSIDE <summary> so it renders even while closed. ---- */
+  .qsection{border-top:1px solid var(--line)}
+  .qsection summary{cursor:pointer;list-style:none;padding:16px 0}
+  .qsection summary::-webkit-details-marker{display:none}
+  .qhead{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+  .qtitle{font-size:16px;font-weight:600;font-family:-apple-system,'Helvetica Neue',sans-serif}
+  .qanswer{font-size:10px;flex:none}
+  .qanswer.good{color:var(--grn)} .qanswer.bad{color:var(--red)} .qanswer.mid{color:var(--amb)} .qanswer.dim{color:var(--dim)}
+  .qsub{font-size:10px;color:var(--dim);line-height:1.6;margin-top:6px}
+  .qmeta{font-size:9px;color:var(--faint);margin-top:8px}
+  .qhint .cc{display:none}
+  .qsection[open] .qhint .oc{display:none}
+  .qsection[open] .qhint .cc{display:inline}
+  .qbody{padding:2px 0 20px}
 </style></head><body>
   <h1>AtomBets <span>· Calibration</span></h1>
-  <div class="sub">Vilifiant only — the standing default (docs/judge-measurement.md). When it says 65%, does it hit 65%?
-    Every logged pick counts, passes included. Older engines are collapsed at the bottom, under
-    <b>Legacy engines</b>, and never pooled into anything above.</div>
+  <div class="sub">Vilifiant only — the standing default (docs/judge-measurement.md) &nbsp;<a href="/api/calibration?format=json">json ↗</a></div>
+  <div class="qmeta" style="margin-top:-16px">${fmt(n)} graded${a.pendingGradeable ? ` · ${fmt(a.pendingGradeable)} pending` : ''}</div>
 
-  <div class="cards">
-    ${card(n, 'graded', a.pendingGradeable ? a.pendingGradeable + ' pending' : '')}
-    ${card(record, 'plays+leans W–L', plWin != null ? pct(plWin) + ' win rate' : '')}
-    ${card(pct(a.overall), 'over rate', 'all graded picks')}
-    ${card(a.brier == null ? '—' : a.brier.toFixed(3) + (early ? ' <span style="font-size:11px;color:var(--amb)">n=' + n + '</span>' : ''), 'brier ↓', early ? 'early — mostly noise' : 'lower is better')}
-    ${card(
-      a.baseline == null ? '—'
-        : `<span style="color:${a.beatsBaseline ? 'var(--grn)' : 'var(--red)'}">${a.baseline.toFixed(4)}</span>`,
-      'tier-only baseline',
-      a.baselineDelta == null ? 'not enough graded picks'
-        : a.beatsBaseline
-          ? `judge ahead by ${Math.abs(a.baselineDelta).toFixed(4)}`
-          : `judge BEHIND by ${a.baselineDelta.toFixed(4)}`)}
-  </div>
-  <div class="callout${a.beatsBaseline === false ? ' amber' : ''}">The <b>tier-only baseline</b> is what a three-row
-    lookup table would have scored on these exact picks — output the tier's own base rate for every pick in that
-    tier, and use nothing else. No player, no matchup, no model. It is the cheapest thing that could possibly
-    work, and it is the bar the judge has to clear to justify existing.
-    ${a.beatsBaseline === false
-      ? '<b>The judge is currently behind it.</b> Every point of the model\'s reasoning is, so far, costing accuracy rather than adding it — so the first job of any change is to close that gap, not to look clever.'
-      : a.beatsBaseline === true
-        ? 'The judge is ahead of it, which is the minimum condition for the model earning its cost.'
-        : ''}
-    Fitted on the rows it is scored against, which hands it hindsight and makes it harder to beat — the right
-    direction for a bar.</div>
-
+  ${verdictBlock}
   ${stateNote}
 
-  <h2>By engine <a href="/api/calibration?format=json">json ↗</a></h2>
-  <div class="wrap"><table><thead><tr><th>source</th><th>n</th><th>over rate</th><th>brier ↓</th></tr></thead><tbody>${engineRows}</tbody></table></div>
-  <div class="callout">Brier is the honest scoreboard: right AND not overclaiming. A rater saying 90% on legs that hit 70% scores <i>worse</i> (0.250) than one saying 70% (0.210). Compare engines on this, never on whose percentages look bigger.</div>
+  <details class="qsection">
+    <summary>
+      <div class="qhead"><div class="qtitle">Are its numbers honest?</div><div class="qanswer ${honestyCls}">${honestyAnswer}</div></div>
+      <div class="qsub">${honestySub}</div>
+      <div class="qmeta">calibration by band · over rate · Brier &nbsp;&nbsp;<span class="mut qhint"><span class="oc">open ↓</span><span class="cc">close ↑</span></span></div>
+    </summary>
+    <div class="qbody">
+      <div class="qdef"><b>Over rate</b> is the share of graded picks whose result landed over the line. <b>Brier</b> is
+        the honest scoreboard — right AND not overclaiming: saying 90% on legs that hit 70% scores <i>worse</i>
+        (0.250) than saying 70% (0.210).</div>
 
-  <h2>Calibration by predicted band</h2>
-  <div class="wrap"><table><thead><tr><th>P(over) band</th><th>n</th><th>predicted</th><th>actual</th><th>diff (pts)</th></tr></thead><tbody>${bandRows}</tbody></table></div>
+      <h3>By engine <a href="/api/calibration?format=json" style="float:right;font-size:9px;color:var(--faint);text-decoration:none">json ↗</a></h3>
+      <div class="wrap"><table><thead><tr><th>source</th><th>n</th><th>over rate</th><th>brier ↓</th></tr></thead><tbody>${engineRows}</tbody></table></div>
+      <div class="callout">Compare engines on Brier, never on whose percentages look bigger.</div>
 
-  <h2>Verdict performance</h2>
-  <div class="wrap"><table><thead><tr><th>verdict</th><th>n</th><th>win rate</th></tr></thead><tbody>
-    <tr><td>play</td><td>${a.plays.n}</td><td>${a.plays.n ? pct(a.plays.hits / a.plays.n) : '—'}</td></tr>
-    <tr><td>play + lean</td><td>${a.playsLeans.n}</td><td>${a.playsLeans.n ? pct(plWin) : '—'}</td></tr>
-  </tbody></table></div>
-  <div class="callout">A win rate on its own can't be read across tiers — 67% is a disaster on a goblin and a
-    fortune on a demon. Every table below states what its picks <b>needed</b> beside what they got.</div>
+      <h3>Calibration by predicted band</h3>
+      <div class="wrap"><table><thead><tr><th>P(over) band</th><th>n</th><th>predicted</th><th>actual</th><th>diff (pts)</th></tr></thead><tbody>${bandRows}</tbody></table></div>
 
-  <h2>The edge guardrail</h2>
-  <div class="wrap"><table><thead><tr><th>would the guardrail take it?</th><th>n</th><th>hit</th><th>needed</th><th>vs needed</th><th>σ</th><th>3-leg slip EV</th></tr></thead>
-  <tbody>${guardRows}</tbody></table></div>
-  <div class="callout">Since v4.34.0 the auto-slip refuses a leg whose own <b>edge</b> — its probability minus what
-    its payout needs — is negative: a bet that loses money even if the judge is exactly right. This table is the
-    <b>counterfactual</b> over the whole graded history, not just rows logged since. Edge is a function of the
-    probability and the tier, both of which every row already carries, so every play and lean the engine has ever
-    made can be sorted into what the guardrail would have kept and what it would have thrown away. If "refused"
-    doesn't lose badly, the guardrail is throwing away money and should come out.
-    <br><br><b>σ</b> is measured against the null "these picks hit exactly their break-even", so it answers
-    "could this be luck?" rather than "is this rate precise?". <b>3-leg slip EV</b> is the return per dollar on a
-    Power play built entirely from that row.</div>
+      <h3>How close, not just whether</h3>
+      <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>mean margin</th><th>spread</th><th>losses</th><th>near miss</th><th>not close</th><th>saved by −1</th></tr></thead><tbody>${marginRows}</tbody></table></div>
+      <div class="wrap" style="margin-top:12px"><table><thead><tr><th>tier</th><th>n</th><th>mean margin (σ)</th></tr></thead><tbody>${mtRows}</tbody></table></div>
+      <div class="callout">Grading is binary and stays that way — PrizePicks pays the same nothing for missing over 3.5
+        with 3 as for missing over 6.5 with 1. But those two misses say completely different things about the
+        <i>judge</i>, and a Brier score cannot tell them apart. <b>Near miss</b> is the share of losses within half a
+        spread of flipping; <b>not close</b> is the share that were never in it; <b>saved by −1</b> is how many losses
+        a line one whole unit lower would have won. Margins are z-scored per stat before the tier table pools them —
+        a miss of 0.5 means everything on a home-run line and nothing on a Fantasy Score line of 25.</div>
+    </div>
+  </details>
 
-  <h2>Edge verdict — the live field</h2>
-  <div class="wrap"><table><thead><tr><th>edgeVerdict</th><th>n</th><th>hit</th><th>needed</th><th>vs needed</th><th>σ</th><th>3-leg slip EV</th></tr></thead>
-  <tbody>${edgeVerdictRows}</tbody></table></div>
-  <div class="callout">The same split on the field itself rather than reconstructed — this is what the app actually
-    badged and what the auto-slip actually selected on. It will stay thin for a while, and it is kept separate from
-    the counterfactual above on purpose: a reconstruction is evidence about a decision, not a measurement of one.</div>
+  <details class="qsection">
+    <summary>
+      <div class="qhead"><div class="qtitle">Does it make money?</div><div class="qanswer ${moneyCls}">${moneyAnswer}</div></div>
+      <div class="qsub">${moneySub}</div>
+      <div class="qmeta">by tier · the edge guardrail · verdict performance &nbsp;&nbsp;<span class="mut qhint"><span class="oc">open ↓</span><span class="cc">close ↑</span></span></div>
+    </summary>
+    <div class="qbody">
+      <div class="qdef">Each tier pays differently, so each needs a different hit rate just to return the stake —
+        <b>break-even</b>. The tick on every meter below is that rate; short of it loses money however good the raw
+        number looks.</div>
 
-  <h2>Deep dive — is the second look worth it?</h2>
-  <div class="wrap"><table><thead><tr><th>stage</th><th>n</th><th>hit</th><th>needed</th><th>vs needed</th><th>σ</th><th>3-leg slip EV</th></tr></thead>
-  <tbody>${deepRows}</tbody></table></div>
-  <div class="callout">The deep dive re-judges the best-edge picks one at a time instead of in a batch, at real cost
-    per run. The claim it rests on is that an undivided look produces a better probability than the screen does —
-    so the number that settles it is Brier, not win rate:
-    <b>stage 1 ${a.byDeepDive?.shallow?.brier == null ? '—' : a.byDeepDive.shallow.brier.toFixed(4)}</b> vs
-    <b>stage 2 ${a.byDeepDive?.deep?.brier == null ? '—' : a.byDeepDive.deep.brier.toFixed(4)}</b> (lower is better).
-    Deep-dive rows are a deliberately biased sample — they are the picks the screen already liked most — so read the
-    Brier gap, not the hit rate, and give it a few hundred rows before believing either.</div>
-  <div class="callout${(a.deepPaired?.n || 0) === 0 ? ' amber' : ''}">${(a.deepPaired?.n || 0) === 0
-    ? `<b>The paired test has no rows yet.</b> Comparing deep rows to shallow rows compares two different sets of
-       picks, and the deep set exists <i>because</i> the screen liked it most — so the gap above is confounded with
-       that selection and can't settle anything on its own. Since v4.35.1 every deep-dive row also logs the stage-1
-       probability for the same pick, which turns this into a paired question — same pick, same game, two numbers —
-       that selection cannot bias. It fills in as deep-dive runs grade.`
-    : `<b>Paired — same picks, both numbers.</b> On ${a.deepPaired.n} deep-dive picks the stage-1 screen scored
-       <b>${a.deepPaired.shallowBrier.toFixed(4)}</b> and the second look scored
-       <b>${a.deepPaired.deepBrier.toFixed(4)}</b> (${a.deepPaired.brierDelta <= 0 ? 'better' : 'WORSE'} by
-       ${Math.abs(a.deepPaired.brierDelta).toFixed(4)}), moving the probability
-       ${(a.deepPaired.meanMove * 100).toFixed(1)} points on average. This is the comparison that decides whether
-       the extra cost per run is earning anything; the table above cannot.
-       <br><br>Beside it, a sign test: the second look landed closer to the truth on
-       <b>${a.deepPaired.closer} of ${a.deepPaired.decided}</b> picks it moved
-       (${a.deepPaired.sigma == null ? '—' : `${a.deepPaired.sigma.toFixed(1)}σ`} against a coin flip). <b>These two
-       answer different questions and can honestly disagree.</b> Trimming an overconfident 0.80 to 0.55 improves
-       Brier a lot while helping on exactly the picks that miss and hurting on the ones that hit — so it ties the
-       sign test at 50%. Brier says <i>better calibrated</i>; the sign test says <i>right more often</i>. Only the
-       second is evidence the deep dive knows something extra rather than just being less overconfident.`}</div>
+      <h3>By tier</h3>
+      ${tierMeters}
 
-  <h2>Judge version — head to head</h2>
-  <div class="wrap"><table><thead><tr><th>judge</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${promptRows}</tbody></table></div>
-  <div class="callout"><b>Psyche</b> is the original judge; <b>Aphrodite</b> is the refinement. "Claimed" is the
-    average probability the version put on its picks, "actual" is how often they hit. The gap between them is the
-    honest measure of whether the percentages mean anything — a judge claiming 68% on legs that hit 52% is
-    overstating by 16 points, and no win rate on its own shows that. Rows before versioning read as
-    <i>psyche (untagged)</i>. Both need ~50 graded picks each before the comparison is worth acting on, and the
-    cleanest test is running the two on the SAME slate — different nights differ more than the prompts do.</div>
+      <h3>The edge guardrail</h3>
+      <div class="callout">Since v4.34.0 the auto-slip refuses a leg whose own <b>edge</b> is negative: a bet that
+        loses money even if the judge is exactly right. Of everything the engine has ever called a play or a lean,
+        this is the <b>counterfactual</b> — how did the legs it now <b>keeps</b> do against the ones it now
+        <b>refuses</b>? If refused doesn't lose badly, the guardrail is throwing away money and should come out.</div>
+      ${guardMeters}
 
-  <h2>Judge behaviour — readable the same day</h2>
-  <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>form coverage</th><th>values used</th><th>count agrees</th></tr></thead><tbody>${behRows}</tbody></table></div>
-  <div class="callout">Everything else on this page waits for games to settle — weeks before a prompt or model
-    change can be judged. This does not: it reads every logged pick, graded or not, so a run can be checked the
-    hour it finishes.
-    <br><br><b>Tier gap</b> is the headline, and the direct test of whether a cheaper model still follows a
-    demanding prompt. Aphrodite's central instruction is that a goblin line is priced as likely (~70%) and a
-    demon as unlikely (~20%), so a judge that actually read it puts a wide gap between the two. Psyche was never
-    told the tier and averaged ~52% on everything — a gap near zero is what that looks like. <b>Spread</b> and
-    <b>values used</b> say whether the judge uses the full range or hedges toward the middle. The latter is a
-    perplexity — 2^H over how often each distinct probability appears, i.e. how many values the judge is
-    <i>effectively</i> using, with the raw count beside it. A plain distinct/n ratio was not comparable between
-    configs: it falls as n grows, so the judge with more picks looked less granular for free; a high share of
-    <b>count agrees</b> is how often the judge's own "cleared" matched the truth computed from recent5, with the
-    mean signed drift beside it. This used to measure ARITHMETIC and the judge failed it: on one live board it
-    agreed 47% of the time and overcounted 34 times to 5 — while the prompt told it to <i>start its probability
-    from that count</i>. Since v4.38.0 the count is supplied rather than asked for, so this now measures
-    COMPLIANCE: anything below ~95% is a judge not reading the field it was handed. A positive drift is the
-    expensive direction — it inflates the over.
-    <br><br><b>round numbers</b> (multiples of 0.05) is what you get when a model picks a verdict first and writes a
-    number to justify it. <b>Filled "cleared"</b> is a COVERAGE metric, not an obedience one. It was first read as
-    instruction-following until the log settled it: of the props that reached the judge carrying recent5, every
-    one came back with the count filled, and of those without it, none did — so the floor on this number is set
-    by how often recent form reaches the payload at all (currently ~60%), not by whether the judge chose to fill
-    it in. A low value is a data-sourcing gap, not a judge defect on its own.
-    <br><br>But that is not the whole story. A same-input replay (see docs/judge-measurement.md, "cleared" fill
-    is not run-to-run stable) held one slate's payload fixed — same props, same recent5 availability on every
-    single one, five independent replays — and the fill count still moved from 16 to 26 out of the same ~56-60
-    eligible props each time. Recent5 coverage cannot explain that: it does not change between replays of the
-    same snapshot. So above its data-sourcing floor, filling "cleared" is unreliable run to run — the judge does
-    not consistently report the count even when it has everything it needs to.</div>
+      <h3>Edge verdict — the live field</h3>
+      <div class="callout">The same split on the field itself rather than reconstructed — what the app actually
+        badged and the auto-slip actually selected on. Kept separate from the counterfactual above: a reconstruction
+        is evidence about a decision, not a measurement of one.</div>
+      ${edgeVerdictMeters}
 
-  <h2>Model — head to head</h2>
-  <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>
-  <div class="callout">Everything on this page above <b>Legacy engines</b> is Vilifiant-only (see docs/judge-measurement.md),
-    so this table has exactly one row today. A model experiment run deliberately from the dev console tags its own
-    picks with the model that produced them, so it will not show up here — it lands in <b>Legacy engines</b> at the
-    bottom instead, alongside Opus, Sonnet, and whatever Psyche ran on, and is never pooled into this row.</div>
+      <h3>Verdict performance</h3>
+      <div class="qdef"><b>Play</b> and <b>lean</b> are the two verdicts strong enough to reach a slip; a raw win
+        rate here can't be read across tiers — 67% is a disaster on a goblin and a fortune on a demon.</div>
+      <div class="wrap"><table><thead><tr><th>verdict</th><th>n</th><th>win rate</th></tr></thead><tbody>
+        <tr><td>play</td><td>${a.plays.n}</td><td>${a.plays.n ? pct(a.plays.hits / a.plays.n) : '—'}</td></tr>
+        <tr><td>play + lean</td><td>${a.playsLeans.n}</td><td>${a.playsLeans.n ? pct(plWin) : '—'}</td></tr>
+      </tbody></table></div>
+    </div>
+  </details>
 
-  <h2>By tier</h2>
-  <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
+  <details class="qsection">
+    <summary>
+      <div class="qhead"><div class="qtitle">Is it getting better?</div><div class="qanswer ${gbCls}">${gettingBetterAnswer}</div></div>
+      <div class="qsub">${gettingBetterSub}</div>
+      <div class="qmeta">judge behaviour · judge versions · models · deep dive · form coverage &nbsp;&nbsp;<span class="mut qhint"><span class="oc">open ↓</span><span class="cc">close ↑</span></span></div>
+    </summary>
+    <div class="qbody">
+      <h3>Judge behaviour — readable the same day</h3>
+      <div class="wrap"><table><thead><tr><th>judge · model</th><th>picks</th><th>tier gap</th><th>spread</th><th>round numbers</th><th>form coverage</th><th>values used</th><th>count agrees</th></tr></thead><tbody>${behRows}</tbody></table></div>
+      <div class="callout">Everything else on this page waits for games to settle. This does not: it reads every
+        logged pick, graded or not, so a run can be checked the hour it finishes. <b>Tier gap</b> is the headline,
+        and the direct test of whether the judge follows the tier-anchoring instruction at all; <b>round numbers</b> is what verdict-first
+        reasoning looks like. <b>Filled "cleared"</b> is a COVERAGE metric, not an obedience one — the floor is set by
+        how often recent form reaches the payload, not by the judge's choice. <b>Count agrees</b> is compliance with
+        the supplied count once it's covered, with the mean signed drift beside it — a positive drift is the
+        expensive direction, since it inflates the over — and a same-input replay found it unreliable run to run
+        even when everything it needed was present (see docs/judge-measurement.md).</div>
 
-  <h2>Did the judge have anything to work with?</h2>
-  <div class="wrap"><table><thead><tr><th>rows</th><th>n</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th><th>within-tier lift</th></tr></thead><tbody>${formRows}</tbody></table></div>
-  <div class="callout">${a.byFormCoverage?.formCoverage == null ? '' :
-      `<b>${pct(a.byFormCoverage.formCoverage)}</b> of graded picks reached the judge carrying recent form; the
-       rest arrived with none. `}The prompt's own fallback without form is to lean on the payout tier — which is
-    exactly what the baseline already is — so on the uncovered rows the judge may be structurally unable to beat
-    the floor, and a pooled Brier would hide that behind the rows where it could actually reason.
-    <b>recentAvg</b> is written only when the payload carried recent5, so this splits on a record of what the
-    judge was fed rather than a guess at it.
-    <br><br>Beating the baseline on <b>has form</b> and losing on <b>NO form</b> would mean the deficit is data
-    coverage, and the fix is wiring form sources for the stats below rather than touching a prompt. Losing on
-    both means the judge is not adding signal even when fully fed.
-    <br><br><b>Read the lifts with their intervals.</b> Each is a difference of two proportions on half a tier,
-    so a -2.0pt lift on 402 picks carries ±4.6 and cannot be told from zero; bare, it reads as an inversion that
-    the data does not support. <b>AUC</b> beside it is the better measure — the chance a randomly chosen hit is
-    ranked above a randomly chosen miss, using every pairwise comparison rather than only which side of the
-    median a pick fell on, which at these sample sizes is a large gain in power.
-    ${(() => { const d = a.byFormCoverage?.noFormMinusHasForm; if (!d?.lift) return '';
-      const f = (x, s = 100, dp = 1) => x == null ? '—'
-        : `${(x.estimate * s >= 0 ? '+' : '') + (x.estimate * s).toFixed(dp)} ± ${(x.se * s).toFixed(dp)} (z ${x.z.toFixed(2)})`;
-      return `<br><br><b>No-form minus has-form</b>, paired on tier and pooled by inverse variance — the only
-      well-powered statement available here, since no single bucket is:
-      <br>&nbsp;&nbsp;lift, all tiers: <b>${f(d.lift)}</b> &nbsp;·&nbsp; goblin+standard only:
-      <b>${f(d.liftGoblinStandard)}</b>
-      <br>&nbsp;&nbsp;AUC, all tiers: <b>${f(d.auc, 1, 3)}</b> &nbsp;·&nbsp; goblin+standard only:
-      <b>${f(d.aucGoblinStandard, 1, 3)}</b>
-      <br>Both poolings are shown because the narrower set could only be chosen after seeing which tier diluted
-      the estimate, and picking it on that basis is selecting on the outcome. Where AUC and lift disagree,
-      believe AUC — it is the better powered. Treat |z| near 2 as suggestive, never settled.`; })()}</div>
+      <h3>Judge version — head to head</h3>
+      <div class="wrap"><table><thead><tr><th>judge</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${promptRows}</tbody></table></div>
+      <div class="callout"><b>Psyche</b> is the original judge; <b>Aphrodite</b> is the refinement. "Overstated" is
+        claimed minus actual — the honest measure of whether the percentages mean anything, comparable across
+        nights in a way a raw win rate is not.</div>
 
-  <h2>What arrives without form</h2>
-  <div class="wrap"><table><thead><tr><th>league :: stat</th><th>graded picks</th></tr></thead><tbody>${noFormRows}</tbody></table></div>
+      <h3>Model — head to head</h3>
+      <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>
+      <div class="callout">Everything above <b>Legacy engines</b> (bottom of page) is Vilifiant-only, so this table
+        normally has one row. A model experiment run deliberately from the dev console tags its own picks and lands
+        in Legacy engines instead, never pooled into this row.</div>
 
-  <h2>Does the judge beat the tier?</h2>
-  <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>top 50%</th><th>top 25%</th><th>top 10%</th><th>top 5%</th><th>top 3<br><span class="mut">/run</span></th><th>top 5<br><span class="mut">/run</span></th><th>top 10<br><span class="mut">/run</span></th><th>lift (pts)</th><th>AUC</th><th>break-even</th></tr></thead><tbody>${skillRows}</tbody></table></div>
-  <div class="callout">The question calibration cannot answer. Calibration asks whether the percentages are
-    <i>honest</i>; this asks whether they are <i>useful</i>. Inside a single tier, the judge's own top-rated half
-    is compared against its bottom-rated half. <b>Lift</b> is the gap — if it is near zero the judge is only
-    reading the tier back to us, and a one-line rule would do the same job for free. The split is deliberately
-    kept inside one tier: across all picks the judge looks skilled, but nearly all of that is goblins outscoring
-    demons, which the tier already told us. <b>Break-even</b> is the per-leg rate a pure-tier 3-pick Power needs
-    just to return the stake, and <b>bettable</b> asks whether even the judge's best half clears it. A judge can
-    be perfectly calibrated and still have nothing bettable — being honest about a bad number does not make it a
-    good one.
-    <br><br><b>The selection curve is the decision, and the median split is not.</b> "Best half" asks about the
-    top 50% of a tier, which is not a cut anyone bets — selection takes the top few of ~44 props, so a median
-    split on a genuinely skilled ranker averages the tail that gets wagered together with the middle that never
-    does, and can return "does not clear break-even" as a false negative.
-    <br><br>The <b>percentage</b> columns narrow over the pooled tier. The <b>top N per run</b> columns are the
-    cut the engine actually makes: its best few from ONE slate, pooled across runs, because the top 3 of a whole
-    season's log is not a bet either. Green means that cell clears its own break-even. Every cell carries the
-    count behind it, and any under ${MIN_SLICE_N} picks shows only that count — a hit rate on a dozen picks is
-    not evidence, and printed beside a break-even it invites exactly the conclusion it cannot support.
-    <br><br><b>Lift</b> and <b>bestHalfClears</b> are kept for continuity but are no longer the verdict. Lift
-    carries its own interval for the reason given above; AUC beside it uses every pairwise comparison instead of
-    only which side of the median a pick fell on, and is the better powered of the two.</div>
+      <h3>Deep dive — is the second look worth it?</h3>
+      <div class="callout">The deep dive re-judges the best-edge picks one at a time instead of in a batch, at real
+        cost per run. The claim it rests on is that an undivided look produces a better probability than the screen
+        does — deep-dive rows are a deliberately biased sample (the picks the screen already liked most), so
+        read the Brier gap, not the hit rate, and give it a few hundred rows before believing either.</div>
+      ${deepMeters}
+      <div class="callout${(a.deepPaired?.n || 0) === 0 ? ' amber' : ''}">${(a.deepPaired?.n || 0) === 0
+        ? `<b>The paired test has no rows yet.</b> Comparing deep rows to shallow rows compares two different sets of
+           picks, and the deep set exists <i>because</i> the screen liked it most — confounded with that selection.
+           Since v4.35.1 every deep-dive row also logs the stage-1 probability for the same pick, turning this into a
+           paired question that selection cannot bias. It fills in as deep-dive runs grade.`
+        : `<b>Paired — same picks, both numbers.</b> On ${a.deepPaired.n} deep-dive picks the stage-1 screen scored
+           <b>${a.deepPaired.shallowBrier.toFixed(4)}</b>, the second look scored
+           <b>${a.deepPaired.deepBrier.toFixed(4)}</b> (${a.deepPaired.brierDelta <= 0 ? 'better' : 'WORSE'} by
+           ${Math.abs(a.deepPaired.brierDelta).toFixed(4)}). Beside it, a sign test: the second look landed closer to
+           the truth on <b>${a.deepPaired.closer} of ${a.deepPaired.decided}</b> picks it moved
+           (${a.deepPaired.sigma == null ? '—' : `${a.deepPaired.sigma.toFixed(1)}σ`} vs a coin flip). These two
+           answer different questions and can honestly disagree: trimming an overconfident number improves Brier
+           while tying the sign test at 50%. Brier says <i>better calibrated</i>; the sign test says
+           <i>right more often</i> — only the second is evidence of extra knowledge rather than just being
+           less overconfident.`}</div>
 
-  <h2>How close, not just whether</h2>
-  <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>mean margin</th><th>spread</th><th>losses</th><th>near miss</th><th>not close</th><th>saved by −1</th></tr></thead><tbody>${marginRows}</tbody></table></div>
-  <div class="wrap" style="margin-top:12px"><table><thead><tr><th>tier</th><th>n</th><th>mean margin (σ)</th></tr></thead><tbody>${mtRows}</tbody></table></div>
-  <div class="callout">Grading is binary and stays that way — PrizePicks pays the same nothing for missing over 3.5
-    with 3 as for missing over 6.5 with 1, so scoring closeness would be scoring something nobody pays for. But
-    those two misses say completely different things about the <i>judge</i>, and a Brier score cannot tell them
-    apart.
-    <br><br><b>Mean margin</b> is how far the real result lands from the line, in that stat's own units: positive
-    means the overs are live and the line is set low. <b>Near miss</b> is the share of losses that came within
-    half a spread of flipping — high means variance, and the read was basically right. <b>Not close</b> is the
-    share that were never in it, which is the signature of a prop the engine does not understand rather than one
-    that broke badly. <b>Saved by −1</b> is the directly actionable column: of the overs that lost, how many
-    would have won a whole unit lower, which is roughly where the goblin alt line sits on the same prop.
-    <br><br>Margins are never pooled raw — a miss of 0.5 is everything on a home-run line and nothing on a
-    Fantasy Score line of 25 — so each stat is z-scored against its own spread before the tier table combines
-    them. Stats with fewer than 12 graded picks are left out rather than given a spread computed from noise.</div>
+      <h3>Did the judge have anything to work with?</h3>
+      <div class="wrap"><table><thead><tr><th>rows</th><th>n</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th><th>within-tier lift</th></tr></thead><tbody>${formRows}</tbody></table></div>
+      <div class="callout">${a.byFormCoverage?.formCoverage == null ? '' :
+          `<b>${pct(a.byFormCoverage.formCoverage)}</b> of graded picks reached the judge carrying recent form; the
+           rest arrived with none. `}Without form the prompt falls back to the tier — exactly what the baseline
+        already is — so beating the baseline on <b>has form</b> and losing on <b>NO form</b> means the deficit is
+        data coverage, not the prompt. Each lift carries its own interval: a −2.0pt lift on 402 picks has a standard
+        error of ±4.6 and bare, it reads as an inversion that the data does not support. <b>AUC</b> beside each lift
+        is the better-powered read: the chance a randomly chosen hit ranks above a randomly chosen miss.
+        ${(() => { const d = a.byFormCoverage?.noFormMinusHasForm; if (!d?.lift) return '';
+          const f = (x, s = 100, dp = 1) => x == null ? '—'
+            : `${(x.estimate * s >= 0 ? '+' : '') + (x.estimate * s).toFixed(dp)} ± ${(x.se * s).toFixed(dp)} (z ${x.z.toFixed(2)})`;
+          return `<br><br><b>No-form minus has-form</b>, pooled by inverse variance: all tiers <b>${f(d.lift)}</b>,
+          goblin+standard only <b>${f(d.liftGoblinStandard)}</b>. AUC: all tiers <b>${f(d.auc, 1, 3)}</b>,
+          goblin+standard <b>${f(d.aucGoblinStandard, 1, 3)}</b>. Where AUC and lift disagree, believe AUC.`; })()}</div>
 
-  <h2>By prop type</h2>
-  <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>claimed</th><th>actual</th><th>gap (pts)</th><th>tiers</th></tr></thead><tbody>${statRows}</tbody></table></div>
-  <div class="callout">Ranked by total error contributed — the gap times the number of picks — so the rows at the
-    top are where the Brier score actually goes, not the largest percentage misses on six picks. <b>Gap</b> is
-    claimed minus actual: positive means the engine talks that prop type up, negative means it talks it down.
-    Rarity alone should NOT show up here: a home run "over 0.5" is unlikely, but that is exactly why PrizePicks
-    prices it as standard or demon, so the tier already carries it. What shows up here is what the tier
-    <i>doesn't</i> capture — a stat the engine misreads on its own terms. Rows under 20 graded are greyed.
-    The <b>tiers</b> column gives each tier's own over-rate where it has 25+ graded picks: a prop type's blended
-    rate mixes goblin lines going over ~70% with demon lines going over ~20%, so only the per-tier number is
-    safe to quote at an individual prop.</div>
+      <h3>What arrives without form</h3>
+      <div class="wrap"><table><thead><tr><th>league :: stat</th><th>graded picks</th></tr></thead><tbody>${noFormRows}</tbody></table></div>
 
-  <h2>By league</h2>
-  <div class="wrap"><table><thead><tr><th>league</th><th>graded</th><th>record</th><th>win rate</th><th>brier</th><th></th></tr></thead><tbody>${leagueRows}</tbody></table></div>
-  <div class="callout">Each league is scored on its own. A rater can be sharp on baseball and hopeless on
-    tennis, and one blended number says neither — but splitting the sample means every league needs its own
-    ~50 graded picks before it means anything, so most will read EARLY for a while. Lower Brier is better;
-    0.25 is what you'd score by guessing 50% on everything.</div>
+      <h3>Does the judge beat the tier?</h3>
+      <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>top 50%</th><th>top 25%</th><th>top 10%</th><th>top 5%</th><th>top 3<br><span class="mut">/run</span></th><th>top 5<br><span class="mut">/run</span></th><th>top 10<br><span class="mut">/run</span></th><th>lift (pts)</th><th>AUC</th><th>break-even</th></tr></thead><tbody>${skillRows}</tbody></table></div>
+      <div class="callout">Calibration asks whether the percentages are <i>honest</i>; this asks whether they are
+        <i>useful</i> — inside a single tier, the judge's own top-rated half against its bottom-rated half. A judge
+        can be perfectly calibrated and still have nothing bettable — being honest about a bad number does not make it a
+        good one. <b>Top N per run</b> is the cut the engine actually makes — its best few from one slate — not
+        the median split, which averages away exactly the tail that gets wagered. Cells under ${MIN_SLICE_N} picks
+        show only the count.</div>
+    </div>
+  </details>
 
-  <h2>Pending (gradeable) by day</h2>
-  <div class="wrap"><table><thead><tr><th>date</th><th>pending</th></tr></thead><tbody>${pendRows}</tbody></table></div>
-  <div class="callout">Most pending is tonight's slate — the daily grader clears each day the morning after. Combos can't be graded this way; "given up" (${a.givenUp}) tried 3× with no result; combos skipped: ${a.combos}.</div>
+  <details class="qsection">
+    <summary>
+      <div class="qhead"><div class="qtitle" style="color:var(--dim)">Housekeeping</div><div class="qanswer dim">${housekeepingAnswer}</div></div>
+      <div class="qmeta">by prop type · by league · pending by day · spend &nbsp;&nbsp;<span class="mut qhint"><span class="oc">open ↓</span><span class="cc">close ↑</span></span></div>
+    </summary>
+    <div class="qbody">
+      <h3>By prop type</h3>
+      <div class="wrap"><table><thead><tr><th>league :: stat</th><th>n</th><th>claimed</th><th>actual</th><th>gap (pts)</th><th>tiers</th></tr></thead><tbody>${statRows}</tbody></table></div>
+      <div class="callout">Ranked by total error contributed. Rarity alone should not show up here — PrizePicks
+        already prices it into the tier — so what shows up is what the tier doesn't capture.</div>
 
-  <h2>API spend (30 days)</h2>
-  <div class="cards">
-    ${card('$' + (a.spend?.today ?? 0).toFixed(2), 'today', '')}
-    ${card('$' + (a.spend?.week ?? 0).toFixed(2), '7 days', '')}
-    ${card('$' + (a.spend?.month ?? 0).toFixed(2), '30 days', '')}
-  </div>
-  <div class="wrap" style="margin-top:12px"><table><thead><tr><th>call</th><th>runs</th><th>$ / run</th><th>in</th><th>out</th><th>searches</th><th>input share</th></tr></thead><tbody>${runRows}</tbody></table></div>
-  <div class="callout">What one run actually costs, and where it goes. Input tokens are nearly always the driver:
-    web search RESULTS bill as input, so a run doing 8 searches reads far more than it writes. When <b>input
-    share</b> is high the lever is the search budget and the size of the shortlist, not the model's verbosity —
-    and note that the searches largely go looking for confirmed lineups, which the MLB and ESPN feeds already
-    supply for free elsewhere in the same run.</div>
+      <h3>By league</h3>
+      <div class="wrap"><table><thead><tr><th>league</th><th>graded</th><th>record</th><th>win rate</th><th>brier</th><th></th></tr></thead><tbody>${leagueRows}</tbody></table></div>
+      <div class="callout">Each league scored on its own — a rater can be sharp on baseball and hopeless on tennis,
+        and one blended number says neither. Every league needs its own ~50 graded picks before it means anything.</div>
 
-  <div class="wrap" style="margin-top:12px"><table><thead><tr><th>feature</th><th>spend (30d)</th></tr></thead><tbody>
-    ${Object.entries(a.spend?.byFeature || {}).sort((x, y) => y[1] - x[1]).map(([f, v]) => `<tr><td>${esc(f)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" class="mut">no metered calls yet</td></tr>'}
-  </tbody></table></div>
+      <h3>Pending (gradeable) by day</h3>
+      <div class="wrap"><table><thead><tr><th>date</th><th>pending</th></tr></thead><tbody>${pendRows}</tbody></table></div>
+      <div class="callout">Most pending is tonight's slate — the daily grader clears each day the morning after.
+        Combos can't be graded this way; "given up" (${a.givenUp}) tried 3× with no result; combos skipped: ${a.combos}.</div>
+
+      <h3>API spend (30 days)</h3>
+      <div class="cards">
+        ${card('$' + (a.spend?.today ?? 0).toFixed(2), 'today', '')}
+        ${card('$' + (a.spend?.week ?? 0).toFixed(2), '7 days', '')}
+        ${card('$' + (a.spend?.month ?? 0).toFixed(2), '30 days', '')}
+      </div>
+      <div class="wrap" style="margin-top:12px"><table><thead><tr><th>call</th><th>runs</th><th>$ / run</th><th>in</th><th>out</th><th>searches</th><th>input share</th></tr></thead><tbody>${runRows}</tbody></table></div>
+      <div class="callout">Input tokens are nearly always the driver — web search RESULTS bill as input — so when
+        <b>input share</b> is high the lever is the search budget, not the model's verbosity.</div>
+      <div class="wrap" style="margin-top:12px"><table><thead><tr><th>feature</th><th>spend (30d)</th></tr></thead><tbody>
+        ${Object.entries(a.spend?.byFeature || {}).sort((x, y) => y[1] - x[1]).map(([f, v]) => `<tr><td>${esc(f)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" class="mut">no metered calls yet</td></tr>'}
+      </tbody></table></div>
+    </div>
+  </details>
 
   <details style="margin:34px 0 12px;border:1px solid var(--line);border-radius:6px;padding:2px 14px 14px">
     <summary style="cursor:pointer;padding:12px 0;font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Legacy engines
