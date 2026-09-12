@@ -23,10 +23,14 @@ const DAY = '2026-08-14';
 const BE = { goblin: 2 ** (-1 / 3), standard: 4.75 ** (-1 / 3), demon: 12 ** (-1 / 3) };
 
 let seq = 0;
+// judgeModel defaults to the standing engine (Vilifiant) — this file's whole
+// point is the guardrail split, not the model dimension, so every row here
+// should land in the calibration page's default scope unless a test overrides it.
 const mk = (o) => ({
   date: DAY, loggedAt: `${DAY}T18:00:00Z`, league: 'mlb', source: 'board',
   projectionId: `p${seq}`, player: `P${seq++}`, stat: 'Hits', line: 0.5,
   verdict: 'play', oddsType: 'standard', gradedAt: `${DAY}T23:00:00Z`,
+  judgeModel: 'claude-haiku-4-5-20251001',
   result: o.hit ? 1 : 0, ...o,
 });
 const many = (n, o) => Array.from({ length: n }, (_, i) => mk({ ...o, hit: i < (o.hits ?? 0) }));

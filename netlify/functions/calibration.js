@@ -55,6 +55,20 @@ export const EXCLUDED_LEAGUES = new Set(['world_cup', 'fifa_world_cup']);
 
 const isExcluded = (p) => EXCLUDED_LEAGUES.has(String(p.league || '').toLowerCase());
 
+// THE STANDING DEFAULT ENGINE. See docs/judge-measurement.md, "Vilifiant-only
+// scoping" — every headline figure, tier table, guardrail split, band and
+// baseline on this page defaults to rows this model produced, refit on exactly
+// those rows. A pooled figure that mixes Vilifiant with retired models (Psyche's
+// Opus runs, Sonnet experiments) is not a measurement of the engine in use; it
+// is an average of four different engines that happen to share a page.
+//
+// "model" is one of the standing constraints in judge-measurement.md — this is
+// a deliberate scoping change to how the page REPORTS, not a change to
+// selection, sizing, tier weighting, or any prompt, and it does not touch which
+// model actually judges a run.
+const CURRENT_ENGINE = 'Vilifiant';
+const isLegacyRow = (p) => modelName(p.judgeModel) !== CURRENT_ENGINE;
+
 /**
  * What a three-row lookup table would have scored on these same picks.
  *
@@ -1152,38 +1166,45 @@ function renderHTML(a) {
   const plWin = a.playsLeans.n ? a.playsLeans.hits / a.playsLeans.n : null;
   const record = a.playsLeans.n ? `${a.playsLeans.hits}–${a.playsLeans.n - a.playsLeans.hits}` : '—';
 
+  // n===0 has two different causes now that the page defaults to Vilifiant-only:
+  // no graded picks at all, or graded picks that all belong to a legacy engine.
+  // Those are different facts and get different messages — the second one names
+  // the legacy count rather than reading as "nothing has ever been graded."
+  const legacyN = a.legacy?.graded || 0;
   const stateNote = n === 0
-    ? `<div class="callout">No graded picks yet. The grader runs every morning and fills in results once games settle — this page starts meaning something a day or two after your first logged slate.</div>`
+    ? (legacyN
+        ? `<div class="callout amber">No <b>Vilifiant</b>-graded picks yet. ${legacyN} legacy-engine pick${legacyN === 1 ? ' is' : 's are'} graded — see <b>Legacy engines</b> below, not pooled into anything above.</div>`
+        : `<div class="callout">No graded picks yet. The grader runs every morning and fills in results once games settle — this page starts meaning something a day or two after your first logged slate.</div>`)
     : early
       ? `<div class="callout amber"><b>EARLY — n=${n}.</b> Below ~50 graded picks these numbers are mostly noise: a hot or cold week can swing them wildly. Don't draw conclusions (or settle arguments) yet.</div>`
       : `<div class="callout">Calibration scores every logged pick — plays, leans and passes alike — so the numbers can't be flattered by only counting winners. "Diff" is actual minus predicted; green is honest (±4pts), red is off by 10+.</div>`;
 
   const card = (v, l, sub) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
 
-  // Vilifiant only — the headline above is pooled across every model this app
-  // has ever run (Psyche/Opus and Sonnet included), which is the right number
-  // for comparing configs but the wrong one for "how good is it right now":
-  // Vilifiant is the only model still in use, and old Opus/Sonnet runs sitting
-  // in the same average make current performance look better or worse than it
-  // is depending on how those compared. Pulled straight from `byModel` — same
-  // rows the per-model table further down uses, just surfaced where it doesn't
-  // require scrolling past a comparison against retired models to find it.
-  const vil = a.byModel?.Vilifiant;
-  const vilEarly = vil && vil.n > 0 && vil.n < 50;
-  const vilBlock = !vil || !vil.n
-    ? `<div class="callout">No Vilifiant-judged picks are graded yet.</div>`
+  // ---- Legacy engines — collapsed, never pooled, never a comparison --------
+  //
+  // Everything ABOVE this point is Vilifiant-only, the standing default (see
+  // docs/judge-measurement.md, "Vilifiant-only scoping"). These rows are
+  // whatever is left: Psyche's Opus runs, one-off Sonnet experiments, anything
+  // logged before per-pick model tagging existed. They differ from the numbers
+  // above in BOTH prompt version and model at once, so there is no clean
+  // single-variable contrast to draw — this section is a historical record, not
+  // a second opinion.
+  const lg = a.legacy || {};
+  const lgModelRows = Object.entries(lg.byModel || {}).sort((x, y) => y[1].n - x[1].n).map(([k, v]) => {
+    const over = v.overstatement, sign = over >= 0 ? '+' : '';
+    return `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${pct(v.predicted)}</td><td>${pct(v.actual)}</td>
+      <td>${sign}${(over * 100).toFixed(1)}pts</td><td>${v.brier.toFixed(3)}</td></tr>`;
+  }).join('') || '<tr><td colspan="6" class="mut">no legacy picks graded</td></tr>';
+  const legacyBlock = !lg.graded
+    ? `<div class="callout">No legacy-engine picks are graded.</div>`
     : `<div class="cards">
-        ${card(vil.n, 'graded', vilEarly ? 'early — under 50' : '')}
-        ${card(pct(vil.actual), 'over rate', 'predicted ' + pct(vil.predicted))}
-        ${card(vil.brier.toFixed(3) + (vilEarly ? ' <span style="font-size:11px;color:var(--amb)">n=' + vil.n + '</span>' : ''),
-          'brier ↓', vilEarly ? 'early — mostly noise' : 'lower is better')}
-        ${card(
-          vil.baseline == null ? '—' : `<span style="color:${vil.beatsBaseline ? 'var(--grn)' : 'var(--red)'}">${vil.baseline.toFixed(4)}</span>`,
-          'tier-only baseline',
-          vil.baselineDelta == null ? 'not enough graded picks'
-            : vil.beatsBaseline ? `ahead by ${Math.abs(vil.baselineDelta).toFixed(4)}`
-              : `BEHIND by ${vil.baselineDelta.toFixed(4)}`)}
-      </div>`;
+        ${card(lg.graded, 'graded', '')}
+        ${card(pct(lg.overall), 'over rate', '')}
+        ${card(lg.brier == null ? '—' : lg.brier.toFixed(3), 'brier ↓', '')}
+        ${card(lg.baseline == null ? '—' : lg.baseline.toFixed(4), 'tier-only baseline (own rows)', '')}
+      </div>
+      <div class="wrap" style="margin-top:12px"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th></tr></thead><tbody>${lgModelRows}</tbody></table></div>`;
 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#000000"><link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -1213,7 +1234,9 @@ function renderHTML(a) {
   .wrap{overflow-x:auto}
 </style></head><body>
   <h1>AtomBets <span>· Calibration</span></h1>
-  <div class="sub">when the engine says 65%, does it hit 65%? — every logged pick counts, passes included</div>
+  <div class="sub">Vilifiant only — the standing default (docs/judge-measurement.md). When it says 65%, does it hit 65%?
+    Every logged pick counts, passes included. Older engines are collapsed at the bottom, under
+    <b>Legacy engines</b>, and never pooled into anything above.</div>
 
   <div class="cards">
     ${card(n, 'graded', a.pendingGradeable ? a.pendingGradeable + ' pending' : '')}
@@ -1240,9 +1263,6 @@ function renderHTML(a) {
         : ''}
     Fitted on the rows it is scored against, which hands it hindsight and makes it harder to beat — the right
     direction for a bar.</div>
-
-  <h2>VILIFIANT ONLY <span style="text-transform:none;letter-spacing:normal;font-weight:400">— the standing default; Psyche/Opus/Sonnet runs above are excluded</span></h2>
-  ${vilBlock}
 
   ${stateNote}
 
@@ -1354,11 +1374,10 @@ function renderHTML(a) {
 
   <h2>Model — head to head</h2>
   <div class="wrap"><table><thead><tr><th>model</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${modelRows}</tbody></table></div>
-  <div class="callout">Scored exactly like the judge versions, and for the same reason: the judge runs on Opus
-    because it always has, not because anything cheaper was tried and lost. Sonnet costs 2.5x less per run and
-    Haiku 5x, so a cheaper model that scores the same is not a small saving — it is several times more graded
-    data for the same budget, which is the thing this whole page is short of. Rows before model tagging read as
-    <i>untagged</i>.</div>
+  <div class="callout">Everything on this page above <b>Legacy engines</b> is Vilifiant-only (see docs/judge-measurement.md),
+    so this table has exactly one row today. A model experiment run deliberately from the dev console tags its own
+    picks with the model that produced them, so it will not show up here — it lands in <b>Legacy engines</b> at the
+    bottom instead, alongside Opus, Sonnet, and whatever Psyche ran on, and is never pooled into this row.</div>
 
   <h2>By tier</h2>
   <div class="wrap"><table><thead><tr><th>tier</th><th>n</th><th>win rate</th></tr></thead><tbody>${breakdown(a.byTier)}</tbody></table></div>
@@ -1477,6 +1496,17 @@ function renderHTML(a) {
     ${Object.entries(a.spend?.byFeature || {}).sort((x, y) => y[1] - x[1]).map(([f, v]) => `<tr><td>${esc(f)}</td><td>$${v.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="2" class="mut">no metered calls yet</td></tr>'}
   </tbody></table></div>
 
+  <details style="margin:34px 0 12px;border:1px solid var(--line);border-radius:6px;padding:2px 14px 14px">
+    <summary style="cursor:pointer;padding:12px 0;font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Legacy engines
+      <span style="text-transform:none;letter-spacing:normal;color:var(--faint);font-size:11px">— Psyche/Opus/Sonnet, n=${legacyN} graded, collapsed by default</span></summary>
+    <div class="callout amber" style="margin-top:0">Everything above this point is <b>Vilifiant only</b>. These rows
+      predate it, or are one-off experiments run deliberately on a different model from the dev console — they
+      differ in <b>both</b> prompt version and model from the numbers above, at once, so there is no clean
+      single-variable contrast to draw. This is a historical record, never pooled into anything above and never
+      presented as a comparison.</div>
+    ${legacyBlock}
+  </details>
+
   <div class="sub" style="margin-top:30px">generated ${new Date().toISOString()} · <a href="/" style="color:var(--dim)">← terminal</a></div>
 </body></html>`;
 }
@@ -1502,7 +1532,14 @@ export const handler = async (event) => {
     let picks = days.flat();
     if (q.league) picks = picks.filter((p) => p.league === q.league);
 
-    const agg = aggregate(picks);
+    // Vilifiant-only is the default scope for every figure below — see
+    // CURRENT_ENGINE above. Legacy rows get their own, separate aggregate so
+    // their numbers can be shown (collapsed, clearly labelled) without ever
+    // pooling into anything above them.
+    const legacyPicks = picks.filter(isLegacyRow);
+    const currentPicks = picks.filter((p) => !isLegacyRow(p));
+    const agg = aggregate(currentPicks);
+    agg.legacy = aggregate(legacyPicks, { perLeague: false });
 
     // ---- API spend (from cost-log, written by judge/ask/reevaluate) --------
     // perRun breaks a judge call into its parts. The month's bill is a single

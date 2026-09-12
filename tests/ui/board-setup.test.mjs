@@ -85,9 +85,11 @@ export default async function ({ t, url, browser }) {
   t.eq('run posts the active tiers', job.sent.tiers, ['goblin', 'standard']);
   t.eq('run posts the selected judge', job.sent.prompt, 'aphrodite');
   t.eq('a normal run does NOT ask for balancing', job.sent.balance, undefined);
-  t.eq('run posts the selected model', job.sent.model, 'claude-haiku-4-5-20251001');
-  t.eq('Vilifiant is the default, and named in the user\'s language not a model id',
-    await page.$eval('#models .sidebtn.active', el => el.textContent.trim()), 'VILIFIANT');
+  // The model picker was removed from the normal flow (v4.52.0) so a run can't
+  // be silently judged by something other than the standing default — the
+  // server applies Vilifiant on its own when no model is posted at all.
+  t.eq('a normal run posts no model override — the server-side default applies', job.sent.model, undefined);
+  t.eq('the model picker is not part of the normal flow', await page.$('#models'), null);
   t.ok('run mints a jobId', typeof job.sent.jobId === 'string' && job.sent.jobId.length > 8, job.sent.jobId);
 
   // Switching to the original must actually switch it — the whole archive is
@@ -96,13 +98,6 @@ export default async function ({ t, url, browser }) {
   await page.click('#runBtn');
   await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
   t.eq('picking Psyche posts Psyche', job.sent.prompt, 'psyche');
-  // Cheaper models are the only way to buy more graded picks on a fixed budget,
-  // so the picker has to actually reach the run — a control that silently always
-  // sends Opus would look identical and cost 5x.
-  await page.click('#models .sidebtn[data-v="claude-opus-4-8"]');
-  await page.click('#runBtn');
-  await page.waitForFunction(() => !document.getElementById('runBtn').disabled, null, { timeout: 30000 });
-  t.eq('the expensive model is still one click away', job.sent.model, 'claude-opus-4-8');
 
   // ---- the deep dive toggle -----------------------------------------------
   // Off by default: it costs and takes meaningfully more, and is meant to run

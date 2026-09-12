@@ -7,6 +7,10 @@
 // View: https://atombets.netlify.app/api/dev
 
 import { getStore } from '@netlify/blobs';
+// The price table IS the allowlist of runnable models (see bet-finder-background.js)
+// — reused here rather than re-listed, so this page can never offer a model the
+// engine would refuse.
+import { JUDGE_MODELS, modelName } from './bet-finder-background.js';
 
 const isGraded = (p) => p.hit === true || p.hit === false;
 const isCombo = (p) => /combo/i.test(p.stat || '') || /\s\+\s/.test(p.player || '');
@@ -141,6 +145,7 @@ export const handler = async () => {
     "async function drain(d){var calls=0,last=null,dead=0;while(calls<25){calls++;var res=await call('/api/grade-picks?date='+d);last=res.json||res;show('drain '+d+' — pass '+calls,last);if(!res.json){dead++;if(dead>=3)break;}else{dead=0;if(typeof last.pendingSingles==='number'&&last.pendingSingles===0){show('drain '+d+' DONE',last);return;}if(typeof last.remaining==='number'&&last.remaining===0&&last.newlyGraded===0){show('drain '+d+' DONE',last);return;}}await new Promise(function(r){setTimeout(r,400);});}show('drain '+d+' stopped',last);}",
     "function gd(fn){var d=document.getElementById('dateInput').value;if(!d){show('pick a date first','');return;}fn(d);}",
     "async function drainAll(){var today=new Date().toISOString().slice(0,10);var past=ALL_DATES.filter(function(d){return d<today;});if(!past.length){show('drain all','no past days to grade (today can\\'t be graded yet)');return;}for(var i=0;i<past.length;i++){await drain(past[i]);}show('DRAIN ALL DONE',{drained:past});}",
+    "async function runExpFinder(){var model=document.getElementById('expModel').value;var league=document.getElementById('expLeague').value.trim()||'mlb';var jobId='dev-'+Date.now()+'-'+Math.random().toString(16).slice(2);show('starting bet-finder-background · '+league+' · '+model+' ...','deliberate override of the standing default — for a named experiment only');var post=await call('/api/bet-finder-background',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId:jobId,league:league,model:model})});if(!post.ok){show('bet-finder-background failed to start',post);return;}for(var i=0;i<150;i++){await new Promise(function(r){setTimeout(r,4000);});var st=(await call('/api/bet-finder-status?jobId='+encodeURIComponent(jobId))).json;if(st&&st.status==='done'){show('bet-finder — done · '+model,st.result);return;}if(st&&st.status==='error'){show('bet-finder — error · '+model,st);return;}show('bet-finder running ('+((i+1)*4)+'s) · '+model,st||{});}show('bet-finder','still running past 600s — check /api/calibration in a minute, the picks land in the log either way');}",
     "async function testAsk(){show('testing /api/ask ...','working');var body={pick:{player:'Junior Caminero',stat:'Hits+Runs+RBIs',line:2.5,matchup:'KC vs TB',recent5:[6,3,5,12,1],recentAvg:5.4},question:'is he in the starting lineup tonight'};var res=await call('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});show('test /api/ask',res.json||res);}",
     "async function testStats(){var p=document.getElementById('statsPlayer').value||'Junior Caminero';show('testing /api/player-stats ('+p+') ...','working');var res=await call('/api/player-stats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({player:p,league:'mlb'})});show('test /api/player-stats',res.json||res);}",
     // PrizePicks probe. Paging a full slate takes a few seconds, so say so up front.
@@ -161,7 +166,7 @@ export const handler = async () => {
   th{color:#8aa;font-size:10px;text-transform:uppercase} td{font-variant-numeric:tabular-nums}
   button{background:#1b2730;color:#cde;border:1px solid #2a3a47;border-radius:6px;padding:3px 9px;font:inherit;cursor:pointer;margin-right:4px}
   button:hover{background:#243440}
-  input{background:#13181d;color:#e6e6e6;border:1px solid #2a3a47;border-radius:6px;padding:5px 8px;font:inherit}
+  input,select{background:#13181d;color:#e6e6e6;border:1px solid #2a3a47;border-radius:6px;padding:5px 8px;font:inherit}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
   pre{background:#0e1318;border:1px solid #1f2730;border-radius:8px;padding:12px;max-width:680px;white-space:pre-wrap;word-break:break-word;min-height:60px;margin-top:8px}
   .links a{margin-right:14px}
@@ -236,6 +241,22 @@ export const handler = async () => {
     <button onclick="cleanupPreview()">preview — what would be marked</button>
     <button onclick="cleanupApply()">mark them ungradeable</button>
     <button onclick="cleanupUndo()">undo (conditional only)</button>
+  </div>
+
+  <h2>Judge model override <span style="color:#fbbf24;font-size:11px;font-weight:400">— experiments only</span></h2>
+  <p style="color:#667;max-width:680px;margin:0 0 8px">
+    The normal board always runs on the standing default — <b>Vilifiant</b> — and the model picker
+    was removed from that page on purpose, so a run can't be silently judged by something else
+    (see docs/judge-measurement.md). This fires ONE Find Bets run on a different model, for a
+    deliberate, named experiment; it is not part of the normal flow. Its picks land in the same
+    pick log, tagged with the model that actually produced them, so
+    <a href="/api/calibration" target="_blank">calibration</a> can score them apart — they show up
+    under <b>Legacy engines</b> there, never pooled into the Vilifiant numbers above it.
+  </p>
+  <div class="row">
+    <select id="expModel">${JUDGE_MODELS.map((id) => `<option value="${id}">${modelName(id)} (${id})</option>`).join('')}</select>
+    <input id="expLeague" placeholder="league" value="mlb" style="width:140px">
+    <button onclick="runExpFinder()">run Find Bets with this model</button>
   </div>
 
   <h2>Grade / debug any date</h2>

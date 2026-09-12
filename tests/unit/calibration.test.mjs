@@ -13,11 +13,16 @@ import { loadFn } from '../helpers/fn.mjs';
 import { reset, seed } from '../helpers/blobs.mjs';
 
 const DAY = '2026-08-14';
+// judgeModel defaults to the standing engine (Vilifiant) so every test below —
+// almost none of which cares about the model dimension — lands in the page's
+// default scope rather than the collapsed "legacy engines" section. Tests that
+// DO care about the model dimension override it explicitly.
 const mk = (league, prob, hit, i) => ({
   date: DAY, loggedAt: DAY + 'T18:00:00Z', league, source: 'board',
   projectionId: `${league}-${i}`, player: `P${i}`, stat: 'Hits', line: 0.5,
   prob, verdict: prob >= 0.62 ? 'play' : 'lean', oddsType: 'standard',
   result: hit ? 1 : 0, hit, gradedAt: DAY + 'T23:00:00Z',
+  judgeModel: 'claude-haiku-4-5-20251001',
 });
 
 export default async function ({ t }) {
@@ -304,23 +309,27 @@ export default async function ({ t }) {
   // difference between deciding the model question on Monday and deciding it in
   // three weeks.
   reset();
+  // Distinguished by promptVersion, not judgeModel — judgeModel now decides
+  // Vilifiant-vs-legacy scoping (see CURRENT_ENGINE), so a synthetic tag there
+  // would silently land these rows in the collapsed legacy section instead of
+  // being readable side by side, which is exactly what this test checks for.
   const beh = (prob, tier, i, extra = {}) =>
     ({ ...mk('mlb', prob, null, i), oddsType: tier, hit: null, gradedAt: null, ...extra });
   const rows5 = [];
   // A judge that READ the tier instruction: goblins high, demons low, a real
   // spread, unrounded numbers, and the required field filled in.
-  for (let i = 0; i < 30; i++) rows5.push(beh(0.68 + i * 0.003, 'goblin', i, { promptVersion: 'aphrodite', judgeModel: 'good', cleared: 4 }));
-  for (let i = 0; i < 30; i++) rows5.push(beh(0.18 + i * 0.003, 'demon', 100 + i, { promptVersion: 'aphrodite', judgeModel: 'good', cleared: 1 }));
+  for (let i = 0; i < 30; i++) rows5.push(beh(0.68 + i * 0.003, 'goblin', i, { promptVersion: 'aphrodite-good', cleared: 4 }));
+  for (let i = 0; i < 30; i++) rows5.push(beh(0.18 + i * 0.003, 'demon', 100 + i, { promptVersion: 'aphrodite-good', cleared: 1 }));
   // A judge that IGNORED it: everything at a coin flip regardless of tier, every
   // answer a round number, the required field dropped. This is what a prompt
   // failing to land looks like, and none of it needs an outcome to see.
-  for (let i = 0; i < 30; i++) rows5.push(beh(0.55, 'goblin', 200 + i, { promptVersion: 'aphrodite', judgeModel: 'bad' }));
-  for (let i = 0; i < 30; i++) rows5.push(beh(0.50, 'demon', 300 + i, { promptVersion: 'aphrodite', judgeModel: 'bad' }));
+  for (let i = 0; i < 30; i++) rows5.push(beh(0.55, 'goblin', 200 + i, { promptVersion: 'aphrodite-bad' }));
+  for (let i = 0; i < 30; i++) rows5.push(beh(0.50, 'demon', 300 + i, { promptVersion: 'aphrodite-bad' }));
   seed('pick-log', DAY, rows5);
 
   const cal5 = await loadFn('calibration.js');
   const res5 = JSON.parse((await cal5.handler({ queryStringParameters: { format: 'json' } })).body);
-  const good = res5.behaviour['aphrodite · good'], bad = res5.behaviour['aphrodite · bad'];
+  const good = res5.behaviour['aphrodite-good · Vilifiant'], bad = res5.behaviour['aphrodite-bad · Vilifiant'];
 
   t.eq('behaviour is measured with nothing graded at all', res5.graded, 0);
   t.eq('...on every logged pick', [good.n, bad.n], [60, 60]);
@@ -350,13 +359,13 @@ export default async function ({ t }) {
   // A judge with 4x the sample and the same behaviour must score the same.
   reset();
   const big = [];
-  for (let i = 0; i < 240; i++) big.push(beh(i % 2 ? 0.55 : 0.50, 'goblin', 500 + i, { promptVersion: 'aphrodite', judgeModel: 'bigsample' }));
+  for (let i = 0; i < 240; i++) big.push(beh(i % 2 ? 0.55 : 0.50, 'goblin', 500 + i, { promptVersion: 'aphrodite-bigsample' }));
   seed('pick-log', DAY, big);
   const calBig = await loadFn('calibration.js');
   const resBig = JSON.parse((await calBig.handler({ queryStringParameters: { format: 'json' } })).body);
   t.ok('four times the picks, identical behaviour, identical score',
-    Math.abs(resBig.behaviour['aphrodite · bigsample'].effectiveValues - 2) < 0.01,
-    `${resBig.behaviour['aphrodite · bigsample'].effectiveValues} at n=240 vs ${bad.effectiveValues} at n=60`);
+    Math.abs(resBig.behaviour['aphrodite-bigsample · Vilifiant'].effectiveValues - 2) < 0.01,
+    `${resBig.behaviour['aphrodite-bigsample · Vilifiant'].effectiveValues} at n=240 vs ${bad.effectiveValues} at n=60`);
 
   // ---- named models read back by name ------------------------------------
   // The models are the user's to name, the same as the prompt versions. A report
@@ -369,36 +378,83 @@ export default async function ({ t }) {
   ]);
   const cal6 = await loadFn('calibration.js');
   const res6 = JSON.parse((await cal6.handler({ queryStringParameters: { format: 'json' } })).body);
-  t.eq('a named model is scored under its name', Object.keys(res6.byModel).sort(), ['Vilifiant', 'claude-opus-4-8']);
+  t.eq('a named model is scored under its name', Object.keys(res6.byModel).sort(), ['Vilifiant']);
   t.eq('...and the name follows it into the behaviour table',
     Object.keys(res6.behaviour).some((k) => k.endsWith('· Vilifiant')), true);
-  t.eq('an unnamed model still shows its id rather than vanishing',
-    res6.byModel['claude-opus-4-8'].n, 4);
 
-  // ---- a simple, Vilifiant-only headline, separate from the pooled one -----
-  // Opus and Sonnet are retired — a pooled headline number blends their
-  // history back in every time, which is the wrong number for "how good is
-  // the judge right now." This section exists so that question has an answer
-  // without scrolling past a comparison against models nobody runs anymore.
-  const html6 = (await cal6.handler({ queryStringParameters: {} })).body;
-  t.ok('a Vilifiant-only section renders', /VILIFIANT ONLY/.test(html6));
-  t.ok('...naming which models it deliberately excludes',
-    /Psyche\/Opus\/Sonnet runs above are excluded/.test(html6));
+  // ---- Vilifiant-only is the DEFAULT scope, not an extra section ----------
+  // 4,980-across-four-engines was the bug this exists to fix: the headline
+  // must count only the standing engine, and a retired model's rows must not
+  // reach it at all — not "reach it and get labelled," excluded outright.
+  t.eq('the headline graded count is Vilifiant rows only', res6.graded, 4);
   // 4 Vilifiant picks @ 0.7, 3 of 4 hit — actual 75%, predicted 70%, and a
   // hand-computed Brier of ((0.7-1)^2*3 + (0.7-0)^2) / 4 = 0.19.
-  const vilSection = html6.slice(html6.indexOf('VILIFIANT ONLY'), html6.indexOf('VILIFIANT ONLY') + 1200);
-  t.ok('...with its own graded count', />4<\/div><div class="l">graded/.test(vilSection), vilSection.slice(0, 300));
-  t.ok('...its own Brier, hand-computed from just those 4 picks',
-    /0\.190/.test(vilSection), vilSection.slice(0, 400));
-  t.ok('...and its own over rate', /75\.0%/.test(vilSection) && /70\.0%/.test(vilSection), vilSection);
+  t.ok('the headline Brier is hand-computed from just those 4 picks',
+    Math.abs(res6.brier - 0.19) < 1e-9, String(res6.brier));
+  t.eq('...at its own hit rate', Math.round(res6.overall * 100), 75);
+
+  // ---- the retired model is excluded from every default figure, not pooled -
+  t.eq('the retired model never reaches the top-level byModel table',
+    res6.byModel['claude-opus-4-8'], undefined);
+  t.eq('the retired model never reaches the top-level behaviour table',
+    Object.keys(res6.behaviour).some((k) => k.endsWith('· claude-opus-4-8')), false);
+
+  // ---- legacy engines: a separate object, counts matching what was excluded
+  t.eq('the legacy rows are counted apart, not folded into anything above',
+    res6.legacy.graded, 4);
+  t.eq('...under their own model name', Object.keys(res6.legacy.byModel), ['claude-opus-4-8']);
+  t.eq('...at their own hit rate (2 of 4)', Math.round(res6.legacy.overall * 100), 50);
+
+  const html6 = (await cal6.handler({ queryStringParameters: {} })).body;
+  t.ok('the sub-head names Vilifiant as the standing default', /Vilifiant only — the standing default/.test(html6));
+  t.ok('a collapsed Legacy engines section renders', /Legacy engines/.test(html6));
+  t.ok('...collapsed by default (a <details> without "open")',
+    /<details[^>]*>\s*<summary[^>]*>Legacy engines/.test(html6.replace(/\s+/g, ' ')));
+  t.ok('...clearly labelled as a different engine, not a comparison',
+    /never pooled into anything above and never\s+presented as a comparison/.test(html6.replace(/\s+/g, ' ')));
+  // Its own count, rendered inside the collapsed section, matching what the
+  // JSON reported as excluded from the default figures.
+  const legacySection = html6.slice(html6.indexOf('Legacy engines'));
+  t.ok('the legacy section shows its own graded count matching the excluded rows',
+    />4<\/div><div class="l">graded/.test(legacySection), legacySection.slice(0, 400));
+  t.ok('...and its own per-model breakdown, naming the retired model',
+    /claude-opus-4-8/.test(legacySection));
+  t.ok('...but the retired model never appears above the Legacy section',
+    !/claude-opus-4-8/.test(html6.slice(0, html6.indexOf('Legacy engines'))));
 
   // ---- no Vilifiant picks yet: says so, doesn't crash or show zeros --------
   reset();
   seed('pick-log', DAY, Array.from({ length: 4 }, (_, i) => ({ ...mk('mlb', 0.7, i < 2, i), judgeModel: 'claude-opus-4-8' })));
   const calNoVil = await loadFn('calibration.js');
+  const resNoVil = JSON.parse((await calNoVil.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.eq('an all-legacy log reports zero Vilifiant graded, not a crash', resNoVil.graded, 0);
+  t.eq('...while the legacy rows are still there to explain why', resNoVil.legacy.graded, 4);
   const htmlNoVil = (await calNoVil.handler({ queryStringParameters: {} })).body;
-  t.ok('an all-Opus log says no Vilifiant picks are graded yet, rather than a crash or a bare "0"',
-    /No Vilifiant-judged picks are graded yet/.test(htmlNoVil));
+  t.ok('an all-Opus log says so by name, distinguishing it from "nothing has ever graded"',
+    /No <b>Vilifiant<\/b>-graded picks yet\. 4 legacy-engine picks are graded/.test(htmlNoVil));
+
+  // ---- the baseline is refit per scope, not borrowed from the other one ----
+  // Critical per the scoping decision: comparing a Vilifiant Brier to an
+  // all-engine baseline is not a comparison, so each scope's baseline must come
+  // from ITS OWN rows. 20 Vilifiant goblins at 90% (leave-one-out baseline
+  // 18*2/19^2 = 0.0997) vs 20 legacy goblins at 50% (10*10/19^2 = 0.2770).
+  reset();
+  seed('pick-log', DAY, [
+    ...Array.from({ length: 20 }, (_, i) => ({
+      ...mk('mlb', 0.9, i < 18, 1000 + i), oddsType: 'goblin', judgeModel: 'claude-haiku-4-5-20251001',
+    })),
+    ...Array.from({ length: 20 }, (_, i) => ({
+      ...mk('mlb', 0.5, i < 10, 2000 + i), oddsType: 'goblin', judgeModel: 'claude-opus-4-8',
+    })),
+  ]);
+  const calBase = await loadFn('calibration.js');
+  const resBase = JSON.parse((await calBase.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.ok('the default (Vilifiant) baseline is fitted on the Vilifiant rows',
+    Math.abs(resBase.baseline - 0.0997) < 1e-3, String(resBase.baseline));
+  t.ok('the legacy baseline is fitted on the legacy rows, not borrowed from the default scope',
+    Math.abs(resBase.legacy.baseline - 0.2770) < 1e-3, String(resBase.legacy.baseline));
+  t.ok('...and the judge is scored against baseline rows from the SAME scope on both sides',
+    resBase.baseline !== resBase.legacy.baseline, `${resBase.baseline} vs ${resBase.legacy.baseline}`);
 
   const html5 = (await cal5.handler({ queryStringParameters: {} })).body;
   t.ok('the table renders', /Judge behaviour — readable the same day/.test(html5));
@@ -750,6 +806,7 @@ export default async function ({ t }) {
       date: DAY, loggedAt: DAY + 'T18:00:00Z', league: 'nfl', source: 'board',
       projectionId: `demon-${i}`, player: `D${i}`, stat: 'Pass Yards', line: 239.5,
       prob, verdict: prob >= 0.54 ? 'play' : 'pass', oddsType: 'demon',
+      judgeModel: 'claude-haiku-4-5-20251001',
       ...(graded ? { result: prob >= 0.5 ? 1 : 0, hit: prob >= 0.5, gradedAt: DAY + 'T23:00:00Z' } : { hit: null, gradedAt: null }),
     });
     const rows = [

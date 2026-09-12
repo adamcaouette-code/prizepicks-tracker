@@ -274,9 +274,10 @@ export default async function ({ t, url, browser }) {
     (job.sent.tiers || []).slice().sort(), ['demon', 'goblin', 'standard']);
   t.eq('...and both sides', job.sent.sides, 'both');
   // Which judge wrote a probability is part of the experiment, so it does carry.
-  t.ok('the judge and model pickers carry over',
-    typeof job.sent.prompt === 'string' && typeof job.sent.model === 'string',
-    JSON.stringify({ prompt: job.sent.prompt, model: job.sent.model }));
+  // The model picker was removed from the normal flow (v4.52.0) — a re-judge
+  // posts no override either, so the server applies the standing default.
+  t.ok('the judge picker carries over', typeof job.sent.prompt === 'string', String(job.sent.prompt));
+  t.eq('...and no model override rides along with it', job.sent.model, undefined);
 
   t.ok('the ledger reloads once the re-judge finishes', ledgerFetches >= 2, String(ledgerFetches));
   t.ok('...showing the new judgment, not the morning one',

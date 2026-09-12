@@ -1518,6 +1518,59 @@ changing filters, when in fact it is unsolvable within the current configuration
 Copy change only — no changes to thresholds, verdictFor, selectLegs, or the
 prompt.
 
+## Vilifiant-only scoping — the calibration page was averaging four engines (2026-09-12)
+
+The headline figures on `/api/calibration` pooled every engine this app has ever
+run: 4,980 graded at Brier 0.231 mixed Vilifiant with Psyche's Opus runs and
+one-off Sonnet experiments, while Vilifiant alone was 3,076 at 0.225. A number
+averaged across four engines is not a measurement of the one actually in use —
+the same class of error as pooling `source: 'ledger'` re-judges with board rows,
+or pooling leagues into one Brier, both already fixed elsewhere in this file for
+the identical reason.
+
+**What changed.** Every headline figure, tier table, the guardrail split, the
+calibration bands and the tier-only baseline now default to rows where
+`judgeModel` resolves to **Vilifiant** (`CURRENT_ENGINE` in calibration.js) —
+Psyche's Opus runs, Sonnet experiments, and anything logged before per-pick
+model tagging existed are excluded from the default scope entirely, not merely
+labelled. They render in a collapsed **Legacy engines** section at the bottom of
+the page, off by default, with their own counts and their own per-model
+breakdown — never pooled into anything above, and not presented as a
+comparison, because the legacy population differs from Vilifiant in *both*
+prompt version and model at once, so no single-variable contrast exists to draw.
+
+**The baseline is refit per scope, not shared.** Comparing a Vilifiant Brier to
+a baseline fitted on all four engines' tier mix would not be a comparison — the
+tier-only baseline is now computed on exactly the rows the judge is scored
+against in each scope (Vilifiant rows for the default page, legacy rows for the
+collapsed section), the same `scoreAgainstBaseline`/leave-one-out machinery
+already used for the per-prompt and per-model breakdowns, applied one level up.
+
+**Every pooled figure reported anywhere in this file before 2026-09-12 is
+engine-mixed** — including the 0.2076-vs-0.2402 bar in "The bar" section above,
+the per-tier AUC table, the pre-registered demon-AUC hypothesis, and everything
+under "Item K" and "Item L". None of those measurements are invalidated (they
+were honest pools at the time), but none of them isolate Vilifiant either, and
+a reader comparing a post-2026-09-12 Vilifiant-only number against one of them
+is making the exact mixed-population error this change exists to stop.
+
+**This is a deliberate scoping change, not a side effect.** `model` is named in
+the standing constraints below — this changes how the calibration page
+*reports* on rows already logged, and does not touch which model actually
+judges a run, selection, sizing, tier weighting, or any prompt. The model
+picker was also removed from the normal board flow (a run can no longer be
+silently judged by something other than the standing default) but the
+capability itself was not deleted — it is reachable from the dev console
+(`/api/dev`) for a deliberate, named experiment, exactly the shape item K's
+Opus arm and the THEMIS variant runs already use.
+
+Regression cover: `tests/unit/calibration.test.mjs` (headline scope, the
+retired-model exclusion, the legacy section's counts matching what was
+excluded, and the baseline being refit per scope with two different values),
+`tests/ui/board-setup.test.mjs` (the picker is gone from the normal flow and no
+model override is posted by default), `tests/unit/dev-model-override.test.mjs`
+(the override is still reachable from the dev console).
+
 ## Standing constraints
 
 Prompt text, model, search budget, payload contents, selection logic and the
