@@ -146,7 +146,10 @@ export default async function ({ t, url, browser }) {
   const geom = await page.$$eval('#searchResults .leg', legs => Object.fromEntries(legs.map(leg => {
     const mark = leg.querySelector('.tmark');
     const info = leg.querySelector('.info');
-    const right = leg.querySelector('.stat-right');
+    // The numbers themselves, not their wrapper: .stat-right is display:contents
+    // in the row grid and so generates no box to measure. Measuring the pp edge
+    // is what this assertion always meant, and it cannot be fooled by a wrapper.
+    const right = leg.querySelector('.edgebig') || leg.querySelector('.stat-right');
     if (!mark) return null;
     const m = mark.getBoundingClientRect(), i = info.getBoundingClientRect(), r = right.getBoundingClientRect();
     return [leg.querySelector('.name').textContent.trim(),
