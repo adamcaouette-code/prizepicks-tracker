@@ -12,9 +12,12 @@ import { LEAGUES, STATS, jobRoutes } from '../fixtures/api.mjs';
 const HEAD = (id) => `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_auto:best,f_auto/v1/people/${id}/headshot/67/current`;
 const LOGO = (id) => `https://www.mlbstatic.com/team-logos/team-cap-on-dark/${id}.svg`;
 
+// Every row here is a POSITIVE-edge standard (needs 59.5%): a leg below its
+// own break-even carries no buttons at all, and this suite is about the MLB
+// enrichment behind those buttons, not about the edge guardrail.
 const RESULT = { board: [
   { player: 'Elly De La Cruz', team: 'CIN', matchup: 'CIN vs PIT', stat: 'Hits', line: 0.5, pick: 'over',
-    verdict: 'play', prob: 0.68, oddsType: 'goblin', projectionId: 'PP-A',
+    verdict: 'play', prob: 0.68, oddsType: 'standard', projectionId: 'PP-A',
     headshot: HEAD(5001), teamLogo: LOGO(113), teamLogoFallback: 'https://a.espncdn.com/i/teamlogos/mlb/500/cin.png',
     mlbId: 5001, key_risk: 'k', reasoning: 'r' },
   { player: 'Hurt Guy', team: 'CIN', matchup: 'CIN vs PIT', stat: 'Hits', line: 1.5, pick: 'over',

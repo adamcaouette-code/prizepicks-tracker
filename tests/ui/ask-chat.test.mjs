@@ -19,14 +19,18 @@ import { LEAGUES, STATS, jobRoutes } from '../fixtures/api.mjs';
 
 const TONIGHT_ET = '2026-08-14T19:30:00.000-04:00';
 
+// Both rows are POSITIVE-edge standards (needs 59.5%) on purpose: a leg below
+// its own break-even carries no buttons at all, so it has no why panel and no
+// ask thread to drive. That behaviour is board-results.test.mjs's to pin; this
+// suite is about the chat itself.
 const RESULT = { board: [
   { player: 'Elly De La Cruz', team: 'CIN', matchup: 'CIN vs PIT', stat: 'Hits', line: 0.5, pick: 'over',
-    verdict: 'play', prob: 0.68, oddsType: 'goblin', image: null, start: TONIGHT_ET,
+    verdict: 'play', prob: 0.68, oddsType: 'standard', image: null, start: TONIGHT_ET,
     key_risk: 'Facing a lefty.', reasoning: 'Cleared this line in 4 of the last 5.',
     recent5: [1, 0, 2, 1, 1], recentAvg: 1.0,
     oppSP: { name: 'Paul Skenes', throws: 'R', era: 2.14, whip: 0.95, k: 189 }, parkIndex: 104 },
   { player: 'Corbin Carroll', team: 'ARI', matchup: 'ARI vs SD', stat: 'Total Bases', line: 1.5, pick: 'over',
-    verdict: 'lean', prob: 0.58, oddsType: 'standard', image: null, start: TONIGHT_ET },
+    verdict: 'lean', prob: 0.64, oddsType: 'standard', image: null, start: TONIGHT_ET },
 ], teamRecords: {}, winProbs: {}, params: { league: 'mlb', legs: 3, tiers: ['goblin', 'standard'] } };
 
 async function renderBoard(browser, url, askRoute) {
@@ -98,7 +102,7 @@ export default async function ({ t, url, browser }) {
 
   t.eq('exactly one call went to /api/ask', asked.length, 1);
   t.eq('the right player’s context was sent', asked[0].pick.player, 'Elly De La Cruz');
-  t.eq('...with the tier', asked[0].pick.oddsType, 'goblin');
+  t.eq('...with the tier', asked[0].pick.oddsType, 'standard');
   t.eq('...and the recent5 the card carries', asked[0].pick.recent5, [1, 0, 2, 1, 1]);
   t.eq('the first turn carries just the one question', asked[0].messages.length, 1);
   t.eq('...role user', asked[0].messages[0].role, 'user');
