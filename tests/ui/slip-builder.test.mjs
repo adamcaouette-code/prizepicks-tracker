@@ -15,13 +15,16 @@ const mk = (player, team, line, prob, oddsType, id) => ({
   start: '2026-08-14T19:30:00.000-04:00', key_risk: 'k', reasoning: 'r',
 });
 const RESULT = { board: [
-  mk('Alpha One', 'CIN', 0.5, 0.68, 'goblin', 'PP-A'),
+  // Positive edge on every fixture row here on purpose — this suite is about
+  // the tray/save/price flow, not the edge guardrail (see board-results.test.mjs
+  // for that), and a negative-edge row has no add button to click at all.
+  mk('Alpha One', 'CIN', 0.5, 0.82, 'goblin', 'PP-A'),
   mk('Beta Two', 'PIT', 1.5, 0.62, 'standard', 'PP-B'),
   mk('Gamma Three', 'CHC', 0.5, 0.60, 'standard', 'PP-C'),
   // A SECOND line of Alpha One's same prop. Legal to browse, never legal to add
   // alongside the first — PrizePicks takes a prop once, and the two lines are
   // nested rather than independent.
-  mk('Alpha One', 'CIN', 1.5, 0.55, 'goblin', 'PP-D'),
+  mk('Alpha One', 'CIN', 1.5, 0.85, 'goblin', 'PP-D'),
 ], params: { league: 'mlb' } };
 
 // bet-finder-size returns payouts in DOLLARS, scaled by the stake it was given —
