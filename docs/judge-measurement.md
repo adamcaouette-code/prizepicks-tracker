@@ -1791,6 +1791,87 @@ present on the logged pick-log row), `tests/ui/ledger.test.mjs` (the ledger's
 ask thread still works, now reached through the shared why button instead of
 its own).
 
+## Distinct probability values — the grid hypothesis, checked and refuted (2026-09-13)
+
+Goblin AUC measures at 0.512 — near-chance, on real volume (see "Why AUC and
+not lift," 402 has-form goblins alone). One mechanical explanation that would
+require no reasoning failure at all: if the judge only ever emits a handful of
+distinct probability values, most of the within-tier ordering is ties broken
+by nothing, and a flat AUC follows automatically regardless of how sound the
+underlying judgment is. Nothing on this page could check that before now — the
+`behaviour` block already tracked distinct values, but only per prompt/model,
+and discarded the raw count and the Map itself after computing
+`distinctValues`/`effectiveValues`.
+
+**Measured on the current Vilifiant-scoped log (n=3,971 logged picks with a
+finite `prob`, graded or not):**
+
+| scope | n | distinct | effective (2^H) |
+|---|---|---|---|
+| overall | 3,971 | 86 | 49.9 |
+| goblin | 2,089 | 72 | 28.9 |
+| standard | 969 | 47 | 24.7 |
+| demon | 913 | 45 | 19.4 |
+
+Effective count is perplexity (2^H over the value frequencies) — the same
+formula `behaviour`'s `effectiveValues` already uses, factored out and applied
+per tier here. It corrects for the fact a raw distinct count falls
+mechanically as `n` shrinks; the raw counts above are of limited use on their
+own for exactly that reason, and are shown beside the corrected ones rather
+than instead of them.
+
+**The grid hypothesis is refuted.** Goblin alone carries ~29 effectively
+distinct values on 2,089 picks — a wide, genuinely used range, not a
+three-or-four-value lookup table. Every league with real volume shows the same
+shape: mlb (n=3,003) 49.7 effective, tennis (478) 44.1, wnba (105) 35.8, soccer
+(274) 32.1, cfb (42) 23.1, nfl (65) 17.5. A judge confined to a small grid
+would show effective counts in the single digits regardless of volume; none
+does. **The near-chance goblin AUC needs a different explanation than "not
+enough values to rank with" — the judge has the resolution and still isn't
+using it to separate outcomes within the tier.**
+
+**The ten most common values, and their combined share:**
+
+| value | n | share |
+|---|---|---|
+| 0.68 | 326 | 8.2% |
+| 0.72 | 199 | 5.0% |
+| 0.48 | 180 | 4.5% |
+| 0.70 | 164 | 4.1% |
+| 0.62 | 156 | 3.9% |
+| 0.18 | 142 | 3.6% |
+| 0.58 | 131 | 3.3% |
+| 0.20 | 115 | 2.9% |
+| 0.50 | 112 | 2.8% |
+| 0.52 | 102 | 2.6% |
+
+Together these ten (out of 86 distinct, out of a 101-value possible range)
+cover **41.0%** of every logged pick — real concentration, but not a grid: the
+other 59% is spread across 76 other values. The leaders cluster near round or
+threshold-adjacent numbers (0.68 just above the 0.62 "play" cutoff, 0.50/0.52
+straddling a coin flip, 0.18/0.20 a common low-confidence pair) — consistent
+with the round-number anchoring `behaviour`'s `roundShare` already measures,
+not with a fixed small vocabulary.
+
+**Scope note.** These figures are the full current-scope tier populations
+(has-form and no-form pooled), not restricted to the exact 402-pick has-form
+goblin sample the 0.512 AUC was measured on — the two numbers describe
+different (overlapping) sets and should not be read as two measurements of
+the identical sample. The grid question is a property of the judge's output
+resolution in general, which is what this section answers; re-running it
+scoped to `clearedOf`-derived has-form buckets (see "Recent-form sample size"
+above) would sharpen it further if the mechanism, rather than just the
+outcome, is ever worth isolating.
+
+**Report only.** No change to the prompt, the model, thresholds, selection or
+sizing. The pre-registered demon-AUC check above is unaffected and stays open.
+
+Regression cover: `tests/unit/calibration.test.mjs` (a hand-computable fixture
+with uneven per-tier value splits pins the exact `distinctValues`/
+`effectiveValues` numbers, the top-10 list and its share, per-league behaviour
+including an all-pending league that isn't silently dropped since this runs
+over every logged pick rather than only graded ones, and the HTML rendering).
+
 ## Standing constraints
 
 Prompt text, model, search budget, payload contents, selection logic and the
