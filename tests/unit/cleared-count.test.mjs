@@ -76,6 +76,20 @@ export default async function ({ t }) {
   t.eq('the model’s original (wrong) claim is preserved separately, not lost',
     row?.judgeClearedClaim, 5);
 
+  // ---- the why-panel fields the pick log used to drop -----------------------
+  // The audited "why" panel reads these straight off the in-memory run object.
+  // Until now the pick log never carried them, so the same pick reached via
+  // /api/top-picks (Today's Best Picks, the ledger) had no audit strip, no
+  // sparkline, no key risk, no provenance — display only, nothing downstream
+  // reads any of these.
+  t.eq('key_risk is logged', row?.key_risk, 'k');
+  t.eq('reasoning is logged', row?.reasoning, '5/5 recent cleared, recentAvg 4.6. Elite recent form.');
+  t.eq('recent5 is logged', row?.recent5, [4, 4, 5, 5, 5]);
+  t.eq('lineMatched is logged', row?.lineMatched, true);
+  t.eq('tierKnown is logged', row?.tierKnown, true);
+  t.eq('maxSearches is logged', typeof row?.maxSearches, 'number');
+  t.ok('judgedAt is logged as a real timestamp', !!row?.judgedAt && !isNaN(Date.parse(row.judgedAt)), row?.judgedAt);
+
   // ---- when recent5 is absent, both fields must stay null, not guess ------
   reset();
   const mock2 = mockFetch([

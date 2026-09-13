@@ -1742,6 +1742,55 @@ both overall and by league), `tests/unit/judge-version-run.test.mjs` (a real
 run with no recorded history logs `clearedOf: null` beside the already-null
 `cleared`, not a fabricated zero).
 
+## The audited "why" panel only existed where a pick was least likely to be acted on (2026-09-13)
+
+The board (`#searchResults`) has carried a full audit strip, first-pass/deep-dive
+comparison, key_risk, provenance and an ask thread on every row for a while.
+Today's Best Picks (`#ledgerRec`) and the full ledger list (`#ledgerBody`) had
+neither — just a "+ slip" button, and the ledger list also had a standalone
+"ask" button with none of the rest beside it. Those two surfaces are exactly the
+ones ranked or filtered for the user, i.e. the picks most likely to be tapped
+straight into a slip without a second look, and they were the two with no way to
+check the judge's own work first.
+
+**What changed.** `pickWhyHtml(p, out, key)` (public/index.html) is now the one
+place that builds the why button, its panel (audit strip, first-pass/deep-dive,
+key_risk, provenance, ask thread — `whyPanelHtml`, unchanged) and the recent5
+sparkline. The board, `renderLedgerRec` and `renderLedger` all call it instead
+of building any of this themselves; the ledger list's old standalone ask
+button/panel is gone, subsumed by the shared "why" panel exactly as it already
+worked on the board. `wireFolds`'s row selector now matches `.recline`
+(Today's Best Picks' row wrapper) alongside `.leg`, and `#ledgerRec` gained the
+same ask-thread click/keydown wiring `#ledgerBody` already had.
+
+**The panel needed fields the pick log never carried.** `whyPanelHtml` and
+`sparklineHtml` read `key_risk`, `reasoning`, `recent5`, `histGames`,
+`lineMatched`, `tierKnown`, `maxSearches` and `judgedAt` straight off the
+in-memory run object on the board — none of them were in the persisted
+pick-log row, so the identical pick reached via `/api/top-picks` (which is a
+pure pass-through, `netlify/functions/top-picks.js`) had nothing for the panel
+to show: no audit strip, no sparkline, no key risk, no provenance. These eight
+fields are now logged in `bet-finder-background.js`'s `logged` row, read off
+values the judge pipeline already computes for every pick (`p.key_risk`,
+`p.reasoning`, `p.recent5`, `p.histGames`, `p.lineMatched`, `p.tierKnown`,
+`p.maxSearches`, `p.judgedAt`) — nothing new is computed, only persisted.
+Rows logged before this change read `null` for all eight, which the panel
+already renders as "not reported by this run" (`na`, never a guessed pass).
+
+**Display only.** `verdictFor`, `edgeVerdictFor`, thresholds, `ODDS_PRIOR`,
+selection, sizing and every prompt are untouched — this adds fields to what
+gets logged and rewires which function builds a row's HTML, nothing that
+selection or scoring reads.
+
+Regression cover: `tests/ui/why-panel-unified.test.mjs` (a single pick with a
+deliberate cleared-count/recent5 mismatch renders on the board, the ledger
+list and Today's Best Picks at once; all three expose a why button; the audit
+strip opened from each is byte-identical; all three flag the mismatch, not
+just the board), `tests/unit/cleared-count.test.mjs` (the eight new fields are
+present on the logged pick-log row), `tests/ui/ledger.test.mjs` (the ledger's
+ask thread still works, now reached through the shared why button instead of
+its own).
+
 ## Standing constraints
 
 Prompt text, model, search budget, payload contents, selection logic and the
