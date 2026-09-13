@@ -976,13 +976,26 @@ const fmt = (x) => (x == null ? '—' : x.toLocaleString());
 // guardrail table this replaces greyed any bucket under 50 rows for the same
 // reason a thin cell in the tier-lift table is greyed rather than coloured:
 // a verdict on n=12 is a claim the sample can't support.
+//
+// THE ONE PLACE a bucket's colour is decided — shared by the meter's fill and
+// the gap number beside it, so the two can never disagree. Symmetric around
+// break-even on purpose: significance, not sign, decides close vs. decided. A
+// tier 0.1σ ABOVE its bar is exactly as inconclusive as one 0.1σ below it, and
+// coloring only the negative side "close" would show two equally noisy
+// results as a confirmed win and an open question.
+function meterClass(gap, sigma, dim) {
+  if (dim) return 'dim';
+  if (gap == null) return '';
+  if (sigma != null && Math.abs(sigma) < 2) return 'close';
+  return gap >= 0 ? 'over' : 'short';
+}
+
 function edgeMeter(ratePct, needPct, sigma, dim = false) {
   if (needPct == null) {
     return `<div class="emeter"><div class="etrack"><i class="efill" style="width:${ratePct ?? 0}%"></i></div>
       <div class="enums"><span class="pct unpriced">${ratePct == null ? '—' : ratePct.toFixed(1) + '%'}</span><span class="needs">price unknown</span></div></div>`;
   }
-  const inconclusive = sigma != null && Math.abs(sigma) < 2;
-  const cls = dim ? 'dim' : ratePct >= needPct ? 'over' : (inconclusive ? 'close' : 'short');
+  const cls = meterClass(ratePct - needPct, sigma, dim);
   return `<div class="emeter"><div class="etrack">` +
     `<i class="etick" style="left:${needPct.toFixed(1)}%"></i>` +
     `<i class="efill ${cls}" style="width:${Math.max(0, Math.min(100, ratePct ?? 0))}%"></i></div>` +
@@ -995,8 +1008,7 @@ function edgeMeter(ratePct, needPct, sigma, dim = false) {
 function meterRow({ icon = '', label, sub = '', n, ratePct, needPct, sigma, note = '', dim = false }) {
   if (!n) return `<div class="mrow"><div class="mrow-top"><div class="mrow-label">${icon}${esc(label)}</div><span class="mut">none yet</span></div></div>`;
   const gap = needPct == null ? null : ratePct - needPct;
-  const inconclusive = gap != null && sigma != null && Math.abs(sigma) < 2;
-  const gapCls = gap == null ? '' : dim ? 'dim' : gap >= 0 ? 'over' : inconclusive ? 'close' : 'short';
+  const gapCls = meterClass(gap, sigma, dim);
   return `<div class="mrow">
     <div class="mrow-top">
       <div class="mrow-label">${icon}<span>${esc(label)}</span>${sub ? ` <span class="mut">${sub}</span>` : ''}</div>
@@ -1195,12 +1207,21 @@ function renderHTML(a) {
   // since all three ask the same question a tier meter asks: did this group of
   // picks clear its own bar? scoreBucket() already computes {rate, needed,
   // sigma} for every one of these — the meter just draws what was already there.
-  const bucketMeter = (label, v, note = '') => meterRow({
-    label, n: v?.n, ratePct: v?.rate == null ? null : v.rate * 100,
-    needPct: v?.needed == null ? null : v.needed * 100, sigma: v?.sigma,
-    dim: (v?.n ?? 0) < 50,
-    note: v?.n ? `${note}${note ? ' — ' : ''}${v.sigma == null ? '' : `${v.sigma.toFixed(1)}σ from break-even`}${v.ev == null ? '' : `, 3-leg slip EV ${v.ev >= 0 ? '+' : ''}${(v.ev * 100).toFixed(0)}%`}` : note,
-  });
+  const bucketMeter = (label, v, note = '') => {
+    // Built as parts and joined once, rather than string-concatenated —
+    // concatenating `${note}${note ? ' — ' : ''}${sigmaText}${evText}` left a
+    // dangling " — " on the unpriced bucket, whose sigma/EV are always null
+    // (there is no break-even to measure either against).
+    const detail = [];
+    if (v?.n && v.sigma != null) detail.push(`${v.sigma.toFixed(1)}σ from break-even`);
+    if (v?.n && v.ev != null) detail.push(`3-leg slip EV ${v.ev >= 0 ? '+' : ''}${(v.ev * 100).toFixed(0)}%`);
+    return meterRow({
+      label, n: v?.n, ratePct: v?.rate == null ? null : v.rate * 100,
+      needPct: v?.needed == null ? null : v.needed * 100, sigma: v?.sigma,
+      dim: (v?.n ?? 0) < 50,
+      note: [note, detail.join(', ')].filter(Boolean).join(' — '),
+    });
+  };
   const g = a.guardrail || {};
   const guardMeters = [
     bucketMeter('Kept — edge ≥ 0', g.kept),
@@ -1208,8 +1229,9 @@ function renderHTML(a) {
     bucketMeter('Unpriced side', g.unpriced, 'payout unknown'),
   ].join('');
   const edgeVerdictOrder = ['play', 'lean', 'pass', 'untagged'];
-  const edgeVerdictMeters = edgeVerdictOrder.filter((k) => a.byEdgeVerdict?.[k]?.n).length
-    ? edgeVerdictOrder.filter((k) => a.byEdgeVerdict?.[k]?.n)
+  const edgeVerdictPresent = edgeVerdictOrder.filter((k) => a.byEdgeVerdict?.[k]?.n);
+  const edgeVerdictMeters = edgeVerdictPresent.length
+    ? edgeVerdictPresent
       .map((k) => bucketMeter(k, a.byEdgeVerdict[k], k === 'untagged' ? 'logged before v4.34.0' : '')).join('')
     : '<div class="mut">no rows carry an edge verdict yet</div>';
   const dd = a.byDeepDive || {};
@@ -1283,16 +1305,29 @@ function renderHTML(a) {
       }`;
 
   // ---- 2. Does it make money? ----------------------------------------------
-  const tierOrder = ['goblin', 'standard', 'demon'];
-  const tierMoney = tierOrder.filter((t) => a.byTier?.[t]?.n).map((t) => {
+  // Only these three tiers have a published payout, so only these three can
+  // ever be said to "clear" or "fall short" of one — a tier with no known
+  // break-even (an unrecognized oddsType, bucketed as 'unknown' elsewhere on
+  // this page) still gets its own meter below, just an unpriced one.
+  const knownTiers = ['goblin', 'standard', 'demon'];
+  // Below this a tier's own gap is a claim its sample can't support — the
+  // same 50-row floor bucketMeter uses for the guardrail/edge-verdict/deep-
+  // dive buckets, so a thin tier neither draws a decisive colour NOR gets to
+  // swing the headline verdict below.
+  const TIER_DIM_MIN_N = 50;
+  const tierMoney = knownTiers.filter((t) => a.byTier?.[t]?.n).map((t) => {
     const b = a.byTier[t]; const rate = b.hits / b.n; const need = BREAK_EVEN[t];
-    return { tier: t, n: b.n, ratePct: rate * 100, needPct: need * 100, gapPts: (rate - need) * 100, sigma: tierSigma(rate, need, b.n) };
+    return {
+      tier: t, n: b.n, ratePct: rate * 100, needPct: need * 100, gapPts: (rate - need) * 100,
+      sigma: tierSigma(rate, need, b.n), dim: b.n < TIER_DIM_MIN_N,
+    };
   });
-  const anyTierClears = tierMoney.some((t) => t.gapPts >= 0);
-  const allTiersClear = tierMoney.length > 0 && tierMoney.every((t) => t.gapPts >= 0);
-  const worstTier = tierMoney.length ? tierMoney.reduce((x, y) => (x.gapPts < y.gapPts ? x : y)) : null;
-  const moneyAnswer = !tierMoney.length ? 'no data yet' : allTiersClear ? 'yes' : anyTierClears ? 'partially' : 'no';
-  const moneySub = !tierMoney.length
+  const decisiveTiers = tierMoney.filter((t) => !t.dim);
+  const anyTierClears = decisiveTiers.some((t) => t.gapPts >= 0);
+  const allTiersClear = decisiveTiers.length > 0 && decisiveTiers.every((t) => t.gapPts >= 0);
+  const worstTier = decisiveTiers.length ? decisiveTiers.reduce((x, y) => (x.gapPts < y.gapPts ? x : y)) : null;
+  const moneyAnswer = !decisiveTiers.length ? 'no data yet' : allTiersClear ? 'yes' : anyTierClears ? 'partially' : 'no';
+  const moneySub = !decisiveTiers.length
     ? 'Not enough graded picks in any tier yet.'
     : allTiersClear
       ? 'Every priced tier clears its own break-even.'
@@ -1300,11 +1335,27 @@ function renderHTML(a) {
         ? `Some tiers clear their break-even, some don't.${worstTier ? ` The widest gap is ${worstTier.tier}, ${Math.abs(worstTier.gapPts).toFixed(1)} points under.` : ''}`
         : `Every tier lands short of what its payout needs.${worstTier ? ` The widest gap is ${worstTier.tier}, ${Math.abs(worstTier.gapPts).toFixed(1)} points under.` : ''}`;
 
-  const tierMeters = tierOrder.map((t) => {
+  // Any tier present in the log at all gets a row — including one with no
+  // published break-even — so a pick logged under an unrecognized oddsType
+  // isn't simply invisible the way it would be if this only walked knownTiers.
+  const extraTiers = Object.keys(a.byTier || {}).filter((t) => !knownTiers.includes(t) && a.byTier[t]?.n);
+  const tierMeters = [...knownTiers, ...extraTiers].map((t) => {
     const row = tierMoney.find((x) => x.tier === t);
+    if (row) {
+      return meterRow({
+        icon: TIER_ICON[t], label: t[0].toUpperCase() + t.slice(1), sub: `n=${fmt(row.n)}`,
+        n: row.n, ratePct: row.ratePct, needPct: row.needPct, sigma: row.sigma, dim: row.dim,
+      });
+    }
+    // A known tier with no graded picks at all falls through to here too
+    // (not just an unpriced extra tier) — b is undefined, n is undefined,
+    // and meterRow's own `!n` guard renders "none yet" rather than assuming
+    // a bucket exists to read a rate off of.
+    const b = a.byTier?.[t];
+    const known = knownTiers.includes(t);
     return meterRow({
-      icon: TIER_ICON[t], label: t[0].toUpperCase() + t.slice(1), sub: `n=${fmt(row?.n)}`,
-      n: row?.n, ratePct: row?.ratePct, needPct: row?.needPct, sigma: row?.sigma,
+      icon: known ? TIER_ICON[t] : '', label: known ? t[0].toUpperCase() + t.slice(1) : t,
+      sub: b ? `n=${fmt(b.n)}` : '', n: b?.n, ratePct: b ? (b.hits / b.n) * 100 : null, needPct: null,
     });
   }).join('');
 

@@ -96,4 +96,99 @@ export default async function ({ t }) {
   // Brier number — .emeter is reserved for rate-vs-break-even (tier/guardrail).
   t.ok('the tier-only baseline card is worded, not meter-bar-shaped, in the verdict',
     /tier-only baseline/.test(verdictBlock), '');
+
+  // ---- a thin tier is dimmed, and can't swing the headline verdict --------
+  // Found in review: the tier meters and the "Does it make money?" answer had
+  // no small-sample floor at all, unlike every other bucket on the page (the
+  // guardrail/edge-verdict/deep-dive meters all dim below n=50). A tier with a
+  // handful of picks could otherwise flip the headline on noise.
+  reset();
+  const thinRows = [
+    // demon: only 6 picks, hitting well above its own break-even (0.437) —
+    // exactly the kind of lucky-looking thin sample that must not decide
+    // the page's headline by itself.
+    ...Array.from({ length: 6 }, (_, i) => mk({
+      projectionId: `td${i}`, player: `TD${i}`, stat: 'Hits', line: 0.5, oddsType: 'demon',
+      prob: 0.80, hit: i < 5, result: i < 5 ? 1 : 0,
+    })),
+    // goblin: a real, decisive sample that clearly falls short.
+    ...Array.from({ length: 60 }, (_, i) => mk({
+      projectionId: `tg${i}`, player: `TG${i}`, stat: 'Hits', line: 0.5, oddsType: 'goblin',
+      prob: 0.70, hit: i < 42, result: i < 42 ? 1 : 0,
+    })),
+  ];
+  seed('pick-log', DAY, thinRows);
+  const calThin = await loadFn('calibration.js');
+  const htmlThin = (await calThin.handler({ queryStringParameters: {} })).body;
+  const demonBlock = htmlThin.slice(htmlThin.indexOf('<span>Demon</span>'), htmlThin.indexOf('<span>Demon</span>') + 700);
+  t.ok('a thin tier (n=6) draws its meter dimmed, not a confident green',
+    /efill dim/.test(demonBlock), demonBlock);
+  t.ok('...and the mrow-gap number beside it is dimmed too, not colour-coded',
+    /mrow-gap dim/.test(demonBlock), demonBlock);
+  const moneySection = htmlThin.slice(htmlThin.indexOf('Does it make money?'), htmlThin.indexOf('Does it make money?') + 400);
+  t.ok('the headline verdict is decided by the real (n=60) tier, not the thin (n=6) one',
+    /class="qanswer bad">no</.test(moneySection), moneySection);
+
+  // ---- the over/close/short split is symmetric around break-even ----------
+  // Found in review: any positive gap was unconditionally "over" (green) with
+  // no significance check, while only a negative gap could be downgraded to
+  // "close" (amber). A tier landing a fraction of a point above its own bar,
+  // on too few picks to tell from noise, must read the same as one a fraction
+  // below it — not a confirmed win.
+  reset();
+  const closeRows = Array.from({ length: 20 }, (_, i) => mk({
+    projectionId: `cg${i}`, player: `CG${i}`, stat: 'Hits', line: 0.5, oddsType: 'goblin',
+    // 16 of 20 hit = 80%, just above the 79.4% break-even — a lead far too
+    // small on n=20 to be anything but noise (this whole bucket is also
+    // dimmed by the n<50 floor above, so check the classification logic
+    // directly against a bucket sized to be "decisive" by n but not by sigma).
+    prob: 0.70, hit: i < 16, result: i < 16 ? 1 : 0,
+  }));
+  // A second goblin bucket, sized past the dim floor, whose rate sits barely
+  // above break-even (0.795 vs 0.794) — decisive by n, not by sigma.
+  const barelyOver = Array.from({ length: 60 }, (_, i) => mk({
+    projectionId: `bg${i}`, player: `BG${i}`, stat: 'Hits', line: 0.5, oddsType: 'goblin',
+    prob: 0.70, hit: i < 48, result: i < 48 ? 1 : 0, // 48/60 = 80.0%, ~0.15σ above 79.4%
+  }));
+  seed('pick-log', DAY, barelyOver);
+  const calBarely = await loadFn('calibration.js');
+  const htmlBarely = (await calBarely.handler({ queryStringParameters: {} })).body;
+  const barelyBlock = htmlBarely.slice(htmlBarely.indexOf('<span>Goblin</span>'), htmlBarely.indexOf('<span>Goblin</span>') + 700);
+  t.ok('a gap barely above break-even, not significant, reads as inconclusive (amber) — not a confirmed clear',
+    /efill close/.test(barelyBlock) && !/efill over/.test(barelyBlock), barelyBlock);
+
+  // ---- the unpriced guardrail note never leaves a dangling separator ------
+  // Found in review: the unpriced bucket's note always concatenated a
+  // trailing " — " because its sigma/EV are always null (no break-even
+  // exists for a side with no known payout).
+  reset();
+  const unpricedRows = Array.from({ length: 10 }, (_, i) => mk({
+    projectionId: `up${i}`, player: `UP${i}`, stat: 'Hits', line: 0.5, oddsType: 'demon',
+    side: 'under', prob: 0.30, verdict: 'lean', hit: i < 3, result: i < 3 ? 1 : 0,
+  }));
+  seed('pick-log', DAY, unpricedRows);
+  const calUnpriced = await loadFn('calibration.js');
+  const htmlUnpriced = (await calUnpriced.handler({ queryStringParameters: {} })).body;
+  t.ok('the unpriced bucket note reads plainly, with no dangling " — "',
+    /payout unknown<\/div>/.test(htmlUnpriced) && !/payout unknown — </.test(htmlUnpriced), '');
+
+  // ---- an unrecognized oddsType still gets a row, not silent disappearance
+  // Found in review: tierMeters only ever walked the three known tiers, so a
+  // pick logged under an unmapped oddsType (bucketed as its own key in
+  // a.byTier, same as everywhere else on this page) had no visible row at all
+  // in the redesigned "By tier" section.
+  reset();
+  const weirdRows = Array.from({ length: 12 }, (_, i) => mk({
+    projectionId: `wx${i}`, player: `WX${i}`, stat: 'Hits', line: 0.5, oddsType: 'exotic',
+    prob: 0.55, hit: i < 6, result: i < 6 ? 1 : 0,
+  }));
+  seed('pick-log', DAY, weirdRows);
+  const calWeird = await loadFn('calibration.js');
+  const jsonWeird = JSON.parse((await calWeird.handler({ queryStringParameters: { format: 'json' } })).body);
+  t.eq('the unrecognized tier is really there in byTier, same as any other', jsonWeird.byTier.exotic?.n, 12);
+  const htmlWeird = (await calWeird.handler({ queryStringParameters: {} })).body;
+  t.ok('...and it renders its own row in "By tier", not just the three known tiers',
+    /<span>exotic<\/span>/.test(htmlWeird), htmlWeird.slice(htmlWeird.indexOf('By tier'), htmlWeird.indexOf('By tier') + 50));
+  t.ok('...priced as "unknown" rather than a fabricated break-even',
+    /class="needs">price unknown<\/span>/.test(htmlWeird.slice(htmlWeird.indexOf('<span>exotic</span>'))), '');
 }
