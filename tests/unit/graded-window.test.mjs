@@ -16,9 +16,13 @@
 import { loadFn } from '../helpers/fn.mjs';
 import { reset, seed } from '../helpers/blobs.mjs';
 
+// judgeModel defaults to the standing engine (Vilifiant) so these rows land in
+// calibration's default (post-v4.52.0) scope rather than the collapsed
+// "legacy engines" bucket — this suite is about the graded-date window, not
+// about which model produced the pick.
 const mk = (o) => ({
   league: 'mlb', source: 'board', player: 'P', stat: 'Hits', line: 0.5,
-  prob: 0.7, verdict: 'play', oddsType: 'standard',
+  prob: 0.7, verdict: 'play', oddsType: 'standard', judgeModel: 'claude-haiku-4-5-20251001',
   result: 1, hit: true, ...o,
 });
 
