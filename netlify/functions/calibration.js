@@ -440,6 +440,17 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     // to anchor on the tier, count the last five, use the full range and return
     // strict JSON. Those are all checkable against zero graded picks, on the day.
     behaviour: {},
+    // Is the judge producing continuous estimates, or picking from a small grid?
+    // Goblin AUC measures at 0.512 (near-chance) on a tier where the has-form
+    // bucket alone is 402 picks — if the judge only ever emits a handful of
+    // distinct values, most of that ranking is ties broken by nothing, which is
+    // a mechanical explanation for a flat AUC rather than a reasoning one.
+    //
+    // Runs over ALL picks with a finite prob, same population as `behaviour`
+    // and for the same reason: this is a question about what the judge OUTPUTS,
+    // not about how it did, so it does not wait on grading and is computed
+    // before the `!graded.length` early return below.
+    distinctProb: {},
     // HOW CLOSE, not just whether.
     //
     // Grading is binary and must stay that way: PrizePicks pays the same nothing
@@ -570,6 +581,52 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
     delete b.countBoth; delete b.countAgree; delete b.countOver; delete b.countUnder; delete b.countDriftSum;
     for (const t of Object.values(b.byTier)) delete t.sum;
   }
+
+  // --- distinct probability values: a grid, or a continuum? ------------------
+  // Same rounding the `behaviour` block above already uses (prob.toFixed(2)) —
+  // this is that same distinct-value question, just sliced by tier instead of
+  // by prompt/model, and with the actual most-common values named rather than
+  // only counted.
+  const overallDistinct = new Map();
+  const tierDistinct = {};   // tier -> Map(value -> count)
+  const tierN = {};          // tier -> n
+  let distinctN = 0;
+  for (const p of picks) {
+    const prob = Number(p.prob);
+    if (!isFinite(prob)) continue;
+    const v = prob.toFixed(2);
+    distinctN++;
+    overallDistinct.set(v, (overallDistinct.get(v) || 0) + 1);
+    const tier = p.oddsType || 'unknown';
+    const m = (tierDistinct[tier] ||= new Map());
+    m.set(v, (m.get(v) || 0) + 1);
+    tierN[tier] = (tierN[tier] || 0) + 1;
+  }
+  // Perplexity (2^entropy) alongside the raw count for the identical reason the
+  // `behaviour` block above carries both: a raw distinct count falls
+  // mechanically as n shrinks (a tier with 40 picks cannot show more than 40
+  // distinct values no matter how continuous the judge is), so it is not
+  // comparable across tiers or leagues with different volumes on its own.
+  const gridStats = (map, n) => {
+    let H = 0;
+    for (const c of map.values()) { const q = c / n; H -= q * Math.log2(q); }
+    return { n, distinctValues: map.size, effectiveValues: n ? Math.round(2 ** H * 100) / 100 : 0 };
+  };
+  out.distinctProb.overall = gridStats(overallDistinct, distinctN);
+  out.distinctProb.byTier = {};
+  for (const [tier, m] of Object.entries(tierDistinct)) {
+    out.distinctProb.byTier[tier] = gridStats(m, tierN[tier]);
+  }
+  // The ten values the judge reaches for most, and what share of every pick
+  // they account for between them — the direct answer to "is this a grid":
+  // a high share on ten values out of a 101-value possible range (0.00-1.00)
+  // is a grid no matter how large distinctValues nominally reads.
+  out.distinctProb.top10 = [...overallDistinct.entries()]
+    .sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))
+    .slice(0, 10)
+    .map(([value, n]) => ({ value: Number(value), n, share: distinctN ? n / distinctN : null }));
+  out.distinctProb.top10Share = distinctN
+    ? out.distinctProb.top10.reduce((s, r) => s + r.n, 0) / distinctN : null;
 
   if (!graded.length) return out;
 
@@ -1194,6 +1251,23 @@ function renderHTML(a) {
         <span class="mut">n=${v.countChecked}${v.countMeanDrift ? `, ${v.countMeanDrift > 0 ? '+' : ''}${v.countMeanDrift.toFixed(2)}` : ''}</span>` : '<span class="mut">—</span>'}</td></tr>`;
   }).join('') || '<tr><td colspan="7" class="mut">No logged picks yet.</td></tr>';
 
+  // Is the judge producing continuous estimates, or picking from a small grid?
+  // Overall + one row per tier, then the same question again per league (via
+  // the per-league aggregate each already carries its own distinctProb.overall).
+  const distinctTierRows = Object.entries(a.distinctProb?.byTier || {})
+    .sort((x, y) => y[1].n - x[1].n)
+    .map(([tier, v]) => `<tr><td>${esc(tier)}</td><td>${v.n}</td><td>${v.distinctValues}</td><td>${v.effectiveValues}</td></tr>`)
+    .join('') || '<tr><td colspan="4" class="mut">No logged picks yet.</td></tr>';
+  const distinctLeagueRows = Object.entries(a.leagues || {})
+    .filter(([, v]) => v.distinctProb?.overall?.n)
+    .sort((x, y) => y[1].distinctProb.overall.n - x[1].distinctProb.overall.n)
+    .map(([lg, v]) => { const d = v.distinctProb.overall;
+      return `<tr><td>${esc(lg.toUpperCase())}</td><td>${d.n}</td><td>${d.distinctValues}</td><td>${d.effectiveValues}</td></tr>`; })
+    .join('') || '<tr><td colspan="4" class="mut">No logged picks yet.</td></tr>';
+  const distinctTop10Rows = (a.distinctProb?.top10 || [])
+    .map((r) => `<tr><td>${(r.value * 100).toFixed(0)}%</td><td>${r.n}</td><td>${pct(r.share)}</td></tr>`)
+    .join('') || '<tr><td colspan="3" class="mut">No logged picks yet.</td></tr>';
+
   const marginRows = Object.entries(a.margins || {}).sort((x, y) => y[1].n - x[1].n).slice(0, 18).map(([k, v]) => {
     const mCol = v.meanMargin > 0 ? 'var(--grn)' : v.meanMargin < 0 ? 'var(--red)' : 'var(--dim)';
     const nCol = v.nearMissShare >= 0.5 ? 'var(--amb)' : 'var(--dim)';
@@ -1670,6 +1744,26 @@ function renderHTML(a) {
         the supplied count once it's covered, with the mean signed drift beside it — a positive drift is the
         expensive direction, since it inflates the over — and a same-input replay found it unreliable run to run
         even when everything it needed was present (see docs/judge-measurement.md).</div>
+
+      <h3>Distinct probability values — a grid, or a continuum?</h3>
+      <div class="wrap"><table><thead><tr><th>scope</th><th>n</th><th>distinct</th><th>effective (2^H)</th></tr></thead><tbody>
+        <tr><td><b>ALL</b></td><td>${a.distinctProb?.overall?.n ?? 0}</td>
+          <td>${a.distinctProb?.overall?.distinctValues ?? '—'}</td>
+          <td>${a.distinctProb?.overall?.effectiveValues ?? '—'}</td></tr>
+        ${distinctTierRows}
+      </tbody></table></div>
+      <div class="wrap"><table><thead><tr><th>league</th><th>n</th><th>distinct</th><th>effective (2^H)</th></tr></thead><tbody>${distinctLeagueRows}</tbody></table></div>
+      <h4 style="margin:14px 0 6px">Ten most common values</h4>
+      <div class="wrap"><table><thead><tr><th>value</th><th>n</th><th>share of all picks</th></tr></thead><tbody>${distinctTop10Rows}</tbody></table></div>
+      <div class="callout">Goblin AUC measures at 0.512 — near-chance — on a tier with real volume behind it. A judge
+        emitting only a handful of distinct values cannot rank finely no matter how good its reasoning is: most of
+        the ordering within a tier would be ties broken by nothing, which is a mechanical explanation for a flat AUC
+        rather than a reasoning one. <b>Distinct</b> is the raw count of values seen (mechanically capped by n);
+        <b>effective (2^H)</b> corrects for that the same way "values used" above does — a judge splitting evenly
+        across 8 values scores 8 regardless of n, one nominally using 50 but piling most of its mass on three scores
+        near 3. These ten values covering a large share of every pick, out of a 101-value possible range (0.00–1.00),
+        is the direct read on "is this a grid" — together they account for <b>${pct(a.distinctProb?.top10Share)}</b>
+        of every logged pick. Report only; not acted on (see docs/judge-measurement.md).</div>
 
       <h3>Judge version — head to head</h3>
       <div class="wrap"><table><thead><tr><th>judge</th><th>n</th><th>claimed</th><th>actual</th><th>overstated</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th></tr></thead><tbody>${promptRows}</tbody></table></div>

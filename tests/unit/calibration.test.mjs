@@ -111,8 +111,12 @@ export default async function ({ t }) {
   t.eq('an ungraded league is still tracked in the data', typeof res2.leagues?.nfl, 'object');
   t.eq('...with zero graded', res2.leagues.nfl.graded, 0);
   const html2 = (await cal2.handler({ queryStringParameters: {} })).body;
+  // Scoped to the Housekeeping win-rate table specifically — the distinct-
+  // probability-values table (Judge behaviour) legitimately lists NFL too,
+  // since that one runs over every logged pick whether or not it's graded.
+  const leagueTable2 = html2.slice(html2.indexOf('<h3>By league</h3>'), html2.indexOf('<h3>Pending'));
   t.ok('...but is left out of the table until it has a result',
-    !/<td>NFL<\/td>/.test(html2));
+    !/<td>NFL<\/td>/.test(leagueTable2), leagueTable2.slice(0, 200));
 
   // ---- by prop type -------------------------------------------------------
   // The question: is the engine wrong about a KIND of prop, rather than about
@@ -831,5 +835,79 @@ export default async function ({ t }) {
     t.eq('every prob lands in exactly one bucket', bucketTotal, dist.n);
     t.eq('the 0.15-0.20 bucket holds the two picks actually in it', dist.buckets['0.15-0.20'], 2);
     t.eq('the outlier sits alone in its own bucket', dist.buckets['0.50-0.55'], 1);
+  }
+
+  // ---- distinctProb: is the judge producing continuous estimates, or ------
+  // picking from a small grid? Goblin AUC measures at 0.512 — a judge that
+  // only emits a handful of values cannot rank finely, which would be a
+  // mechanical explanation for that number rather than a reasoning one.
+  {
+    reset();
+    const row = (league, tier, prob, i, graded) => ({
+      date: DAY, loggedAt: DAY + 'T18:00:00Z', league, source: 'board',
+      projectionId: `dp-${league}-${i}`, player: `DP${i}`, stat: 'Hits', line: 0.5,
+      prob, verdict: prob >= 0.62 ? 'play' : 'lean', oddsType: tier,
+      judgeModel: 'claude-haiku-4-5-20251001',
+      ...(graded ? { result: 1, hit: true, gradedAt: DAY + 'T23:00:00Z' } : { hit: null, gradedAt: null }),
+    });
+    seed('pick-log', DAY, [
+      // mlb, goblin: 0.70 twice, 0.75 once — 2 distinct values, uneven split.
+      row('mlb', 'goblin', 0.70, 0, true), row('mlb', 'goblin', 0.70, 1, true),
+      row('mlb', 'goblin', 0.75, 2, true),
+      // mlb, standard: the same value twice — 1 distinct value.
+      row('mlb', 'standard', 0.60, 3, true), row('mlb', 'standard', 0.60, 4, true),
+      // mlb, demon: a single pick.
+      row('mlb', 'demon', 0.30, 5, true),
+      // nfl: nothing graded at all — this is the question "what does the judge
+      // emit", not "was it right", so an all-pending league must still count.
+      row('nfl', 'standard', 0.55, 6, false),
+    ]);
+    const calDP = await loadFn('calibration.js');
+    const resDP = JSON.parse((await calDP.handler({ queryStringParameters: { format: 'json' } })).body);
+    const dp = resDP.distinctProb;
+
+    t.eq('overall n counts every logged pick with a prob, across leagues', dp.overall.n, 7);
+    t.eq('5 distinct values across the whole log (0.70, 0.75, 0.60, 0.30, 0.55)',
+      dp.overall.distinctValues, 5);
+    t.ok('effective values is below the raw count once mass is uneven',
+      dp.overall.effectiveValues < dp.overall.distinctValues, JSON.stringify(dp.overall));
+
+    // goblin: 0.70 twice, 0.75 once — H = -(2/3 log2 2/3 + 1/3 log2 1/3) ≈
+    // 0.9183 bits, 2^H ≈ 1.89.
+    t.eq('goblin: 2 distinct values over 3 picks', dp.byTier.goblin, { n: 3, distinctValues: 2, effectiveValues: 1.89 });
+    // standard pools across BOTH leagues (tier is a property of the pick, not
+    // the league) — the 2 graded mlb picks at 0.60 plus the 1 pending nfl pick
+    // at 0.55 is the identical 2/3-1/3 shape as goblin above, so the same 1.89.
+    t.eq('standard: the graded mlb picks plus the pending nfl one, pooled by tier',
+      dp.byTier.standard, { n: 3, distinctValues: 2, effectiveValues: 1.89 });
+    t.eq('demon: a lone pick is trivially fully distinct',
+      dp.byTier.demon, { n: 1, distinctValues: 1, effectiveValues: 1 });
+
+    // ---- the ten most common values, and their share of everything ----------
+    t.eq('every distinct value shows up when there are fewer than ten',
+      dp.top10.length, 5);
+    t.eq('sorted by frequency first — the two repeated values lead',
+      dp.top10.slice(0, 2).map((r) => r.value).sort(), [0.6, 0.7]);
+    t.eq('...with the exact count and share attached',
+      dp.top10.find((r) => r.value === 0.7), { value: 0.7, n: 2, share: 2 / 7 });
+    t.eq('top10Share is 100% here since there are only 5 values total', dp.top10Share, 1);
+
+    // ---- per-league, via the same recursion every other headline figure uses -
+    t.eq('mlb alone carries its own distinctProb', resDP.leagues.mlb.distinctProb.overall.n, 6);
+    t.eq('...and its own distinct-value count (0.70, 0.75, 0.60, 0.30)',
+      resDP.leagues.mlb.distinctProb.overall.distinctValues, 4);
+    t.eq('an all-pending league is not silently dropped — the judge still emitted a value',
+      resDP.leagues.nfl.distinctProb.overall, { n: 1, distinctValues: 1, effectiveValues: 1 });
+    t.eq('...even though it has zero graded picks', resDP.leagues.nfl.graded, 0);
+
+    // ---- rendered on the page -------------------------------------------------
+    const htmlDP = (await calDP.handler({ queryStringParameters: {} })).body;
+    t.ok('the section is on the page',
+      /Distinct probability values — a grid, or a continuum\?/.test(htmlDP));
+    t.ok('the overall row is shown', /<b>ALL<\/b><\/td><td>7<\/td>/.test(htmlDP));
+    t.ok('the 0.512 goblin AUC context is named', /0\.512/.test(htmlDP));
+    t.ok('the ten-most-common table is shown', /Ten most common values/.test(htmlDP));
+    t.ok('report-only is stated, matching the standing pre-registration',
+      /Report only; not acted on/.test(htmlDP));
   }
 }
