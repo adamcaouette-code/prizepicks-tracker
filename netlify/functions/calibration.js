@@ -783,6 +783,44 @@ function aggregate(rawPicks, { perLeague = true } = {}) {
   // reach the judge with recent form.
   out.byFormCoverage.formCoverage = graded.length ? hasForm.length / graded.length : null;
 
+  // ---- sample size WITHIN has-form -----------------------------------------
+  //
+  // `recentAvg != null` is binary: a player with one game of history is pooled
+  // with one who has five. That mix is exactly the has-form bucket the demon
+  // AUC pre-registration is scored on (docs/judge-measurement.md), so a real
+  // effect on the 5-game rows and noise on the 1-2-game rows would average into
+  // one number that describes neither.
+  //
+  // `clearedOf` (bet-finder-background.js) is the size of that same recent5
+  // array — added going forward, so it is null on every row logged before this
+  // change even when recentAvg is set. Those read as 'unknown' rather than
+  // being folded into a real bucket, the same discipline `psyche (untagged)`
+  // and edgeVerdict's 'untagged' already apply to fields that gained a value
+  // partway through the log's history.
+  const gamesBucketOf = (p) => {
+    const g = Number(p.clearedOf);
+    if (!isFinite(g) || g <= 0) return 'unknown';
+    if (g <= 2) return '1-2';
+    if (g <= 4) return '3-4';
+    return '5';
+  };
+  const GAMES_BUCKETS = ['1-2', '3-4', '5', 'unknown'];
+  out.byFormCoverage.byGames = {};
+  for (const g of GAMES_BUCKETS) {
+    out.byFormCoverage.byGames[g] = formBucket(hasForm.filter((p) => gamesBucketOf(p) === g));
+  }
+  // The population question, separate from how each bucket SCORES: how much of
+  // the board actually sits in each one, overall and by league. Every graded
+  // pick lands in exactly one of no-form / unknown / 1-2 / 3-4 / 5.
+  out.byFormCoverage.gamesShare = { overall: {}, byLeague: {} };
+  for (const p of graded) {
+    const b = p.recentAvg == null ? 'no-form' : gamesBucketOf(p);
+    out.byFormCoverage.gamesShare.overall[b] = (out.byFormCoverage.gamesShare.overall[b] || 0) + 1;
+    const lg = (p.league || 'unknown').toLowerCase();
+    const perLg = (out.byFormCoverage.gamesShare.byLeague[lg] ||= {});
+    perLg[b] = (perLg[b] || 0) + 1;
+  }
+
   // THE ONLY DEFENSIBLE COMPARISON HERE.
   //
   // A single bucket's lift cannot carry the claim: at n=402 a goblin lift of
@@ -1181,7 +1219,8 @@ function renderHTML(a) {
     // reads as an inversion.
     const tiers = Object.entries(v.skill || {}).map(([t, k]) =>
       `${t.slice(0, 3)} ${(k.lift >= 0 ? '+' : '') + (k.lift * 100).toFixed(1)}±${(k.liftSE * 100).toFixed(1)}` +
-      `<span class="mut"> auc ${k.auc == null ? '—' : k.auc.toFixed(3) + '±' + k.aucSE.toFixed(3)}</span>`).join('<br>');
+      `<span class="mut"> auc ${k.auc == null ? '—' : k.auc.toFixed(3) + '±' + k.aucSE.toFixed(3)}` +
+      ` · hits ${pct(k.tierRate)} vs needs ${pct(k.breakEven)}</span>`).join('<br>');
     return `<tr><td>${label}</td><td>${v.n}</td>
       <td>${v.brier == null ? '—' : v.brier.toFixed(4)}</td>
       <td>${v.baseline == null ? '—' : v.baseline.toFixed(4)}</td>
@@ -1194,9 +1233,33 @@ function renderHTML(a) {
       formRow(`&nbsp;&nbsp;<span class="mut">${esc(k)} · has form</span>`, v['has-form']),
       formRow(`&nbsp;&nbsp;<span class="mut">${esc(k)} · NO form</span>`, v['no-form']),
     ]).join('');
+  // Has-form, split by the size of the sample behind it. `unknown` is rows
+  // logged before `clearedOf` existed — real has-form rows, just not yet
+  // classifiable by size — and is shown rather than hidden so the table's
+  // total still reconciles with "has form" above it.
+  const GAMES_LABEL = { '1-2': '1-2 games', '3-4': '3-4 games', 5: '5 games', unknown: 'unknown (pre-clearedOf)' };
+  const gamesRows = ['1-2', '3-4', '5', 'unknown']
+    .map((g) => formRow(`&nbsp;&nbsp;<span class="mut">has form · ${GAMES_LABEL[g]}</span>`, fc.byGames?.[g]))
+    .join('');
   const noFormRows = Object.entries(a.noFormBy?.stat || {}).slice(0, 15)
     .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')
     || '<tr><td colspan="2" class="mut">every graded pick had recent form</td></tr>';
+  // The population question: how much of the board sits in each bucket, not
+  // just how each one scores. ALL, then one row per league, each share stated
+  // against that row's own total so leagues can be compared directly.
+  const gamesShareRows = (() => {
+    const gs = a.byFormCoverage?.gamesShare;
+    if (!gs) return '<tr><td colspan="7" class="mut">—</td></tr>';
+    const cols = ['no-form', 'unknown', '1-2', '3-4', '5'];
+    const rows = [['ALL', gs.overall], ...Object.entries(gs.byLeague || {})
+      .sort((x, y) => Object.values(y[1]).reduce((s, v) => s + v, 0) - Object.values(x[1]).reduce((s, v) => s + v, 0))];
+    return rows.map(([lg, counts]) => {
+      const total = Object.values(counts).reduce((s, v) => s + v, 0);
+      if (!total) return '';
+      const cells = cols.map((c) => `<td>${counts[c] ? pct(counts[c] / total) : '<span class="mut">—</span>'}<span class="mut"> n=${counts[c] || 0}</span></td>`).join('');
+      return `<tr><td>${esc(lg === 'ALL' ? lg : lg.toUpperCase())}</td><td>${total}</td>${cells}</tr>`;
+    }).join('') || '<tr><td colspan="7" class="mut">no graded picks</td></tr>';
+  })();
 
   const pendDates = Object.entries(a.pendingByDate || {}).sort((x, y) => (x[0] < y[0] ? 1 : -1));
   const pendRows = pendDates.map(([d, c], i) =>
@@ -1657,6 +1720,24 @@ function renderHTML(a) {
           return `<br><br><b>No-form minus has-form</b>, pooled by inverse variance: all tiers <b>${f(d.lift)}</b>,
           goblin+standard only <b>${f(d.liftGoblinStandard)}</b>. AUC: all tiers <b>${f(d.auc, 1, 3)}</b>,
           goblin+standard <b>${f(d.aucGoblinStandard, 1, 3)}</b>. Where AUC and lift disagree, believe AUC.`; })()}</div>
+
+      <h3>Has form, split by sample size</h3>
+      <div class="wrap"><table><thead><tr><th>rows</th><th>n</th><th>brier ↓</th><th>baseline</th><th>vs baseline</th><th></th><th>within-tier lift</th></tr></thead><tbody>${gamesRows}</tbody></table></div>
+      <div class="callout"><b>recentAvg != null</b> pools a player with one game of history the same as one with
+        five. <b>clearedOf</b> is the size of that same recent-form sample, logged going forward (rows already in
+        the log before this change read as <b>unknown</b> — real has-form rows, just not yet classifiable by size).
+        The demon AUC pre-registration is scored on the has-form bucket as a whole; this is that same bucket broken
+        open by how much form was actually behind it, with the identical AUC / hit-rate-vs-break-even / Brier this
+        page reports everywhere else. <b>Hits X% vs needs Y%</b> beside each tier's AUC is that tier's own raw rate
+        against its break-even, for exactly this slice.</div>
+
+      <h3>Where the thin has-form rows are</h3>
+      <div class="wrap"><table><thead><tr><th>league</th><th>graded</th><th>no form</th><th>unknown</th><th>1-2 games</th><th>3-4 games</th><th>5 games</th></tr></thead><tbody>${gamesShareRows}</tbody></table></div>
+      <div class="callout">Population, not performance: what share of graded picks sits in each bucket, overall and
+        by league. Every league needing its own ~50 graded picks (see "By league" under Housekeeping) applies here
+        per bucket too — a league's 1-2/3-4/5 split is easy to over-read on a handful of picks. <b>unknown</b> is
+        rows logged before <code>clearedOf</code> existed; it will fall as new picks are logged and should not be
+        read as a real "thin" share.</div>
 
       <h3>What arrives without form</h3>
       <div class="wrap"><table><thead><tr><th>league :: stat</th><th>graded picks</th></tr></thead><tbody>${noFormRows}</tbody></table></div>

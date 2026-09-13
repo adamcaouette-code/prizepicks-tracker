@@ -121,6 +121,12 @@ export default async function ({ t }) {
     aph.log.map((p) => p.cleared), [null, null, null]);
   t.eq('...but what the judge actually claimed is preserved separately',
     aph.log.map((p) => p.judgeClearedClaim).sort(), [2, 3, 4]);
+  // clearedOf is the size of that same recent5 sample (see calibration.js's
+  // byFormCoverage.byGames) — null here for the identical reason cleared is:
+  // this fixture's history mock returns no games, so there is no sample to
+  // measure the size of.
+  t.eq('...and clearedOf is null right alongside it, not a fabricated 0',
+    aph.log.map((p) => p.clearedOf), [null, null, null]);
 
   // Verdict is derived from the probability, not read from the model — the mock
   // never sent one.

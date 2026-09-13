@@ -2588,6 +2588,15 @@ export const handler = async (event) => {
         shrunkProb: SHRINKAGE_ENABLED ? shrinkProb(p.prob, p.oddsType) : null,
         wagerTypes: p.wagerTypes ?? null,   // which sides PrizePicks accepted on this line
         recentAvg: p.recentAvg ?? null,
+        // The size of the recent5 sample recentAvg/cleared are built from.
+        // recentAvg != null only says a player had SOME history — it reads a
+        // one-game sample the same as a five-game one, and that gap was
+        // invisible to calibration until now. p.recent5 is the same array
+        // attachSource already copied recentAvg from (see attachSource above),
+        // so this is read off it rather than recomputed — no new source, just
+        // a length nothing downstream was keeping. Measurement only: nothing
+        // reads this field yet except /api/calibration's reporting.
+        clearedOf: Array.isArray(p.recent5) ? p.recent5.length : null,
         mlbId: p.mlbId ?? null,   // lets the MLB fallback grader skip a name lookup
         image: p.image || null, team: p.team || null, matchup: p.matchupLabel || p.matchup || null, // for the top-picks feed UI
         result: null, hit: null, gradedAt: null,   // filled by the grader later

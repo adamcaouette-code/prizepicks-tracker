@@ -1664,6 +1664,84 @@ excluded, and the baseline being refit per scope with two different values),
 model override is posted by default), `tests/unit/dev-model-override.test.mjs`
 (the override is still reachable from the dev console).
 
+## Recent-form sample size was invisible to the measurement (2026-09-13)
+
+`byFormCoverage` has always split on `recentAvg != null` — has form or does
+not. That is binary where the underlying thing is not: a player with one game
+of history sets `recentAvg` exactly the same way one with five does, and the
+has-form bucket has been pooling both. This matters specifically because
+**has-form demon AUC is the only replicated out-of-sample effect in the
+project** (see the pre-registered check above), and it is the number computed
+over that mixed bucket.
+
+The judge's own payload already carries the sample size — `clearedOf`,
+sent alongside `cleared` since the count-supplied-not-requested fix — so this
+was never a payload gap. Nothing downstream weighted by it: the candidate
+ranker reads `recent5` as a bare boolean
+(`Array.isArray(x.recent5) && x.recent5.length ? 1 : 0`,
+bet-finder-background.js), and `byFormCoverage` never asked the question at
+all.
+
+**What changed.** `clearedOf` — the length of the same `recent5` array
+`recentAvg` is built from — is now logged on every pick going forward, read
+straight off `p.recent5` at the point `recentAvg` already is (no new source).
+`byFormCoverage.byGames` splits the has-form bucket into `1-2` / `3-4` / `5`
+by it, and scores each exactly the way `has-form`/`no-form` already are — same
+AUC, same Brier, same hit-rate-vs-break-even (via `skill[tier].tierRate`
+against `skill[tier].breakEven`, both already computed by `computeSkill` and
+now also rendered), same counts. `byFormCoverage.gamesShare` reports the
+population question separately from how each bucket scores: what share of
+graded picks sits in each bucket, overall and by league.
+
+**Rows logged before this change read as `unknown`**, not folded into a real
+bucket and not dropped — the identical discipline `psyche (untagged)` and
+edgeVerdict's `untagged` already apply to a field that gained a value partway
+through the log's history. Concretely, this means **the historical question —
+what share of the existing log is thin, and where — is not answerable from the
+pick log today**, because `clearedOf` was never captured before now and the
+game-count itself is gone, not merely unlabelled. `recentAvg`/`cleared` alone
+cannot reconstruct it: a `cleared` of 1 is identical on paper whether it was 1
+of 1 game or 1 of 5.
+
+**The CFB/NFL clustering hypothesis, checked at the mechanism level instead.**
+Two different code paths build `recent5`, and they behave differently early in
+a season:
+
+- `attachEspnForm` (CFB, NFL, and everything else on ESPN) looks back
+  `windowDays=45` for up to 5 prior game days. In week 1 of a season there are
+  zero prior game days to find *regardless of the window* — the games have not
+  been played yet, not merely fallen outside a 45-day lookback. A CFB or NFL
+  team playing once a week needs a full 5 weeks of season before `clearedOf`
+  can reach 5 for anyone on it; in weeks 1-4 it is capped at the week number.
+- `attachMlbForm` pulls straight from the season game log with no day-window
+  at all, and MLB plays close to daily. A player reaches 5 games within the
+  first week of the season, full stop — the identical "not enough games have
+  happened yet" mechanism exists here too, it is just over in days rather than
+  weeks.
+
+This confirms the DIRECTION of the hypothesis from the code that generates
+`clearedOf`, not from a measured share — CFB and NFL structurally cannot reach
+`clearedOf: 5` for the first month of a season, for reasons that have nothing
+to do with any player's specific form and everything to do with the calendar.
+It does **not** confirm a measured percentage, and should not be quoted as
+one; that answer is exactly what `byGames`/`gamesShare` will be able to give
+once enough post-change volume accumulates.
+
+**Standing prohibition respected.** No minimum-games filter, no change to the
+ranker, no change to selection or sizing, no prompt touched. The pre-registered
+demon-AUC check above is still open, and this is deliberately a new way to
+*read* the has-form bucket it is scored on, not a change to what gets scored or
+how it gets selected — exactly the kind of finding the pre-registration text
+warns against acting on early.
+
+Regression cover: `tests/unit/form-sample-size.test.mjs` (the split sums back
+to the existing has-form total exactly, each bucket is scored the identical
+way has-form/no-form already are, a thin bucket reports no tier skill rather
+than a number the sample can't support, and the population share is correct
+both overall and by league), `tests/unit/judge-version-run.test.mjs` (a real
+run with no recorded history logs `clearedOf: null` beside the already-null
+`cleared`, not a fabricated zero).
+
 ## Standing constraints
 
 Prompt text, model, search budget, payload contents, selection logic and the
