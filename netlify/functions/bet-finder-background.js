@@ -2599,6 +2599,22 @@ export const handler = async (event) => {
         clearedOf: Array.isArray(p.recent5) ? p.recent5.length : null,
         mlbId: p.mlbId ?? null,   // lets the MLB fallback grader skip a name lookup
         image: p.image || null, team: p.team || null, matchup: p.matchupLabel || p.matchup || null, // for the top-picks feed UI
+        // The audited "why" panel used to exist only on the live board, which
+        // reads these straight off the in-memory run object — the pick log
+        // never carried them, so the SAME pick reached via /api/top-picks
+        // (Today's Best Picks, the ledger) had no audit strip, no sparkline,
+        // no key risk, no provenance to show. Adding them here is what makes
+        // the shared why-panel component actually identical everywhere
+        // instead of degrading to "not reported by this run" off the board.
+        // Display only: nothing downstream reads any of these.
+        key_risk: p.key_risk || null,
+        reasoning: p.reasoning || null,
+        recent5: Array.isArray(p.recent5) ? p.recent5 : null,
+        histGames: Array.isArray(p.histGames) ? p.histGames : null,
+        lineMatched: p.lineMatched ?? null,
+        tierKnown: p.tierKnown ?? null,
+        maxSearches: p.maxSearches ?? null,
+        judgedAt: p.judgedAt ?? null,
         result: null, hit: null, gradedAt: null,   // filled by the grader later
       }));
       let existing = [];

@@ -222,8 +222,10 @@ export default async function ({ t, url, browser }) {
     last.legs.every((l) => typeof l.oddsType === 'string'), JSON.stringify(last.legs.map((l) => l.oddsType)));
 
   // ---- ask a question about a ledger pick, same feature as the board -------
+  // The ask thread now lives inside the shared "why" panel (same component the
+  // board uses), not behind its own standalone button.
   const mahleRow = page.locator('#ledgerBody .leg', { hasText: 'A Hitter' });
-  await mahleRow.locator('.whybtn[data-panel="ask"]').click();
+  await mahleRow.locator('.whybtn[data-panel="why"]').click();
   const mahlePanel = mahleRow.locator('.why[data-panel="ask"]');
   await mahlePanel.waitFor({ state: 'visible' });
   await mahlePanel.locator('.askinput').fill('is he confirmed tonight');
